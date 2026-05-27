@@ -1,0 +1,305 @@
+#!/usr/bin/env python3
+"""
+Commands module — локальная обработка команд БЕЗ LLM.
+
+Pipeline (строгий порядок):
+  1. Exact match   — точное совпадение с commands.json
+  2. Fuzzy match   — нечёткое совпадение (>= fuzzy_threshold)
+  3. Pattern match — «открой {app}», «запусти {app}», «найди {query}»
+  4. App by name   — отдельное название приложения («браузер» → Firefox)
+  5. Voice cmd     — mute/unmute/диктовка/напоминание/выход (возврат маркеров)
+  6. → LLM (возврат None)
+"""
+
+import json
+import subprocess
+import logging
+import urllib.parse
+from pathlib import Path
+from typing import Optional, Dict, Tuple
+from difflib import SequenceMatcher
+
+from .platform_adapter import PlatformAdapter
+
+logger = logging.getLogger(__name__)
+
+
+class CommandExecutor:
+    """Выполняет системные команды (без LLM)"""
+
+    def __init__(
+        self,
+        commands_file: str,
+        apps_file: str,
+        fuzzy_threshold: float = 0.8,
+        platform_adapter: Optional[PlatformAdapter] = None,
+    ):
+        self.fuzzy_threshold = fuzzy_threshold
+        self.platform = platform_adapter or PlatformAdapter()
+
+        # Загружаем словари
+        json_data = self._load_json(commands_file)
+        self.commands = json_data if "commands" in json_data else {}
+        self.apps = self._load_json(apps_file)
+
+        if "commands" not in self.commands:
+            self.commands["commands"] = {}
+
+        # Платформенные команды — поверх JSON (приоритет у платформы)
+        self._add_platform_commands()
+
+        cmds_count = len(self.commands.get("commands", {}))
+        apps_count = len(self.apps.get("apps", {}))
+        logger.info(f"✅ Загружено команд: {cmds_count}, приложений: {apps_count}")
+
+    # ── Загрузка ──────────────────────────────────────────────
+
+    def _load_json(self, file_path: str) -> dict:
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            logger.error(f"❌ Ошибка загрузки {file_path}: {e}")
+            return {}
+
+    def _add_platform_commands(self):
+        """Добавляет платформозависимые команды (Hyprland/KDE/…)."""
+        pc = {}
+        if "commands" not in self.commands:
+            self.commands["commands"] = {}
+
+        # Воркспейсы 1–10 (число + прописью)
+        nums = {
+            1: "первый", 2: "второй", 3: "третий", 4: "четвёртый",
+            5: "пятый", 6: "шестой", 7: "седьмой", 8: "восьмой",
+            9: "девятый", 10: "десятый",
+        }
+        for i in range(1, 11):
+            cmd = self.platform.workspace_switch(i)
+            for variant in [f"{i} воркспейс", f"воркспейс {i}",
+                            f"{nums[i]} воркспейс", f"{nums[i]} ворог спэйс",
+                            f"переключи на {nums[i]} воркспейс",
+                            f"переключи на {i} воркспейс"]:
+                pc[variant] = {"cmd": cmd, "say": f"Воркспейс {i}"}
+
+        # Навигация
+        pc["следующий воркспейс"]  = {"cmd": self.platform.workspace_next(), "say": "Следующий"}
+        pc["предыдущий воркспейс"] = {"cmd": self.platform.workspace_prev(), "say": "Предыдущий"}
+        pc["воркспейс вправо"]     = {"cmd": self.platform.workspace_next(), "say": ""}
+        pc["воркспейс влево"]      = {"cmd": self.platform.workspace_prev(), "say": ""}
+
+        # Окна
+        pc["закрой окно"]        = {"cmd": self.platform.window_close(),      "say": "Закрываю"}
+        pc["закрой это"]         = {"cmd": self.platform.window_close(),      "say": "Закрываю"}
+        pc["закрой это окно"]    = {"cmd": self.platform.window_close(),      "say": "Закрываю"}
+        pc["полный экран"]       = {"cmd": self.platform.window_fullscreen(), "say": "Полный экран"}
+        pc["сверни окно"]        = {"cmd": self.platform.window_minimize(),   "say": "Сворачиваю"}
+        pc["разверни окно"]      = {"cmd": self.platform.window_maximize(),   "say": "Разворачиваю"}
+        pc["плавающее окно"]     = {"cmd": self.platform.window_floating(),   "say": "Переключаю"}
+        pc["следующее окно"]     = {"cmd": self.platform.window_next(),       "say": "Следующее"}
+        pc["предыдущее окно"]    = {"cmd": self.platform.window_prev(),       "say": "Предыдущее"}
+
+        # Скриншоты
+        pc["скриншот"]           = {"cmd": self.platform.screenshot_screen(), "say": "Скриншот"}
+        pc["скриншот экрана"]    = {"cmd": self.platform.screenshot_screen(), "say": "Скриншот экрана"}
+        pc["скриншот области"]   = {"cmd": self.platform.screenshot_area(),   "say": "Выберите область"}
+        pc["скриншот окна"]      = {"cmd": self.platform.screenshot_window(), "say": "Скриншот окна"}
+
+        # Звук
+        pc["громче"]             = {"cmd": self.platform.volume_up(5),   "say": "Громче"}
+        pc["тише"]               = {"cmd": self.platform.volume_down(5), "say": "Тише"}
+        pc["выключи звук"]       = {"cmd": self.platform.volume_mute(),  "say": "Звук выключен"}
+        pc["включи звук"]        = {"cmd": self.platform.volume_unmute(),"say": "Звук включён"}
+
+        # Система
+        pc["заблокируй экран"]   = {"cmd": self.platform.lock_screen(),      "say": "Блокирую"}
+        pc["заблокируй"]         = {"cmd": self.platform.lock_screen(),      "say": "Блокирую"}
+        pc["перезагрузка"]       = {"cmd": self.platform.system_reboot(),    "say": "Перезагружаюсь"}
+        pc["выключение"]         = {"cmd": self.platform.system_shutdown(),  "say": "Выключаюсь"}
+
+        # Приложения (платформенные)
+        pc["открой терминал"]    = {"cmd": self.platform.get_terminal(),     "say": "Открываю терминал"}
+        pc["открой файлы"]       = {"cmd": self.platform.get_file_manager(), "say": "Открываю файлы"}
+        pc["диспетчер задач"]    = {"cmd": self.platform.get_task_manager(), "say": "Диспетчер задач"}
+
+        self.commands["commands"].update(pc)
+
+    # ── Matching ──────────────────────────────────────────────
+
+    def _fuzzy_score(self, a: str, b: str) -> float:
+        return SequenceMatcher(None, a.lower(), b.lower()).ratio()
+
+    def _best_fuzzy(self, query: str, candidates: dict) -> Optional[Tuple[str, dict]]:
+        best_key, best_data, best_score = None, None, 0.0
+        for key, data in candidates.items():
+            score = self._fuzzy_score(query, key)
+            if score > best_score:
+                best_score, best_key, best_data = score, key, data
+        if best_score >= self.fuzzy_threshold:
+            return best_key, best_data
+        return None
+
+    def _find_app_cmd(self, name: str) -> Optional[str]:
+        """Ищет команду запуска приложения по любому имени/алиасу."""
+        apps = self.apps.get("apps", {})
+        name_lower = name.lower()
+
+        # 1. Точное или частичное совпадение
+        for app_id, app_data in apps.items():
+            for alias in app_data.get("names", []):
+                if name_lower == alias.lower() or name_lower in alias.lower() or alias.lower() in name_lower:
+                    return app_data.get("cmd")
+
+        # 2. Fuzzy
+        for app_id, app_data in apps.items():
+            for alias in app_data.get("names", []):
+                if self._fuzzy_score(name_lower, alias) >= self.fuzzy_threshold:
+                    return app_data.get("cmd")
+
+        return None
+
+    # ── Основной pipeline ─────────────────────────────────────
+
+    def execute(self, query: str) -> Optional[str]:
+        """
+        Пытается выполнить команду.
+        Возвращает текст для озвучки или None (→ LLM).
+        """
+        q = query.strip().lower()
+        if not q:
+            return None
+
+        commands = self.commands.get("commands", {})
+
+        # ── Шаг 1: Exact match ──
+        if q in commands:
+            logger.info(f"🎯 Exact match: '{q}'")
+            self._run(commands[q]["cmd"])
+            return commands[q].get("say", "Готово, сэр.")
+
+        # ── Шаг 2: Fuzzy match ──
+        match = self._best_fuzzy(q, commands)
+        if match:
+            key, data = match
+            logger.info(f"🎯 Fuzzy match: '{q}' → '{key}'")
+            self._run(data["cmd"])
+            return data.get("say", "Готово, сэр.")
+
+        # ── Шаг 3: Pattern match (открой/запусти {app}) ──
+        app_prefixes = ["открой ", "запусти ", "открыть ", "запустить ", "включи "]
+        for prefix in app_prefixes:
+            if q.startswith(prefix):
+                app_name = q[len(prefix):].strip()
+                if app_name:
+                    app_cmd = self._find_app_cmd(app_name)
+                    if app_cmd:
+                        logger.info(f"🎯 App match: '{prefix}{app_name}' → '{app_cmd}'")
+                        self._run(app_cmd)
+                        return f"Запускаю {app_name}"
+                break  # нашли префикс — не ищем другие
+
+        # ── Шаг 3b: «найди {query}» ──
+        if q.startswith("найди "):
+            search = q[6:].strip()
+            if search:
+                logger.info(f"🔍 Веб-поиск: '{search}'")
+                self._web_search(search)
+                return f"Ищу {search}"
+
+        # ── Шаг 4: Standalone app name (без «открой») ──
+        # Любой одиночный запрос проверяем как имя приложения
+        app_cmd = self._find_app_cmd(q)
+        if app_cmd:
+            logger.info(f"🎯 App standalone: '{q}' → '{app_cmd}'")
+            self._run(app_cmd)
+            return f"Запускаю {q}"
+
+        # ── Шаг 5: Voice commands (маркеры для main loop) ──
+        voice_marker = self._parse_voice_command(q)
+        if voice_marker:
+            return voice_marker
+
+        # ── Команда не найдена → LLM ──
+        return None
+
+    # ── Исполнение ────────────────────────────────────────────
+
+    def _run(self, cmd: str):
+        try:
+            logger.info(f"🔧 Выполняю: {cmd}")
+            subprocess.Popen(cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception as e:
+            logger.error(f"❌ Ошибка выполнения: {e}")
+
+    def _web_search(self, query: str):
+        encoded = urllib.parse.quote_plus(query)
+        # xdg-open — кроссплатформенный открыватор браузера по умолчанию
+        self._run(f"xdg-open 'https://www.google.com/search?q={encoded}'")
+
+    # ── Voice command markers ─────────────────────────────────
+
+    def _parse_voice_command(self, query: str) -> Optional[str]:
+        """
+        Возвращает маркеры для main loop:
+          __MUTE__, __UNMUTE__, __DICTATE__,
+          __REMINDER__:сек:текст, __REMINDER_LIST__, __EXIT__
+        """
+        q = query.lower().strip()
+
+        # Mute/unmute
+        if q in ("заткнись", "замолчи", "тихо", "молчать", "хватит", "отстань",
+                 "выключи микрофон", "выключись", "стоп", "умолкни"):
+            return "__MUTE__"
+        if q in ("продолжить", "продолжай", "говори", "включи микрофон",
+                 "слушай", "снова работай", "вернись", "проснись"):
+            return "__UNMUTE__"
+
+        # Диктовка
+        if (q.startswith("диктовк") or q.startswith("печатай")
+            or q in ("режим диктовки", "начать диктовку", "запустить диктовку",
+                     "включи диктовку", "голосовой ввод")):
+            return "__DICTATE__"
+
+        # Напоминания
+        from .reminder import parse_time
+        parsed = parse_time(q)
+        if parsed:
+            seconds, text = parsed
+            safe = text.replace(":", " ").replace("|", " ")
+            return f"__REMINDER__:{seconds}:{safe}"
+
+        if q in ("список напоминаний", "какие напоминания", "что на сегодня",
+                 "мои напоминания", "покажи напоминания"):
+            return "__REMINDER_LIST__"
+
+        # Выход
+        if q in ("выйти", "завершить работу", "выключись полностью",
+                 "останови джарвис", "стоп джарвис", "пока", "до свидания",
+                 "отключись", "на сегодня всё"):
+            return "__EXIT__"
+
+        return None
+
+
+class CommandManager:
+    """Главный менеджер команд — владеет CommandExecutor."""
+
+    def __init__(self, config: dict):
+        commands_cfg = config.get("commands", {})
+        self.platform = PlatformAdapter()
+
+        self.executor = CommandExecutor(
+            commands_file=commands_cfg.get("dictionary_path", "data/commands.json"),
+            apps_file=commands_cfg.get("apps_dictionary_path", "data/apps.json"),
+            fuzzy_threshold=commands_cfg.get("fuzzy_threshold", 0.8),
+            platform_adapter=self.platform,
+        )
+        logger.info("✅ CommandManager инициализирован")
+
+    def process(self, query: str) -> Optional[str]:
+        return self.executor.execute(query)
+
+    @property
+    def commands_list(self) -> list:
+        """Возвращает список всех известных команд (для справки)."""
+        return list(self.executor.commands.get("commands", {}).keys())

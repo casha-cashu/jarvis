@@ -1,0 +1,99 @@
+{
+  "commands": {
+    "открой браузер": {
+      "cmd": "firefox",
+      "say": "Открываю Firefox",
+      "category": "apps"
+    },
+    "открой firefox": {
+      "cmd": "firefox",
+      "say": "Открываю Firefox",
+      "category": "apps"
+    },
+    "открой телеграм": {
+      "cmd": "telegram-desktop",
+      "say": "Запускаю Telegram",
+      "category": "apps"
+    },
+    "открой telegram": {
+      "cmd": "telegram-desktop",
+      "say": "Запускаю Telegram",
+      "category": "apps"
+    },
+    "открой steam": {
+      "cmd": "steam",
+      "say": "Запускаю Steam",
+      "category": "apps"
+    },
+    "открой код": {
+      "cmd": "code",
+      "say": "Открываю VS Code",
+      "category": "apps"
+    },
+    "открой vscode": {
+      "cmd": "code",
+      "say": "Открываю VS Code",
+      "category": "apps"
+    },
+    "открой редактор": {
+      "cmd": "code",
+      "say": "Открываю редактор",
+      "category": "apps"
+    },
+    "открой дискорд": {
+      "cmd": "discord",
+      "say": "Запускаю Discord",
+      "category": "apps"
+    },
+    "открой discord": {
+      "cmd": "discord",
+      "say": "Запускаю Discord",
+      "category": "apps"
+    },
+    "открой спотифай": {
+      "cmd": "spotify",
+      "say": "Запускаю Spotify",
+      "category": "apps"
+    },
+    "открой музыку": {
+      "cmd": "spotify",
+      "say": "Запускаю музыку",
+      "category": "apps"
+    },
+    "открой калькулятор": {
+      "cmd": "gnome-calculator",
+      "say": "Открываю калькулятор",
+      "category": "apps"
+    },
+    "открой настройки": {
+      "cmd": "systemsettings",
+      "say": "Открываю настройки",
+      "category": "apps"
+    },
+    "какое время": {
+      "cmd": "date '+%H:%M'",
+      "say": "Сейчас",
+      "category": "info"
+    },
+    "какая дата": {
+      "cmd": "date '+%d.%m.%Y'",
+      "say": "Сегодня",
+      "category": "info"
+    },
+    "сколько времени": {
+      "cmd": "date '+%H:%M'",
+      "say": "Сейчас",
+      "category": "info"
+    },
+    "который час": {
+      "cmd": "date '+%H:%M'",
+      "say": "Сейчас",
+      "category": "info"
+    },
+    "какой сегодня день": {
+      "cmd": "date '+%A, %d %B %Y'",
+      "say": "Сегодня",
+      "category": "info"
+    }
+  }
+}
