@@ -29,8 +29,8 @@
 
 ```bash
 # Клонирование
-git clone https://github.com/yourusername/jarvis-universal.git
-cd jarvis-universal
+git clone https://github.com/casha-cashu/jarvis
+cd jarvis
 
 # Установка (автоопределит Arch/Debian/Fedora/macOS)
 bash install.sh
