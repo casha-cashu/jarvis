@@ -31,7 +31,9 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - name: Install dependencies
+      - name: Install system dependencies
+        run: brew install portaudio || true
+      - name: Install Python dependencies
         run: |
           python -m venv venv
           source venv/bin/activate
