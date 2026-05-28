@@ -11,9 +11,9 @@ RUN python3 -m venv venv && venv/bin/pip install --upgrade pip setuptools && \
 
 # Stage 2: integration
 FROM base AS integration
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get install -y \
     sway seatd wlr-randr grim slurp wtype foot libnotify-bin \
-    dbus dbus-x11 \
+    dbus dbus-x11 strace \
     && rm -rf /var/lib/apt/lists/*
 COPY docker/sway/config /etc/sway/config
 COPY docker/sway/entrypoint.sh /entrypoint.sh
