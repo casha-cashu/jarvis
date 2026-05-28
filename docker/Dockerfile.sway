@@ -20,4 +20,5 @@ COPY docker/sway/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 ENV WLR_BACKENDS=headless
 ENV WLR_LIBINPUT_NO_DEVICES=1
+ENV WLR_RENDERER=pixman
 ENTRYPOINT ["/entrypoint.sh"]
