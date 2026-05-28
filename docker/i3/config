@@ -1,0 +1,4 @@
+# i3 config for Docker headless testing
+font pango:monospace 8
+exec_always xrandr --auto
+bindsym Mod1+Return exec xterm

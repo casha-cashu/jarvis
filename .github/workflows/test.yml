@@ -23,6 +23,26 @@ jobs:
             .
           docker run --rm jarvis-test:${{ matrix.distro }}
 
+  docker-integration:
+    strategy:
+      fail-fast: false
+      matrix:
+        de: [i3, sway]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and test on ${{ matrix.de }}
+        run: |
+          docker build \
+            --target integration \
+            -t jarvis-integration:${{ matrix.de }} \
+            -f docker/Dockerfile.${{ matrix.de }} \
+            .
+          docker run --rm \
+            --cap-add=SYS_PTRACE \
+            --security-opt seccomp=unconfined \
+            jarvis-integration:${{ matrix.de }}
+
   macos:
     runs-on: macos-latest
     steps:

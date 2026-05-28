@@ -51,6 +51,11 @@ dev = ["pytest>=7", "pytest-cov>=4", "pytest-mock>=3"]
 testpaths = ["tests"]
 markers = [
     "slow: slow tests (network, model download, etc.)",
+    "integration: integration tests that need a real DE/WM",
+    "i3: tests specific to i3",
+    "sway: tests specific to Sway",
+    "x11: tests that need X11 display",
+    "wayland: tests that need Wayland display",
 ]
 
 [tool.setuptools.package-data]

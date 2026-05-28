@@ -1,4 +1,5 @@
-.PHONY: test test-cov docker-test-arch docker-test-debian docker-test-fedora clean
+.PHONY: test test-cov docker-test-arch docker-test-debian docker-test-fedora \
+        docker-integration-i3 docker-integration-sway clean
 
 test:
 	python -m pytest tests/ -v
@@ -17,6 +18,14 @@ docker-test-debian:
 docker-test-fedora:
 	docker build -t jarvis-test:fedora -f docker/Dockerfile.fedora .
 	docker run --rm jarvis-test:fedora
+
+docker-integration-i3:
+	docker build --target integration -t jarvis-integration:i3 -f docker/Dockerfile.i3 .
+	docker run --rm --cap-add=SYS_PTRACE --security-opt seccomp=unconfined jarvis-integration:i3
+
+docker-integration-sway:
+	docker build --target integration -t jarvis-integration:sway -f docker/Dockerfile.sway .
+	docker run --rm --cap-add=SYS_PTRACE --security-opt seccomp=unconfined jarvis-integration:sway
 
 clean:
 	rm -rf .pytest_cache/ __pycache__/

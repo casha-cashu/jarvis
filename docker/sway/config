@@ -1,0 +1,5 @@
+# Sway config for Docker headless testing
+font pango:monospace 8
+seat seat0 xcursor_theme default 24
+exec_always wlr-randr --output HEADLESS-1 --mode 1280x720
+bindsym Mod1+Return exec foot
