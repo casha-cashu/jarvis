@@ -1,4 +1,2 @@
-# Sway config for Docker headless testing
+# Minimal Sway config for Docker headless testing
 font pango:monospace 8
-seat seat0 xcursor_theme default 24
-bindsym Mod1+Return exec foot
