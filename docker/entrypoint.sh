@@ -9,9 +9,6 @@ export XDG_RUNTIME_DIR=/tmp/runtime-root
 mkdir -p "$XDG_RUNTIME_DIR"
 chmod 0700 "$XDG_RUNTIME_DIR"
 
-# For root in Docker: use builtin seat backend (no seatd needed)
-export LIBSEAT_BACKEND=builtin
-
 echo "=== Starting sway with debug ==="
 sway --unsupported-gpu -c /etc/sway/config --debug > /tmp/sway.log 2>&1 &
 SWAY_PID=$!
@@ -27,14 +24,10 @@ for i in $(seq 1 15); do
         echo "=== FAIL: Sway not running after 15s ==="
         echo "--- sway.log ---"
         cat /tmp/sway.log 2>/dev/null || echo "(no log)"
-        echo "--- pgrep -a sway ---"
-        pgrep -a sway 2>/dev/null || echo "no sway process"
-        echo "--- ps aux | grep sway ---"
-        ps aux | grep -i sway | grep -v grep || echo "no sway in ps"
+        echo "--- pgrep ---"
+        ps aux | grep -i sway | head -10
         echo "--- env ---"
-        env | grep -E 'WLR|XDG|WAYLAND|DISPLAY|LIBSEAT' || true
-        echo "--- /tmp/runtime-root ---"
-        ls -la /tmp/runtime-root 2>/dev/null || echo "no dir"
+        env | grep -E 'WLR|XDG|WAYLAND|DISPLAY' || true
         kill $SWAY_PID 2>/dev/null || true
         exit 1
     fi

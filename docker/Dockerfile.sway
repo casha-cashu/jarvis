@@ -21,4 +21,5 @@ RUN chmod +x /entrypoint.sh
 ENV WLR_BACKENDS=headless
 ENV WLR_LIBINPUT_NO_DEVICES=1
 ENV WLR_RENDERER=pixman
+ENV LIBSEAT_BACKEND=builtin
 ENTRYPOINT ["/entrypoint.sh"]
