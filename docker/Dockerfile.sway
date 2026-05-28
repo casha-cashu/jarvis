@@ -25,6 +25,8 @@ RUN python -m venv venv && \
     venv/bin/pip install --upgrade pip setuptools && \
     venv/bin/pip install -e ".[dev]"
 
+FROM base AS integration
+
 COPY docker/sway/config /etc/sway/config
 COPY docker/sway/entrypoint-arch.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
