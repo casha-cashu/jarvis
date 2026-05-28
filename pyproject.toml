@@ -21,7 +21,7 @@ classifiers = [
 
 dependencies = [
     "pyyaml>=6.0",
-    "vosk>=0.3.45",
+    "vosk>=0.3.38",
     "pyaudio>=0.2.14",
     "numpy>=1.24",
     "torch>=2.0",
@@ -30,7 +30,7 @@ dependencies = [
     "anthropic>=0.30",
     "requests>=2.30",
     "gtts>=2.5",
-    "audioop-lts>=0.2",
+    "audioop-lts>=0.2; python_version >= '3.13'",
 ]
 
 [project.urls]
