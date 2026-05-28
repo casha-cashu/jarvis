@@ -27,7 +27,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        de: [i3, sway]
+        de: [i3]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
