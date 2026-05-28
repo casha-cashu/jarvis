@@ -42,7 +42,15 @@ fi
 
 install_arch() {
     echo "📦 Установка зависимостей (Arch/Manjaro/CachyOS)..."
-    sudo pacman -S --needed python python-pip portaudio python-pyaudio piper-tts wtype xdotool --noconfirm || true
+    sudo pacman -S --needed python python-pip portaudio python-pyaudio wtype xdotool --noconfirm || true
+    # piper-tts в AUR (yay/paru), устанавливается опционально
+    if command -v yay &> /dev/null; then
+        yay -S --needed piper-tts --noconfirm 2>/dev/null || true
+    elif command -v paru &> /dev/null; then
+        paru -S --needed piper-tts --noconfirm 2>/dev/null || true
+    else
+        echo "⚠️  Установи piper-tts из AUR: yay -S piper-tts"
+    fi
 }
 
 install_debian() {
@@ -93,8 +101,8 @@ fi
 echo ""
 echo "🐍 Установка Python пакетов..."
 $PIP_CMD install --upgrade pip
-$PIP_CMD install pyyaml vosk pyaudio numpy torch --index-url https://download.pytorch.org/whl/cpu
-$PIP_CMD install faster-whisper anthropic requests gtts
+$PIP_CMD install pyyaml vosk pyaudio numpy torch faster-whisper silero-vad --index-url https://download.pytorch.org/whl/cpu
+$PIP_CMD install anthropic requests gtts
 $PIP_CMD install audioop-lts  # Python 3.14 compat
 
 # ── Директории ──

@@ -1,0 +1,11 @@
+pyyaml>=6.0
+vosk>=0.3.45
+pyaudio>=0.2.14
+numpy>=1.24
+torch>=2.0
+faster-whisper>=1.0
+silero-vad>=0.2
+anthropic>=0.30
+requests>=2.30
+gtts>=2.5
+audioop-lts>=0.2

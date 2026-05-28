@@ -1,18 +1,18 @@
-# JARVIS — Universal Voice Assistant
+# JARVIS — голосовой ассистент
 
-Голосовой ИИ-ассистент с поддержкой Linux и macOS. Распознаёт речь (Vosk / Whisper), выполняет системные команды, отвечает через LLM (локально или через API), синтезирует речь (Piper TTS).
+Голосовой ИИ-ассистент для Linux и macOS. Распознаёт речь (Vosk / Whisper), выполняет системные команды, отвечает через LLM (локально или через API), синтезирует речь (Piper TTS).
 
-## Features
+## Возможности
 
-- 🎤 **Распознавание речи** — Vosk (быстрый, офлайн) или faster-whisper (точный)
-- 🔊 **Синтез речи** — Piper TTS (русский голос Дмитрия), gTTS fallback
-- 🤖 **LLM интеграция** — Ollama (локально), OpenAI-совместимые API, Anthropic Claude
-- 🖥️ **Управление системой** — воркспейсы, окна, скриншоты, звук, блокировка
-- 🔌 **Кроссплатформенность** — автоопределение DE/WM (Hyprland, KDE, GNOME, i3, Sway, macOS)
-- 💬 **Multi-turn диалоги** — 10с таймаут на follow-up, mute/unmute голосом
-- ⏰ **Напоминания** — «напомни через 10 минут», «таймер на 5 минут»
-- 📝 **Диктовка** — голосовой ввод текста через wtype/xdotool
-- 🎯 **Wake word** — «джарвис» + альтернативы
+- **Распознавание речи** — Vosk (быстрый, офлайн) или faster-whisper (точный)
+- **Синтез речи** — Piper TTS (русский голос Дмитрия), gTTS fallback
+- **LLM интеграция** — Ollama (локально), OpenAI-совместимые API, Anthropic Claude
+- **Управление системой** — воркспейсы, окна, скриншоты, звук, блокировка
+- **Кроссплатформенность** — автоопределение DE/WM (Hyprland, KDE, GNOME, i3, Sway, macOS)
+- **Multi-turn диалоги** — 10с таймаут на follow-up, mute/unmute голосом
+- **Напоминания** — «напомни через 10 минут», «таймер на 5 минут»
+- **Диктовка** — голосовой ввод текста через wtype/xdotool
+- **Wake word** — «джарвис» + альтернативы
 
 ## Поддерживаемые платформы
 
@@ -29,14 +29,16 @@
 
 ```bash
 # Клонирование
-git clone https://github.com/casha-cashu/jarvis
+git clone https://github.com/casha-cashu/jarvis.git
 cd jarvis
 
 # Установка (автоопределит Arch/Debian/Fedora/macOS)
 bash install.sh
 
-# Или через pip (после установки системных зависимостей)
-pip install -e .
+# Активация venv (если устанавливали с --venv)
+source venv/bin/activate
+
+# Запуск
 jarvis run
 ```
 
@@ -48,17 +50,18 @@ jarvis run
 
 **Arch Linux:**
 ```bash
-sudo pacman -S python python-pip portaudio python-pyaudio piper-tts wtype xdotool
+sudo pacman -S python python-pip portaudio wtype xdotool
+yay -S piper-tts  # из AUR
 ```
 
 **Debian/Ubuntu:**
 ```bash
-sudo apt install python3 python3-pip portaudio19-dev python3-pyaudio libnotify-bin xdotool wtype
+sudo apt install python3 python3-pip portaudio19-dev libnotify-bin xdotool wtype espeak-ng
 ```
 
 **Fedora:**
 ```bash
-sudo dnf install python3 python3-pip portaudio-devel python3-pyaudio libnotify xdotool wtype
+sudo dnf install python3 python3-pip portaudio-devel libnotify xdotool wtype espeak-ng
 ```
 
 **macOS:**
@@ -69,22 +72,32 @@ brew install python portaudio
 ### Python зависимости
 
 ```bash
-pip install -e .           # Установит все зависимости из pyproject.toml
-# Или вручную:
-pip install pyyaml vosk pyaudio numpy faster-whisper anthropic requests gtts audioop-lts
+git clone https://github.com/casha-cashu/jarvis.git
+cd jarvis
+
+python -m venv venv
+source venv/bin/activate
+pip install -e .
 ```
+
+Или вручную:
+```bash
+pip install pyyaml vosk pyaudio numpy torch faster-whisper silero-vad anthropic requests gtts audioop-lts
+```
+
+> **Важно:** `torch` нужен для Silero VAD. Если у вас NVIDIA GPU — поставьте CUDA-версию: `pip install torch --index-url https://download.pytorch.org/whl/cu118`
 
 ### Модели
 
-- **Vosk**: `python3 -c "from jarvis.setup import download_vosk; download_vosk()"`
-- **faster-whisper**: скачивается автоматически при первом запуске
-- **Piper TTS**: скачайте бинарник с [GitHub](https://github.com/rhasspy/piper/releases) и модель голоса
+- **Vosk**: `python -c "from jarvis.setup import download_vosk; download_vosk()"`
+- **faster-whisper**: скачивается автоматически при первом запуске. Для офлайн-использования укажите `model_path` в `config.yaml` (см. ниже)
+- **Piper TTS**: `yay -S piper-tts` (Arch) или бинарник с [GitHub](https://github.com/rhasspy/piper/releases)
 
 ## Конфигурация
 
 Отредактируйте `config.yaml`:
 
-- **Микрофон**: укажите `device_name` вашего USB-микрофона
+- **Микрофон**: укажите `device_name` вашего микрофона (список устройств выводится при запуске)
 - **STT**: выберите `vosk` (быстрый) или `whisper` (точный)
 - **LLM**: укажите провайдер (`ollama`, `kiro`, `openrouter`, `anthropic`)
 - **TTS**: настройте пути к Piper бинарнику и модели
@@ -138,41 +151,6 @@ jarvis service install
 
 Всё, что не распознано как команда — отправляется в LLM.
 
-## Архитектура
-
-```
-jarvis-universal/
-├── config.yaml                 # Конфигурация
-├── data/
-│   ├── commands.json           # Команды (приложения + информация)
-│   └── apps.json               # Приложения с алиасами
-├── jarvis/
-│   ├── cli.py                  # CLI entry point
-│   ├── __init__.py             # Jarvis class (основной цикл)
-│   ├── adapters/               # Платформенные адаптеры
-│   │   ├── base.py             #   Базовый класс
-│   │   ├── hyprland.py         #   Hyprland WM
-│   │   ├── kde.py              #   KDE Plasma
-│   │   ├── gnome.py            #   GNOME Shell
-│   │   ├── i3.py               #   i3 WM
-│   │   ├── sway.py             #   Sway WM
-│   │   └── macos.py            #   macOS
-│   └── modules/
-│       ├── stt.py              # Vosk STT
-│       ├── stt_whisper.py      # faster-whisper STT
-│       ├── tts.py              # Piper TTS + gTTS
-│       ├── llm.py              # LLM клиенты
-│       ├── commands.py         # Обработка команд (pipeline)
-│       ├── vad.py              # Silero VAD
-│       ├── dictation.py        # Режим диктовки
-│       ├── reminder.py         # Напоминания
-│       └── platform_adapter.py # Автоопределение платформы
-├── install.sh                  # Установщик (Arch/Debian/Fedora/macOS)
-├── pyproject.toml              # Python пакет
-├── LICENSE                     # MIT
-└── README.md
-```
-
 ## Как это работает
 
 1. **Автоопределение платформы** — при запуске определяется ОС, дистрибутив и DE/WM
@@ -185,7 +163,7 @@ jarvis-universal/
 
 ## Лицензия
 
-MIT. Делайте что хотите.
+MIT
 
 ## Благодарности
 

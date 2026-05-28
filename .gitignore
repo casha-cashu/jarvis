@@ -40,3 +40,10 @@ Thumbs.db
 
 # ── Temp ──
 /tmp/jarvis
+
+# ── Tests ──
+.pytest_cache/
+.coverage
+coverage/
+htmlcov/
+*.coverage

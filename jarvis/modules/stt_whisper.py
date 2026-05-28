@@ -12,6 +12,7 @@ from typing import Optional, Callable, List
 import logging
 import time
 
+from pathlib import Path
 from .vad import SileroVAD, VADIteratorWrapper
 
 logger = logging.getLogger(__name__)
@@ -57,8 +58,22 @@ class WhisperSTT:
         self.mic_sample_rate = self._get_device_sample_rate()
         self.mic_channels = self._get_device_channels()
 
-        # Загружаем faster-whisper
+        # Определяем источник модели
         model_source = self.model_path or self.model_size
+
+        # Если указан локальный путь, проверяем что он существует
+        if self.model_path:
+            model_path_resolved = Path(self.model_path)
+            if model_path_resolved.exists():
+                # faster-whisper может сам загрузить из директории
+                logger.info(f"📁 Локальная модель: {self.model_path}")
+            else:
+                logger.warning(
+                    f"⚠️ Локальный путь не существует: {self.model_path}. "
+                    f"Пробуем загрузить '{self.model_size}' из HuggingFace..."
+                )
+                model_source = self.model_size  # fallback на HF
+
         logger.info(f"⏳ Загрузка faster-whisper ({model_source})...")
         try:
             from faster_whisper import WhisperModel
@@ -67,7 +82,8 @@ class WhisperSTT:
                 device="cpu",
                 compute_type="int8",      # 8-bit quantisation для скорости
                 cpu_threads=4,
-                num_workers=2
+                num_workers=2,
+                local_files_only=bool(self.model_path and Path(self.model_path).exists())
             )
             logger.info(f"✅ faster-whisper ({model_source}) загружена")
         except ImportError:
