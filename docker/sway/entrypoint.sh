@@ -3,7 +3,6 @@ set +e
 
 export XDG_RUNTIME_DIR=/tmp/runtime-root
 export WAYLAND_DISPLAY=wayland-0
-export LIBSEAT_BACKEND=builtin
 export WLR_BACKENDS=headless
 export WLR_LIBINPUT_NO_DEVICES=1
 export WLR_RENDERER=pixman
@@ -11,52 +10,57 @@ export WLR_RENDERER=pixman
 mkdir -p "$XDG_RUNTIME_DIR"
 chmod 0700 "$XDG_RUNTIME_DIR"
 
-# Pre-flight: validate & check deps
-sway --validate -c /etc/sway/config > /tmp/validate.log 2>&1
-if [ $? -ne 0 ]; then
-    echo "FAIL: config validation failed"
-    cat /tmp/validate.log
-    exit 1
+echo "=== 1. DBus ==="
+dbus-daemon --session --fork 2>/dev/null || echo "dbus skipped"
+
+echo "=== 2. seatd ==="
+seatd -g root > /tmp/seatd.log 2>&1 &
+SEATD_PID=$!
+sleep 2
+if kill -0 $SEATD_PID 2>/dev/null; then
+    echo "seatd running (PID=$SEATD_PID)"
+else
+    echo "seatd failed. log:"
+    cat /tmp/seatd.log
 fi
 
-# Try different GPU flags
+echo "=== 3. sway validate ==="
+sway --validate -c /etc/sway/config 2>&1
+echo "validate exit: $?"
+
+echo "=== 4. sway start ==="
 for FLAG in "--unsupported-gpu" "--my-next-gpu-wont-be-nvidia" ""; do
-    echo "=== Trying sway $FLAG ==="
+    echo "--- Trying sway $FLAG ---"
     sway $FLAG -c /etc/sway/config > /tmp/sway.log 2>&1 &
     SWAY_PID=$!
-
-    # Wait up to 10 seconds for IPC socket
     for i in $(seq 1 10); do
         sleep 1
-        SOCK=$(find "$XDG_RUNTIME_DIR" -name 'sway-ipc*' -type s 2>/dev/null | head -1)
+        SOCK=$(find /tmp -name 'sway-ipc*' -type s 2>/dev/null | head -1)
         if [ -n "$SOCK" ]; then
             export SWAYSOCK="$SOCK"
             if swaymsg -t get_workspaces > /dev/null 2>&1; then
-                echo "=== Sway running (PID=$SWAY_PID, flag=$FLAG) ==="
-                break 2  # break out of both loops
+                echo "=== SWAY RUNNING (PID=$SWAY_PID, sock=$SOCK, flag=$FLAG) ==="
+                break 2
             fi
         fi
     done
-
-    # Sway failed to start with this flag
-    kill $SWAY_PID 2>/dev/null || true
-    wait $SWAY_PID 2>/dev/null || true
-    echo "sway$FLAG failed. Log:"
-    cat /tmp/sway.log 2>/dev/null
+    kill $SWAY_PID 2>/dev/null
+    wait $SWAY_PID 2>/dev/null
+    echo "sway$FLAG failed:"
+    cat /tmp/sway.log
 done
 
-# Check if we found a working flag
 if [ -z "$SWAYSOCK" ]; then
-    echo "=== FATAL: Sway won't start with any flag ==="
-    echo "--- dpkg info ---"
-    dpkg -l sway 2>/dev/null || echo "sway not installed"
-    dpkg -l 'libwlroots*' 2>/dev/null || echo "wlroots not found"
-    echo "--- ldd ---"
-    ldd /usr/bin/sway 2>/dev/null | grep "not found" || echo "all libs resolved"
-    echo "--- /var/log ---"
-    ls /var/log/ 2>/dev/null
-    echo "--- dmesg ---"
-    dmesg 2>/dev/null | tail -5 || echo "no dmesg"
+    echo "=== FATAL: Sway not starting ==="
+    echo "--- sway pkg ---"
+    dpkg -l sway 2>/dev/null | tail -2
+    echo "--- /var/log/seatd ---"
+    ls -la /var/log/ 2>/dev/null
+    echo "--- /run ---"
+    ls -la /run/ 2>/dev/null
+    echo "--- ls -la /dev ---"
+    ls -la /dev/ | head -20
+    kill $SEATD_PID 2>/dev/null || true
     exit 1
 fi
 
@@ -64,7 +68,6 @@ fi
 cd /app
 JARVIS_TEST_DE=sway venv/bin/python -m pytest tests/integration/ -v --timeout=30 || true
 
-# Cleanup
-kill $SWAY_PID 2>/dev/null || true
-wait $SWAY_PID 2>/dev/null || true
+kill $SWAY_PID $SEATD_PID 2>/dev/null || true
+wait 2>/dev/null || true
 echo "=== Done ==="
