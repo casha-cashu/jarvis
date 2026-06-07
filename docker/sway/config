@@ -1,2 +1,20 @@
 # Minimal Sway config for Docker headless testing
 font pango:monospace 8
+
+# Default output for headless backend
+output Headless-1 mode 1280x720@60
+
+# No input devices in headless mode
+input * {
+    xkb_layout us
+}
+
+# Key bindings
+bindsym --whole-window $mod+Shift+q kill
+set $mod Mod4
+
+# Floating windows for testing
+for_window [title=".*"] floating enable
+
+# Start a terminal for testing
+exec xterm
