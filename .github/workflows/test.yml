@@ -6,9 +6,6 @@ on:
   pull_request:
     branches: [main, master]
 
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-
 jobs:
   docker-linux:
     strategy:
@@ -17,7 +14,7 @@ jobs:
         distro: [arch, debian, fedora]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Build and test on ${{ matrix.distro }}
         run: |
           docker build \
@@ -34,7 +31,7 @@ jobs:
     runs-on: ubuntu-latest
     continue-on-error: ${{ matrix.de == 'sway' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Build and test on ${{ matrix.de }}
         run: |
           docker build \
@@ -50,9 +47,9 @@ jobs:
   macos:
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.11"
       - name: Install system dependencies
