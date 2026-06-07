@@ -47,3 +47,6 @@ Thumbs.db
 coverage/
 htmlcov/
 *.coverage
+
+# ── Session state (contains secrets) ──
+SESSION.md
