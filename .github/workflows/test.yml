@@ -43,6 +43,7 @@ jobs:
             --cap-add=SYS_PTRACE \
             --cap-add=SYS_ADMIN \
             --security-opt seccomp=unconfined \
+            --security-opt apparmor=unconfined \
             jarvis-integration:${{ matrix.de }}
 
   macos:
