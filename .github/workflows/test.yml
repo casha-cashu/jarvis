@@ -41,6 +41,7 @@ jobs:
             .
           docker run --rm \
             --cap-add=SYS_PTRACE \
+            --cap-add=SYS_ADMIN \
             --security-opt seccomp=unconfined \
             jarvis-integration:${{ matrix.de }}
 
