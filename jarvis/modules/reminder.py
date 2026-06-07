@@ -42,16 +42,8 @@ def parse_time(text: str) -> Optional[tuple]:
     """
     Парсит время из текста.
     Возвращает (секунд, текст_напоминания) или None.
-
-    Примеры:
-      "через 10 минут позвонить"            → (600, "позвонить")
-      "напомни через 5 секунд выключить"    → (5, "выключить")
-      "поставь таймер на 10 минут"          → (600, "прошло 10 минут")
-      "таймер на 5 минут"                   → (300, "прошло 5 минут")
-      "напомни завтра в 9 утра собрание"    → None (не поддерживается)
     """
 
-    # Словарь: слово → число
     NUM_WORDS = {
         'ноль': 0, 'один': 1, 'одну': 1, 'одна': 1,
         'два': 2, 'две': 2, 'три': 3, 'четыре': 4,
@@ -68,7 +60,6 @@ def parse_time(text: str) -> Optional[tuple]:
     NUMBER = r'(?:\d+|' + '|'.join(NUM_WORDS.keys()) + r')'
 
     def _amount(s: str) -> int:
-        """Парсит число из цифр или слов."""
         s = s.strip().lower()
         if s.isdigit():
             return int(s)
@@ -86,17 +77,11 @@ def parse_time(text: str) -> Optional[tuple]:
 
     text_lower = text.lower().strip()
 
-    # Паттерны с числами (цифры или слова)
     patterns = [
-        # "через 10 минут сделать что-то" / "через десять минут сделать"
         rf'(?:через|подожди)\s+({NUMBER})\s+({UNIT_WORDS})\s+(.+)$',
-        # "напомни через 10 минут сделать что-то"
         rf'напомни\s+через\s+({NUMBER})\s+({UNIT_WORDS})\s+(.+)$',
-        # "напомни сделать что-то через 10 минут"
         rf'напомни\s+(.+?)\s+через\s+({NUMBER})\s+({UNIT_WORDS})$',
-        # "таймер на 10 минут" / "поставь таймер на 10 минут"
         rf'(?:поставь\s+)?таймер(?:а)?\s+на\s+({NUMBER})\s+({UNIT_WORDS})(?:\s*(.+))?$',
-        # "через 10 минут" (без текста)
         rf'(?:через|подожди)\s+({NUMBER})\s+({UNIT_WORDS})$',
     ]
 
@@ -104,13 +89,11 @@ def parse_time(text: str) -> Optional[tuple]:
         m = re.search(pat, text_lower)
         if m:
             groups = m.groups()
-            # Нормализуем: None → ""
             groups = tuple("" if g is None else g for g in groups)
 
             if len(groups) >= 2:
                 amount_str = groups[0]
                 unit_str = groups[1]
-                # Если есть третий элемент — это текст напоминания
                 reminder_text = groups[2].strip() if len(groups) > 2 and groups[2] else ""
 
                 amount = _amount(amount_str)
@@ -128,16 +111,11 @@ class ReminderManager:
     """Управление напоминаниями"""
 
     def __init__(self, on_trigger: Optional[Callable] = None):
-        """
-        Args:
-            on_trigger: Функция, вызываемая при срабатывании (текст напоминания)
-        """
         self.on_trigger = on_trigger or self._default_trigger
         self.timers: list = []
         self._load_active()
 
     def _default_trigger(self, text: str):
-        """Стандартное уведомление (fallback — без PlatformAdapter)"""
         try:
             subprocess.run([
                 'notify-send', '-u', 'critical',
@@ -148,7 +126,6 @@ class ReminderManager:
         print(f"\n⏰ Напоминание: {text}")
 
     def _load_active(self):
-        """Загружает и запускает таймеры для активных напоминаний"""
         reminders = _load_reminders()
         now = time.time()
         for r in reminders:
@@ -160,47 +137,46 @@ class ReminderManager:
                 self.timers.append(t)
                 logger.info(f"⏰ Напоминание загружено: «{r['text']}» через {int(remaining)}с")
             else:
-                # Просроченные удаляем
                 logger.debug(f"⏰ Просроченное напоминание удалено: {r['text']}")
-        # Сохраняем только будущие
         self._prune()
 
     def _prune(self):
-        """Удаляет просроченные напоминания"""
         now = time.time()
         reminders = [r for r in _load_reminders() if r['time'] > now]
         _save_reminders(reminders)
 
+    def _cleanup_fired_timers(self):
+        """Удаляет сработавшие и отменённые таймеры из списка"""
+        active = []
+        for t in self.timers:
+            if t.is_alive():
+                active.append(t)
+            else:
+                logger.debug(f"⏰ Таймер {t} удалён из списка")
+        self.timers = active
+
     def _fire(self, reminder: dict):
-        """Срабатывание напоминания"""
         text = reminder['text']
         logger.info(f"⏰ Напоминание сработало: {text}")
         self.on_trigger(text)
         self._prune()
+        self._cleanup_fired_timers()
 
     def add(self, text: str, seconds: int) -> str:
-        """
-        Добавляет напоминание.
+        if seconds <= 0:
+            self.on_trigger(text)
+            return "Напоминание сработало."
 
-        Args:
-            text: Текст напоминания
-            seconds: Через сколько секунд
-
-        Returns:
-            Подтверждение для TTS
-        """
         reminder = {
             'text': text,
             'time': time.time() + seconds,
             'created': time.time()
         }
 
-        # Сохраняем
         reminders = _load_reminders()
         reminders.append(reminder)
         _save_reminders(reminders)
 
-        # Запускаем таймер
         t = threading.Timer(seconds, self._fire, args=[reminder])
         t.daemon = True
         t.start()
@@ -211,7 +187,6 @@ class ReminderManager:
         return f"Хорошо, сэр. Я напомню {time_str}."
 
     def _format_time(self, seconds: int) -> str:
-        """Форматирует секунды в читаемый вид"""
         if seconds < 60:
             return f"через {seconds} секунд"
         elif seconds < 3600:
@@ -221,7 +196,23 @@ class ReminderManager:
 
     @staticmethod
     def list_active() -> list:
-        """Возвращает список активных напоминаний"""
         reminders = _load_reminders()
         now = time.time()
         return [(r['text'], int(r['time'] - now)) for r in reminders if r['time'] > now]
+
+    def shutdown(self):
+        """Graceful shutdown: сохраняет невыполненные напоминания, отменяет таймеры"""
+        logger.info("⏰ Shutdown ReminderManager...")
+
+        cancelled = 0
+        for t in self.timers:
+            if t.is_alive():
+                t.cancel()
+                cancelled += 1
+
+        now = time.time()
+        reminders = [r for r in _load_reminders() if r['time'] > now]
+        _save_reminders(reminders)
+
+        self.timers.clear()
+        logger.info(f"⏰ ReminderManager shutdown: отменено {cancelled} таймеров, сохранено {len(reminders)} напоминаний")

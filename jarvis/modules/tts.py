@@ -249,7 +249,7 @@ class GTTSFallback:
 
 
 class SpeechT5TTS:
-    """SpeechT5 TTS (голос Джарвиса из фильма)"""
+    """SpeechT5 TTS (голос Джарвиса из фильма) — lazy loading"""
 
     def __init__(self, model_name: str = "aaryansr/speecht5_tts_jarvis",
                  vocoder_path: Optional[str] = None,
@@ -263,7 +263,22 @@ class SpeechT5TTS:
             speaker_id: ID speaker embedding
         """
         self.model_name = model_name
+        self.vocoder_path_param = vocoder_path
         self.speaker_id = speaker_id
+        self.device = device or 'cpu'
+        self.logger = logging.getLogger(__name__)
+
+        # Lazy: модели загружаются при первом speak()
+        self._model = None
+        self._processor = None
+        self._vocoder = None
+        self._speaker_embeddings = None
+
+        self.logger.info(f"🎙️ SpeechT5 зарегистрирован (lazy load): {model_name}")
+
+    def _load_models(self):
+        """Lazy loading моделей — вызывается при первом speak()"""
+        self.logger.info(f"🎙️ Загрузка SpeechT5: {self.model_name}")
 
         try:
             import torch
@@ -273,42 +288,43 @@ class SpeechT5TTS:
         except ImportError:
             raise ImportError("Установи: pip install transformers torch soundfile")
 
-        self.device = device or 'cpu'
-        self.logger = logging.getLogger(__name__)
-
-        self.logger.info(f"🎙️ Загрузка SpeechT5: {model_name}")
-        self.processor = SpeechT5Processor.from_pretrained(model_name)
-        self.model = SpeechT5ForTextToSpeech.from_pretrained(
-            model_name, torch_dtype=torch.float32
+        self.logger.info(f"🎙️ Загрузка модели {self.model_name}...")
+        self._processor = SpeechT5Processor.from_pretrained(self.model_name)
+        self._model = SpeechT5ForTextToSpeech.from_pretrained(
+            self.model_name, torch_dtype=torch.float32
         ).to(self.device)
 
-        self.logger.info(f"🎙️ Загрузка HiFi-GAN vocoder")
-        vocoder_path = vocoder_path or "microsoft/speecht5_hifigan"
-        self.vocoder = SpeechT5HifiGan.from_pretrained(
+        vocoder_path = self.vocoder_path_param or "microsoft/speecht5_hifigan"
+        self.logger.info(f"🎙️ Загрузка HiFi-GAN vocoder: {vocoder_path}")
+        self._vocoder = SpeechT5HifiGan.from_pretrained(
             vocoder_path, torch_dtype=torch.float32
         ).to(self.device)
 
-        self.speaker_embeddings = torch.zeros((1, 512)).to(self.device)
-
+        self._speaker_embeddings = torch.zeros((1, 512)).to(self.device)
         self.logger.info(f"✅ SpeechT5 готов ({self.device})")
 
     def speak(self, text: str, play: bool = True) -> bool:
-        """Синтезирует речь голосом Джарвиса"""
+        """Синтезирует речь голосом Джарвиса (lazy load при первом вызове)"""
         if not text.strip():
             return False
+
+        # Lazy loading
+        if self._model is None:
+            self._load_models()
 
         try:
             import torch
             import numpy as np
             import soundfile as sf
             import tempfile
+            import subprocess
             from pathlib import Path
 
-            inputs = self.processor(text=text, return_tensors="pt").to(self.device)
-            speech = self.model.generate_speech(
+            inputs = self._processor(text=text, return_tensors="pt").to(self.device)
+            speech = self._model.generate_speech(
                 inputs["input_ids"],
-                self.speaker_embeddings,
-                vocoder=self.vocoder
+                self._speaker_embeddings,
+                vocoder=self._vocoder
             )
 
             if isinstance(speech, torch.Tensor):

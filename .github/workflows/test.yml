@@ -27,8 +27,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        de: [i3]
+        de: [i3, sway]
     runs-on: ubuntu-latest
+    continue-on-error: ${{ matrix.de == 'sway' }}
     steps:
       - uses: actions/checkout@v4
       - name: Build and test on ${{ matrix.de }}

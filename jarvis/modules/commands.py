@@ -12,6 +12,7 @@ Pipeline (строгий порядок):
 """
 
 import json
+import shlex
 import subprocess
 import logging
 import urllib.parse
@@ -215,7 +216,7 @@ class CommandExecutor:
             return f"Запускаю {q}"
 
         # ── Шаг 5: Voice commands (маркеры для main loop) ──
-        voice_marker = self._parse_voice_command(q)
+        voice_marker = self.parse_voice_command(q)
         if voice_marker:
             return voice_marker
 
@@ -225,22 +226,30 @@ class CommandExecutor:
     # ── Исполнение ────────────────────────────────────────────
 
     def _run(self, cmd: str):
+        """Запускает команду через subprocess (shell=False)."""
         try:
             logger.info(f"🔧 Выполняю: {cmd}")
-            subprocess.Popen(cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            # shlex.split корректно парсит команды с кавычками
+            # (notify-send 'title' 'message', date '+%H:%M', etc.)
+            # НЕ поддерживает shell-операторы (||, |, ;, 2>/dev/null)
+            # — это сделано намеренно для безопасности.
+            subprocess.Popen(
+                shlex.split(cmd),
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
         except Exception as e:
             logger.error(f"❌ Ошибка выполнения: {e}")
 
     def _web_search(self, query: str):
         encoded = urllib.parse.quote_plus(query)
-        # xdg-open — кроссплатформенный открыватор браузера по умолчанию
         self._run(f"xdg-open 'https://www.google.com/search?q={encoded}'")
 
     # ── Voice command markers ─────────────────────────────────
 
-    def _parse_voice_command(self, query: str) -> Optional[str]:
+    def parse_voice_command(self, query: str) -> Optional[str]:
         """
-        Возвращает маркеры для main loop:
+        Публичный метод. Возвращает маркеры для main loop:
           __MUTE__, __UNMUTE__, __DICTATE__,
           __REMINDER__:сек:текст, __REMINDER_LIST__, __EXIT__
         """

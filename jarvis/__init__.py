@@ -4,8 +4,10 @@ JARVIS — главный класс голосового ассистента.
 """
 
 import os
+import re
 import sys
 import yaml
+import shlex
 import logging
 import signal
 import time
@@ -56,7 +58,6 @@ def setup_logging(config: dict, verbose: bool = False):
 def beep():
     """Короткий звуковой сигнал при wake word"""
     print('\a', end='', flush=True)
-    # Опционально: проиграть WAV-файл
     sound = os.getenv('JARVIS_WAKE_SOUND', '')
     if sound and Path(sound).exists():
         import subprocess
@@ -74,17 +75,6 @@ class Jarvis:
                  muted: bool = False,
                  wake_mode: str = 'classic',
                  dry_run: bool = False):
-        """
-        Args:
-            config_path: Путь к конфигу
-            verbose: Подробные логи
-            provider: Провайдер LLM
-            provider_config: Настройки провайдера
-            continuous: Режим без wake word
-            muted: Старт в режиме тишины
-            wake_mode: classic|vad — метод детекции wake word
-            dry_run: Проверка без микрофона
-        """
         self.verbose = verbose
         self.continuous = continuous
         self.muted = muted
@@ -121,6 +111,7 @@ class Jarvis:
         self.tts = None
         self.llm = None
         self.commands = None
+        self.reminder_mgr = None
         self.running = False
         self.is_muted = muted
         self.last_speech_time = 0
@@ -138,11 +129,18 @@ class Jarvis:
         signal.signal(signal.SIGTERM, self._signal_handler)
 
     def _load_config(self, config_path: str) -> dict:
-        """Загружает конфиг с подстановкой переменных окружения"""
+        """Загружает конфиг с подстановкой переменных окружения и валидацией"""
         try:
             with open(config_path, 'r', encoding='utf-8') as f:
                 config = yaml.safe_load(f)
-            return self._expand_env_vars(config)
+            config = self._expand_env_vars(config)
+            # Валидация через pydantic-схему
+            try:
+                from jarvis.config_schema import validate_config
+                config = validate_config(config)
+            except ImportError:
+                self.logger.debug("config_schema не найден, пропускаю валидацию")
+            return config
         except Exception as e:
             print(f"❌ Ошибка загрузки конфига {config_path}: {e}")
             sys.exit(1)
@@ -154,14 +152,10 @@ class Jarvis:
         elif isinstance(obj, list):
             return [self._expand_env_vars(item) for item in obj]
         elif isinstance(obj, str):
-            # ${VAR} подстановка
-            import re
             for var in re.findall(r'\$\{([^}]+)\}', obj):
                 obj = obj.replace(f'${{{var}}}', os.getenv(var, ''))
-            # $HOME без скобок (но не $VAR в целом — только HOME)
             if '$HOME' in obj:
                 obj = obj.replace('$HOME', os.path.expanduser('~'))
-            # ~ в начале пути
             if obj.startswith('~/'):
                 obj = os.path.expanduser(obj)
             return obj
@@ -213,7 +207,6 @@ class Jarvis:
 
             self.logger.info("🧠 Инициализация LLM...")
             llm_cfg = self.config.get('llm', {})
-            # Подставляем информацию о платформе в system prompt
             platform_str = f"{self.platform.os}"
             if self.platform.distro:
                 platform_str += f"/{self.platform.distro}"
@@ -267,21 +260,19 @@ class Jarvis:
 
         self.logger.info(f"🎤 Wake word: {', '.join(all_wake)}")
 
-        # ── VAD-based wake word: rolling buffer ──
+        # VAD-based wake word: rolling buffer
         wake_buffer = []
         vad_enabled = self.config.get('vad', {}).get('enabled', False)
         use_vad_wake = (self.wake_mode == 'vad' and vad_enabled)
 
-        # ── Reminder manager ──
+        # Reminder manager (атрибут для shutdown)
         from jarvis.modules.reminder import ReminderManager
-        reminder_mgr = ReminderManager(on_trigger=self._on_reminder)
+        self.reminder_mgr = ReminderManager(on_trigger=self._on_reminder)
 
         while self.running:
             try:
-                # Показываем статус
                 if self.is_muted:
                     print(f"\r🔇 Режим тишины (скажи 'проснись')", end='', flush=True)
-                    # В режиме тишины слушаем только "проснись"
                     text = self._listen_for_unmute(phrase_limit, all_wake)
                     if text:
                         self.is_muted = False
@@ -289,10 +280,8 @@ class Jarvis:
                     continue
 
                 if self.continuous:
-                    # Continuous mode: слушаем всё подряд
                     text = self._listen_continuous(phrase_limit)
                 else:
-                    # Classic mode: ждём wake word
                     text = self._listen_with_wake(
                         phrase_limit, all_wake,
                         use_vad_wake, wake_buffer
@@ -303,20 +292,20 @@ class Jarvis:
 
                 self.logger.info(f"👤 Запрос: {text}")
 
-                # ── Обработка специальных маркеров ──
+                # Обработка специальных маркеров
                 response = self._process_special(text)
                 if response is not None:
                     if response:
                         self._speak(response)
                     continue
 
-                # ── Обработка запроса ──
+                # Обработка запроса
                 response = self.process_query(text)
 
                 if response:
                     self.logger.info(f"🤖 Джарвис: {response}")
 
-                # ── Multi-turn ──
+                # Multi-turn
                 if response and not self.continuous:
                     self._speak(response)
                     self.last_speech_time = time.time()
@@ -347,20 +336,14 @@ class Jarvis:
         Обрабатывает специальные маркеры из команд:
           __MUTE__, __UNMUTE__, __DICTATE__,
           __REMINDER__:..., __REMINDER_LIST__, __EXIT__
-
-        Returns:
-            Текст для озвучки или None (если не спец. маркер)
         """
         lower = text.lower().strip()
 
-        # Используем существующий executor вместо создания нового
-        from jarvis.modules.commands import CommandExecutor
-        if hasattr(self, 'commands') and hasattr(self.commands, 'executor'):
-            parsed = self.commands.executor._parse_voice_command(lower)
-        else:
-            executor = CommandExecutor({}, None)
-            parsed = executor._parse_voice_command(lower)
-        
+        if not hasattr(self, 'commands') or self.commands is None:
+            return None
+
+        parsed = self.commands.executor.parse_voice_command(lower)
+
         if parsed == '__MUTE__':
             self.is_muted = True
             return "Хорошо, сэр. Я замолкаю."
@@ -389,9 +372,8 @@ class Jarvis:
                 _, seconds_str, reminder_text = parts
                 try:
                     seconds = int(seconds_str)
-                    from jarvis.modules.reminder import ReminderManager
-                    mgr = ReminderManager(on_trigger=self._on_reminder)
-                    return mgr.add(reminder_text, seconds)
+                    if self.reminder_mgr:
+                        return self.reminder_mgr.add(reminder_text, seconds)
                 except ValueError:
                     pass
             return "Не удалось установить напоминание."
@@ -413,8 +395,9 @@ class Jarvis:
         try:
             import subprocess
             subprocess.Popen(
-                self.platform.notify('🔔 Напоминание JARVIS', text),
-                shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+                shlex.split(self.platform.notify('🔔 Напоминание JARVIS', text)),
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
             )
         except Exception:
             pass
@@ -430,7 +413,6 @@ class Jarvis:
             self.tts.speak(text)
 
     def _listen_for_unmute(self, phrase_limit: int, wake_words: list) -> Optional[str]:
-        """Слушает только для выхода из mute"""
         text = self._recognize(phrase_limit)
         if text:
             lower = text.lower()
@@ -441,7 +423,6 @@ class Jarvis:
 
     def _listen_with_wake(self, phrase_limit: int, wake_words: list,
                            use_vad_wake: bool, wake_buffer: list) -> Optional[str]:
-        """Слушает и ищет wake word"""
         if not self.verbose:
             print(f"\r💤 Жду 'джарвис'...", end='', flush=True)
 
@@ -449,7 +430,6 @@ class Jarvis:
         if not text:
             return None
 
-        # Wake word в тексте
         lower = text.lower()
         for wake in wake_words:
             if wake in lower:
@@ -459,38 +439,29 @@ class Jarvis:
 
                 if not query:
                     self._speak("Слушаю вас, сэр.")
-                    # Пробуем дослушать (иногда команда идёт с паузой)
                     retry = self._recognize(phrase_limit)
                     if retry:
                         return retry.lower()
-                    # Если тишина — возвращаем None, ждём следующего wake word
                     return None
                 return query
 
         return None
 
     def _listen_continuous(self, phrase_limit: int) -> Optional[str]:
-        """Слушает всё подряд, wake word не нужен"""
         if not self.verbose:
             print(f"\r🎤 Слушаю...", end='', flush=True)
         return self._recognize(phrase_limit)
 
     def _listen_follow_up(self, timeout: int, phrase_limit: int) -> Optional[str]:
-        """Слушает продолжение разговора (без wake word, с таймаутом)"""
         print(f"\r💬 Жду продолжение ({timeout}с)...", end='', flush=True)
         text = self._recognize(min(phrase_limit, timeout))
         if text:
             lower = text.lower()
-
-            # Если пользователь сказал wake word — это НОВАЯ команда,
-            # выходим из follow-up, пусть main loop перехватит
             all_wake = [self.config['stt'].get('wake_word', 'джарвис')] + self.config['stt'].get('wake_word_alternatives', [])
             for wake in all_wake:
                 if wake in lower:
                     self.logger.debug("⏭️ Follow-up прерван — новый wake word")
                     return None
-
-            # Чистим остаточный wake word из текста (если зацепился)
             for wake in all_wake:
                 if wake in lower:
                     cleaned = lower.replace(wake, '', 1).strip()
@@ -501,7 +472,6 @@ class Jarvis:
         return None
 
     def _recognize(self, phrase_limit: int) -> Optional[str]:
-        """Распознаёт речь с микрофона"""
         try:
             return self.stt.recognize_from_mic(
                 phrase_time_limit=phrase_limit,
@@ -512,27 +482,20 @@ class Jarvis:
             return None
 
     def _on_partial(self, text: str):
-        """Callback для partial результатов STT — вывод в реальном времени"""
         if self.verbose:
             self.logger.debug(f"📝 {text}")
         else:
-            # Затираем строку и показываем что распознаётся
-            cleaned = text[:60]  # обрезаем до 60 символов
+            cleaned = text[:60]
             print(f"\r🎤 {cleaned:<60}", end='', flush=True)
 
     def process_query(self, query: str) -> str:
         """Обрабатывает запрос пользователя — единый pipeline."""
-
-        # 1. Локальные команды (exact → fuzzy → pattern → app → voice)
         cmd_resp = self.commands.process(query)
         if cmd_resp is not None:
-            # Проверяем, не вернулся ли voice-маркер (должен быть отловлен
-            # в _process_special, но на всякий случай)
             if cmd_resp.startswith('__'):
                 return ""
             return cmd_resp if cmd_resp else "Готово, сэр."
 
-        # 2. LLM (если команда не найдена)
         try:
             return self.llm.chat(query) or ""
         except Exception as e:
@@ -542,6 +505,8 @@ class Jarvis:
     def shutdown(self):
         """Корректное завершение"""
         self.logger.info("🛑 Завершение...")
+        if self.reminder_mgr:
+            self.reminder_mgr.shutdown()
         self._speak("До свидания, сэр.")
         if self.stt:
             self.stt.close()
