@@ -59,14 +59,20 @@ jobs:
         with:
           python-version: "3.11"
       - name: Install system dependencies
-        run: brew install portaudio || true
+        run: |
+          brew install portaudio || true
       - name: Install Python dependencies
         run: |
           python -m venv venv
           source venv/bin/activate
-          pip install --upgrade pip setuptools
-          pip install -e ".[dev]"
+          pip install --upgrade pip setuptools wheel
+          pip install --retries 5 --timeout 120 -e ".[dev]"
+      - name: Debug info
+        run: |
+          echo "Python: $(python3 --version)"
+          echo "Pip: $(python3 -m pip --version)"
+          python3 -c "import sys; print(f'Arch: {sys.platform}')"
       - name: Run tests
         run: |
           source venv/bin/activate
-          python -m pytest tests/ -v -m "not slow"
+          python -m pytest tests/ -v -x --tb=long -m "not slow" 2>&1 | tail -100

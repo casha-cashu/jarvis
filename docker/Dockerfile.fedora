@@ -1,6 +1,8 @@
 FROM fedora:latest
 
-RUN dnf install -y \
+# Отключаем openh264 (403 forbidden на GitHub Actions) и ставим нужное
+RUN dnf config-manager --set-disabled fedora-cisco-openh264 2>/dev/null; \
+    dnf install -y --setopt=retries=5 \
         python3 \
         python3-pip \
         python3-devel \
@@ -8,7 +10,6 @@ RUN dnf install -y \
         libnotify \
         wtype \
         xdotool \
-        espeak-ng \
         git \
         gcc \
         make \
@@ -18,7 +19,7 @@ WORKDIR /app
 COPY . .
 
 RUN python3 -m venv venv && \
-    venv/bin/pip install --upgrade pip setuptools && \
-    venv/bin/pip install -e ".[dev]"
+    venv/bin/pip install --upgrade pip setuptools wheel && \
+    venv/bin/pip install --retries 5 --timeout 120 -e ".[dev]"
 
 CMD ["venv/bin/python", "-m", "pytest", "tests/", "-v", "-m", "not slow"]
