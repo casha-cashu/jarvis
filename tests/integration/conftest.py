@@ -1,5 +1,6 @@
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import time
@@ -56,8 +57,11 @@ def adapter(de_name: str):
 @pytest.fixture
 def run_cmd():
     def _run(cmd: str, timeout: int = 15) -> subprocess.CompletedProcess:
+        # Keep the string-in API for caller ergonomics, but execute via argv
+        # — no shell=True. Integration tests pass simple commands like
+        # "i3-msg workspace 1"; shlex.split is correct here.
         return subprocess.run(
-            cmd, shell=True, capture_output=True, text=True, timeout=timeout
+            shlex.split(cmd), capture_output=True, text=True, timeout=timeout
         )
 
     return _run

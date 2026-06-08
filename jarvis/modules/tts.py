@@ -4,13 +4,78 @@ Text-to-Speech module using Piper TTS
 Синтез речи (офлайн, быстрый)
 """
 
+import shutil
 import subprocess
 import tempfile
 import logging
 from pathlib import Path
 from typing import Optional
 
+from jarvis._env import sanitized_env
+
 logger = logging.getLogger(__name__)
+
+
+def _auto_detect_piper_lib_path() -> Optional[str]:
+    """Пробует найти libpiper.so / libonnxruntime.so без hardcoded Steam-пути.
+
+    Порядок проверки:
+      1. ldconfig -p — каноничный источник на glibc/Linux
+      2. Стандартные системные пути
+      3. Директория, где лежит бинарь piper (часто там же лежат и .so)
+      4. Hardcoded Steam Proton path (старый fallback, исторически
+         использовался на Arch/CachyOS)
+
+    Возвращает путь к директории, содержащей libpiper.so / libonnxruntime.so,
+    или None если ничего не нашли.
+    """
+    # 1. ldconfig
+    if shutil.which('ldconfig'):
+        try:
+            res = subprocess.run(
+                ['ldconfig', '-p'],
+                capture_output=True, text=True, timeout=3,
+                env=sanitized_env(),
+            )
+            for line in res.stdout.splitlines():
+                # Format: "libpiper.so (libc6,x86-64) => /usr/lib/libpiper.so"
+                if 'libpiper' in line or 'libonnxruntime' in line:
+                    if '=>' in line:
+                        so_path = line.split('=>', 1)[1].strip()
+                        parent = str(Path(so_path).parent)
+                        logger.info(f"🔍 piper lib found via ldconfig: {parent}")
+                        return parent
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+            pass
+
+    # 2. Стандартные пути
+    candidates = [
+        Path('/usr/lib'),
+        Path('/usr/local/lib'),
+        Path('/usr/lib/x86_64-linux-gnu'),
+        Path('/usr/local/lib/x86_64-linux-gnu'),
+        Path('/opt/piper/lib'),
+    ]
+    # 3. Папка piper-бинаря
+    piper_bin = shutil.which('piper')
+    if piper_bin:
+        candidates.insert(0, Path(piper_bin).parent)
+
+    for d in candidates:
+        if not d.is_dir():
+            continue
+        if any((d / name).exists() for name in
+               ('libpiper.so', 'libonnxruntime.so', 'libonnxruntime.so.1')):
+            logger.info(f"🔍 piper lib found in standard path: {d}")
+            return str(d)
+
+    # 4. Steam Proton — историческая совместимость
+    steam = Path('/usr/share/steam/compatibilitytools.d/proton-ge-custom/files/lib/x86_64-linux-gnu')
+    if steam.is_dir():
+        logger.info(f"🔍 piper lib falling back to Steam path: {steam}")
+        return str(steam)
+
+    return None
 
 
 class PiperTTS:
@@ -36,9 +101,25 @@ class PiperTTS:
         """
         self.model_path = Path(model_path)
         self.binary_path = binary_path
-        self.lib_path = lib_path
         self.speaker_id = speaker_id
         self.length_scale = length_scale
+
+        # P13: lib_path может быть не задан или указывать на несуществующий
+        # путь (как старый Steam Proton в дефолтном config.yaml). Пробуем
+        # авто-детект перед тем как сдаваться.
+        if lib_path and Path(lib_path).is_dir():
+            self.lib_path = lib_path
+        else:
+            detected = _auto_detect_piper_lib_path()
+            if detected:
+                self.lib_path = detected
+            else:
+                if lib_path:
+                    logger.warning(
+                        "lib_path %s не существует и авто-детект ничего не нашёл; "
+                        "piper попробует системный loader", lib_path,
+                    )
+                self.lib_path = None
 
         # Проверяем модель
         if not self.model_path.exists():
@@ -72,16 +153,19 @@ class PiperTTS:
             logger.warning(f"⚠️ Ошибка проверки Piper: {e}")
 
     def _get_env(self):
-        """Возвращает окружение с LD_LIBRARY_PATH для piper"""
+        """Возвращает sanitized env + LD_LIBRARY_PATH для piper.
+
+        ``sanitized_env`` гарантирует, что API ключи (ANTHROPIC_API_KEY,
+        OPENROUTER_API_KEY, …) НЕ попадают в окружение piper-процесса.
+        """
         import os
-        env = os.environ.copy()
+        extra = {}
         if self.lib_path:
-            current_ld = env.get('LD_LIBRARY_PATH', '')
-            if current_ld:
-                env['LD_LIBRARY_PATH'] = f"{self.lib_path}:{current_ld}"
-            else:
-                env['LD_LIBRARY_PATH'] = self.lib_path
-        return env
+            current_ld = os.environ.get('LD_LIBRARY_PATH', '')
+            extra['LD_LIBRARY_PATH'] = (
+                f"{self.lib_path}:{current_ld}" if current_ld else self.lib_path
+            )
+        return sanitized_env(extra=extra)
 
     def speak(self, text: str, output_file: Optional[str] = None, play: bool = True) -> bool:
         """
@@ -180,7 +264,8 @@ class PiperTTS:
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                     timeout=30,
-                    check=True
+                    check=True,
+                    env=sanitized_env(),
                 )
                 return
             except (FileNotFoundError, subprocess.TimeoutExpired, subprocess.CalledProcessError):
@@ -209,43 +294,46 @@ class GTTSFallback:
         if not self.gTTS or not text.strip():
             return False
 
+        # Создаём директорию если не существует
+        temp_dir = Path('/tmp/jarvis')
+        temp_dir.mkdir(parents=True, exist_ok=True)
+
+        temp_file = tempfile.NamedTemporaryFile(
+            suffix='.mp3',
+            delete=False,
+            dir=temp_dir,
+        )
+        temp_path = Path(temp_file.name)
+        temp_file.close()
+
+        # P17: cleanup в finally — раньше leak случался при двух сценариях:
+        # (1) play=False (см. старую реализацию) — cleanup был внутри
+        #     if play и не вызывался,
+        # (2) исключение в gTTS.save / mpv — cleanup пропускался по обычному
+        #     потоку и обрывался except'ом.
         try:
-            # Создаём директорию если не существует
-            temp_dir = Path('/tmp/jarvis')
-            temp_dir.mkdir(parents=True, exist_ok=True)
-
-            temp_file = tempfile.NamedTemporaryFile(
-                suffix='.mp3',
-                delete=False,
-                dir=temp_dir
-            )
-            temp_path = Path(temp_file.name)
-            temp_file.close()
-
-            # Генерируем
             tts = self.gTTS(text=text, lang=self.lang, slow=self.slow)
             tts.save(str(temp_path))
 
-            # Воспроизводим
             if play:
                 subprocess.run(
                     ['mpv', '--really-quiet', str(temp_path)],
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
-                    timeout=30
+                    timeout=30,
+                    env=sanitized_env(),
                 )
-
-            # Удаляем
-            try:
-                temp_path.unlink()
-            except:
-                pass
 
             return True
 
         except Exception as e:
             logger.error(f"❌ Ошибка gTTS: {e}")
             return False
+        finally:
+            try:
+                temp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
 class SpeechT5TTS:
@@ -278,7 +366,14 @@ class SpeechT5TTS:
 
     def _load_models(self):
         """Lazy loading моделей — вызывается при первом speak()"""
-        self.logger.info(f"🎙️ Загрузка SpeechT5: {self.model_name}")
+        # P16: предупреждаем пользователя ДО блокирующего скачивания.
+        # Без этого UX выглядит как «ассистент завис» на 30+ секунд
+        # при первом обращении (модели весят ~500MB).
+        self.logger.info(
+            "🎙️ Загрузка SpeechT5 (~500MB)... первый запуск может занять минуту, "
+            "после кеша HuggingFace будет мгновенно."
+        )
+        print("🎙️ Загружаю SpeechT5 (~500MB)... подождите, сэр.", flush=True)
 
         try:
             import torch
@@ -349,7 +444,8 @@ class SpeechT5TTS:
                 for cmd in players:
                     try:
                         subprocess.run(cmd, stdout=subprocess.DEVNULL,
-                                       stderr=subprocess.DEVNULL, timeout=30, check=True)
+                                       stderr=subprocess.DEVNULL, timeout=30,
+                                       check=True, env=sanitized_env())
                         break
                     except (FileNotFoundError, subprocess.TimeoutExpired,
                             subprocess.CalledProcessError):

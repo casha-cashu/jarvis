@@ -11,6 +11,8 @@ import subprocess
 import logging
 from typing import Optional, Tuple
 
+from jarvis._env import sanitized_env
+
 logger = logging.getLogger(__name__)
 
 
@@ -74,72 +76,122 @@ def detect_distro() -> Optional[str]:
     return 'unknown'
 
 
-def detect_de() -> str:
+def _detect_de_from_env() -> Optional[str]:
+    """Шаг 1: XDG_CURRENT_DESKTOP / DESKTOP_SESSION / *_INSTANCE_SIGNATURE."""
+    desktop = os.environ.get('XDG_CURRENT_DESKTOP', '').lower()
+    session = os.environ.get('DESKTOP_SESSION', '').lower()
+    if 'hyprland' in desktop or 'hyprland' in session or os.environ.get('HYPRLAND_INSTANCE_SIGNATURE'):
+        return 'hyprland'
+    if 'kde' in desktop or 'plasma' in desktop:
+        return 'kde'
+    if 'gnome' in desktop:
+        return 'gnome'
+    if 'i3' in session or 'i3' in desktop or os.environ.get('I3SOCK'):
+        return 'i3'
+    if 'sway' in session or 'sway' in desktop or os.environ.get('SWAYSOCK'):
+        return 'sway'
+    return None
+
+
+def _detect_de_from_session() -> Optional[str]:
+    """Шаг 2: ``loginctl show-session`` — DesktopName=… (systemd-only)."""
+    try:
+        result = subprocess.run(
+            ['loginctl', 'show-session'],
+            capture_output=True, text=True, timeout=2,
+            env=sanitized_env(),
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return None
+    if result.returncode != 0:
+        return None
+    for line in result.stdout.splitlines():
+        if '=' not in line:
+            continue
+        k, _, v = line.partition('=')
+        if k.strip().lower() == 'desktopname':
+            name = v.strip().lower()
+            for de in ('i3', 'sway', 'hyprland', 'kde', 'plasma', 'gnome'):
+                if de in name:
+                    return 'kde' if de == 'plasma' else de
+    return None
+
+
+def _detect_de_from_process_list(processes: Optional[list[str]] = None) -> Optional[str]:
+    """Шаг 3: ``ps aux``. Тестируемо — accept actual_processes."""
+    if processes is None:
+        try:
+            result = subprocess.run(
+                ['ps', 'aux'],
+                capture_output=True, text=True, timeout=2,
+                env=sanitized_env(),
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as e:
+            logger.debug(f"ps aux failed: {e}")
+            return None
+        processes = result.stdout.lower().splitlines()
+    else:
+        processes = [p.lower() for p in processes]
+
+    lines = '\n'.join(processes)
+    # Order matters: more specific markers first.
+    if 'hyprland' in lines:
+        return 'hyprland'
+    if 'plasmashell' in lines or 'startplasma' in lines or 'kwin' in lines:
+        return 'kde'
+    if 'gnome-shell' in lines:
+        return 'gnome'
+    if 'windowserver' in lines:
+        return 'macos'
+    # i3 / sway: оба содержат подстроку "i3" в имени бинаря (sway тоже
+    # запускает swaybar/swayidle). Проверяем sway первым — sway-сервер
+    # называется "sway".
+    if any('sway' in p for p in processes):
+        return 'sway'
+    if any(
+        ('i3' in p) and ('i3status' not in p) and ('i3blocks' not in p) and ('i3bar' not in p)
+        for p in processes
+    ):
+        return 'i3'
+    return None
+
+
+def detect_de(actual_processes: Optional[list[str]] = None) -> str:
     """
-    Определяет desktop environment или window manager
+    Определяет desktop environment или window manager.
+
+    Args:
+        actual_processes: Для тестов — мок-список процессов (как из ps aux).
+            Если задан, тесты только process-list ветку (env/loginctl
+            пропускаются, чтобы не зависеть от окружения теста).
 
     Returns:
-        'hyprland', 'kde', 'gnome', 'i3', 'sway', 'macos', или 'unknown'
+        'hyprland', 'kde', 'gnome', 'i3', 'sway', 'macos', или 'unknown'.
     """
-    os_type = detect_os()
+    # Test mode — только process-list, без зависимости от env.
+    if actual_processes is not None:
+        result = _detect_de_from_process_list(actual_processes)
+        return result or 'unknown'
 
+    os_type = detect_os()
     if os_type == 'macos':
         return 'macos'
-
     if os_type != 'linux':
         return 'unknown'
 
-    # Проверяем переменные окружения
-    desktop = os.environ.get('XDG_CURRENT_DESKTOP', '').lower()
-    session = os.environ.get('DESKTOP_SESSION', '').lower()
-    wayland_display = os.environ.get('WAYLAND_DISPLAY', '')
-
-    # Hyprland
-    if 'hyprland' in desktop or 'hyprland' in session:
-        return 'hyprland'
-    if os.environ.get('HYPRLAND_INSTANCE_SIGNATURE'):
-        return 'hyprland'
-
-    # KDE
-    if 'kde' in desktop or 'plasma' in desktop:
-        return 'kde'
-
-    # GNOME
-    if 'gnome' in desktop:
-        return 'gnome'
-
-    # i3
-    if 'i3' in session or os.environ.get('I3SOCK'):
-        return 'i3'
-
-    # Sway
-    if 'sway' in session or os.environ.get('SWAYSOCK'):
-        return 'sway'
-
-    # Проверяем запущенные процессы
-    try:
-        result = subprocess.run(
-            ['ps', 'aux'],
-            capture_output=True,
-            text=True,
-            timeout=2
-        )
-        processes = result.stdout.lower()
-
-        if 'hyprland' in processes:
-            return 'hyprland'
-        elif 'kwin' in processes or 'plasmashell' in processes:
-            return 'kde'
-        elif 'gnome-shell' in processes:
-            return 'gnome'
-        elif 'i3' in processes and 'sway' not in processes:
-            return 'i3'
-        elif 'sway' in processes:
-            return 'sway'
-
-    except Exception as e:
-        logger.warning(f"Ошибка определения DE: {e}")
-
+    # P7: fallback chain env → loginctl → ps. Каждый шаг graceful'но
+    # возвращает None если источник недоступен (например в Docker нет
+    # /proc, нет loginctl на musl-distro и т.д.).
+    for source in (_detect_de_from_env,
+                   _detect_de_from_session,
+                   _detect_de_from_process_list):
+        try:
+            de = source()
+        except Exception as e:
+            logger.debug(f"detect_de step {source.__name__} failed: {e}")
+            de = None
+        if de:
+            return de
     return 'unknown'
 
 

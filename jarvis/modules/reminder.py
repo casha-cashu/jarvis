@@ -14,6 +14,8 @@ import subprocess
 from pathlib import Path
 from typing import Optional, Callable
 
+from jarvis._env import sanitized_env
+
 logger = logging.getLogger(__name__)
 
 REMINDERS_FILE = Path.home() / '.local' / 'share' / 'jarvis' / 'reminders.json'
@@ -113,6 +115,10 @@ class ReminderManager:
     def __init__(self, on_trigger: Optional[Callable] = None):
         self.on_trigger = on_trigger or self._default_trigger
         self.timers: list = []
+        # P3: timers мутируется из main thread (add) и timer threads
+        # (_fire -> _cleanup_fired_timers). Без lock'а получаем гонку:
+        # list изменяется во время iteration -> RuntimeError.
+        self._lock = threading.Lock()
         self._load_active()
 
     def _default_trigger(self, text: str):
@@ -120,7 +126,7 @@ class ReminderManager:
             subprocess.run([
                 'notify-send', '-u', 'critical',
                 '🔔 Напоминание', text
-            ], timeout=3)
+            ], timeout=3, env=sanitized_env())
         except Exception:
             pass
         print(f"\n⏰ Напоминание: {text}")
@@ -134,7 +140,8 @@ class ReminderManager:
                 t = threading.Timer(remaining, self._fire, args=[r])
                 t.daemon = True
                 t.start()
-                self.timers.append(t)
+                with self._lock:
+                    self.timers.append(t)
                 logger.info(f"⏰ Напоминание загружено: «{r['text']}» через {int(remaining)}с")
             else:
                 logger.debug(f"⏰ Просроченное напоминание удалено: {r['text']}")
@@ -147,13 +154,12 @@ class ReminderManager:
 
     def _cleanup_fired_timers(self):
         """Удаляет сработавшие и отменённые таймеры из списка"""
-        active = []
-        for t in self.timers:
-            if t.is_alive():
-                active.append(t)
-            else:
-                logger.debug(f"⏰ Таймер {t} удалён из списка")
-        self.timers = active
+        with self._lock:
+            active = [t for t in self.timers if t.is_alive()]
+            removed = len(self.timers) - len(active)
+            self.timers = active
+        if removed:
+            logger.debug(f"⏰ Удалено {removed} неактивных таймеров")
 
     def _fire(self, reminder: dict):
         text = reminder['text']
@@ -180,7 +186,8 @@ class ReminderManager:
         t = threading.Timer(seconds, self._fire, args=[reminder])
         t.daemon = True
         t.start()
-        self.timers.append(t)
+        with self._lock:
+            self.timers.append(t)
 
         time_str = self._format_time(seconds)
         logger.info(f"⏰ Напоминание установлено: «{text}» через {time_str}")
@@ -205,14 +212,15 @@ class ReminderManager:
         logger.info("⏰ Shutdown ReminderManager...")
 
         cancelled = 0
-        for t in self.timers:
-            if t.is_alive():
-                t.cancel()
-                cancelled += 1
+        with self._lock:
+            for t in self.timers:
+                if t.is_alive():
+                    t.cancel()
+                    cancelled += 1
+            self.timers.clear()
 
         now = time.time()
         reminders = [r for r in _load_reminders() if r['time'] > now]
         _save_reminders(reminders)
 
-        self.timers.clear()
         logger.info(f"⏰ ReminderManager shutdown: отменено {cancelled} таймеров, сохранено {len(reminders)} напоминаний")

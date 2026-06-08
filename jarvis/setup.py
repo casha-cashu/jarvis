@@ -7,6 +7,8 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from jarvis._env import sanitized_env
+
 
 def _check_installed(cmd: str) -> bool:
     """Проверяет что команда установлена"""
@@ -59,7 +61,8 @@ def step_models():
         print(f"     ⚠️  Vosk модель не найдена в {vosk_dir}")
         if _prompt_yes_no("Скачать Vosk модель (~45MB)?"):
             subprocess.run([sys.executable, 'setup.py', 'download-models'],
-                           cwd=Path(__file__).parent.parent)
+                           cwd=Path(__file__).parent.parent,
+                           env=sanitized_env())
 
     if piper_dir.exists() and list(piper_dir.iterdir()):
         print(f"     ✅ Piper: {piper_dir}")
@@ -67,7 +70,8 @@ def step_models():
         print(f"     ⚠️  Piper модель не найдена в {piper_dir}")
         if _prompt_yes_no("Скачать Piper голос Dmitri (~50MB)?"):
             subprocess.run([sys.executable, '-m', 'jarvis', 'voice', 'download', 'ru_RU-dmitri-medium'],
-                           cwd=Path(__file__).parent.parent)
+                           cwd=Path(__file__).parent.parent,
+                           env=sanitized_env())
 
 
 def step_python_deps():

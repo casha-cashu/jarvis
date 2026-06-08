@@ -128,9 +128,8 @@ def select_provider_interactive(config: dict) -> Tuple[str, dict]:
 
             model = _pick_model(models, "  👉 Выбери модель")
 
-            if api_key:
-                os.environ['KIRO_API_KEY'] = api_key
-
+            # api_key уезжает в override (и затем в Jarvis(provider_config=))
+            # — не пишем в os.environ, чтобы ключ не утёк в child subprocess'ы.
             override = {
                 'base_url': url,
                 'api_key': api_key,
@@ -157,7 +156,7 @@ def select_provider_interactive(config: dict) -> Tuple[str, dict]:
             ]
             model = _pick_model(anthro_models, "  👉 Выбери модель Claude")
 
-            os.environ['ANTHROPIC_API_KEY'] = api_key
+            # См. комментарий выше — не пишем ключ в os.environ.
             override = {
                 'api_key': api_key,
                 'model': model,

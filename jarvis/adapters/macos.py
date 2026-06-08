@@ -3,7 +3,17 @@
 macOS adapter - commands for macOS
 """
 
+import os
+import shlex
+from datetime import datetime
+
 from .base import BaseAdapter
+
+
+def _screenshot_path() -> str:
+    return os.path.expanduser(
+        f"~/Pictures/screenshot-{datetime.now():%Y%m%d-%H%M%S}.png"
+    )
 
 
 class MacOSAdapter(BaseAdapter):
@@ -49,15 +59,16 @@ class MacOSAdapter(BaseAdapter):
     def window_prev(self) -> str:
         return "osascript -e 'tell application \"System Events\" to keystroke \"`\" using {command down, shift down}'"
 
-    # Screenshots
+    # Screenshots — раскрываем ~ и timestamp здесь, иначе shell=False
+    # не распарсит $(date ...).
     def screenshot_screen(self) -> str:
-        return "screencapture -c ~/Pictures/screenshot-$(date +%Y%m%d-%H%M%S).png"
+        return f"screencapture -c {shlex.quote(_screenshot_path())}"
 
     def screenshot_area(self) -> str:
-        return "screencapture -i ~/Pictures/screenshot-$(date +%Y%m%d-%H%M%S).png"
+        return f"screencapture -i {shlex.quote(_screenshot_path())}"
 
     def screenshot_window(self) -> str:
-        return "screencapture -w ~/Pictures/screenshot-$(date +%Y%m%d-%H%M%S).png"
+        return f"screencapture -w {shlex.quote(_screenshot_path())}"
 
     # Audio control
     def volume_up(self, amount: int = 5) -> str:

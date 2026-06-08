@@ -18,7 +18,18 @@ import logging
 import urllib.parse
 from pathlib import Path
 from typing import Optional, Dict, Tuple
-from difflib import SequenceMatcher
+
+# P12: rapidfuzz — C-extension, ~10-100x быстрее SequenceMatcher
+# на типичных размерах словарей команд. Используем fuzz.ratio (0-100)
+# и нормализуем в [0, 1] для обратной совместимости с порогами в конфиге.
+try:
+    from rapidfuzz import fuzz as _rf_fuzz
+    _HAVE_RAPIDFUZZ = True
+except ImportError:
+    from difflib import SequenceMatcher  # graceful fallback
+    _HAVE_RAPIDFUZZ = False
+
+from jarvis._env import sanitized_env
 
 from .platform_adapter import PlatformAdapter
 
@@ -100,11 +111,13 @@ class CommandExecutor:
         pc["следующее окно"]     = {"cmd": self.platform.window_next(),       "say": "Следующее"}
         pc["предыдущее окно"]    = {"cmd": self.platform.window_prev(),       "say": "Предыдущее"}
 
-        # Скриншоты
-        pc["скриншот"]           = {"cmd": self.platform.screenshot_screen(), "say": "Скриншот"}
-        pc["скриншот экрана"]    = {"cmd": self.platform.screenshot_screen(), "say": "Скриншот экрана"}
-        pc["скриншот области"]   = {"cmd": self.platform.screenshot_area(),   "say": "Выберите область"}
-        pc["скриншот окна"]      = {"cmd": self.platform.screenshot_window(), "say": "Скриншот окна"}
+        # Скриншоты — храним ссылки на методы (callable), а не результаты.
+        # Иначе timestamp в имени файла «замораживается» на момент старта
+        # и каждый новый скриншот перезаписывает предыдущий.
+        pc["скриншот"]           = {"cmd": self.platform.screenshot_screen, "say": "Скриншот"}
+        pc["скриншот экрана"]    = {"cmd": self.platform.screenshot_screen, "say": "Скриншот экрана"}
+        pc["скриншот области"]   = {"cmd": self.platform.screenshot_area,   "say": "Выберите область"}
+        pc["скриншот окна"]      = {"cmd": self.platform.screenshot_window, "say": "Скриншот окна"}
 
         # Звук
         pc["громче"]             = {"cmd": self.platform.volume_up(5),   "say": "Громче"}
@@ -128,6 +141,8 @@ class CommandExecutor:
     # ── Matching ──────────────────────────────────────────────
 
     def _fuzzy_score(self, a: str, b: str) -> float:
+        if _HAVE_RAPIDFUZZ:
+            return _rf_fuzz.ratio(a.lower(), b.lower()) / 100.0
         return SequenceMatcher(None, a.lower(), b.lower()).ratio()
 
     def _best_fuzzy(self, query: str, candidates: dict) -> Optional[Tuple[str, dict]]:
@@ -225,9 +240,20 @@ class CommandExecutor:
 
     # ── Исполнение ────────────────────────────────────────────
 
-    def _run(self, cmd: str):
-        """Запускает команду через subprocess (shell=False)."""
+    def _run(self, cmd):
+        """Запускает команду через subprocess (shell=False).
+
+        ``cmd`` может быть строкой или callable -> str. Callable вычисляется
+        в момент исполнения — это нужно для команд, у которых часть аргументов
+        зависит от runtime-состояния (timestamp скриншота, geom от slurp).
+        Пустая строка после вычисления означает «нечего запускать» (например,
+        пользователь отменил выбор области) и тихо пропускается.
+        """
         try:
+            if callable(cmd):
+                cmd = cmd()
+            if not cmd:
+                return
             logger.info(f"🔧 Выполняю: {cmd}")
             # shlex.split корректно парсит команды с кавычками
             # (notify-send 'title' 'message', date '+%H:%M', etc.)
@@ -237,6 +263,7 @@ class CommandExecutor:
                 shlex.split(cmd),
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
+                env=sanitized_env(),
             )
         except Exception as e:
             logger.error(f"❌ Ошибка выполнения: {e}")

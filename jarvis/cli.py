@@ -27,6 +27,8 @@ import argparse
 import subprocess
 from pathlib import Path
 
+from jarvis._env import sanitized_env
+
 
 def cmd_run(args):
     """Запуск голосового ассистента"""
@@ -206,7 +208,8 @@ def _has_systemd() -> bool:
     try:
         import subprocess
         r = subprocess.run(['systemctl', '--version'],
-                          capture_output=True, timeout=3)
+                          capture_output=True, timeout=3,
+                          env=sanitized_env())
         return r.returncode == 0
     except Exception:
         return False
@@ -240,7 +243,8 @@ WantedBy=default.target
         unit_dir.mkdir(parents=True, exist_ok=True)
         unit_path = unit_dir / 'jarvis.service'
         unit_path.write_text(unit_content)
-        subprocess.run(['systemctl', '--user', 'daemon-reload'], capture_output=True)
+        subprocess.run(['systemctl', '--user', 'daemon-reload'],
+                       capture_output=True, env=sanitized_env())
         print(f"✅ systemd unit установлен: {unit_path}")
         print("   Запуск: systemctl --user start jarvis")
         print("   Автостарт: systemctl --user enable jarvis")
@@ -249,16 +253,20 @@ WantedBy=default.target
     elif args.action == 'remove':
         unit_path = Path.home() / '.config' / 'systemd' / 'user' / 'jarvis.service'
         if unit_path.exists():
-            subprocess.run(['systemctl', '--user', 'stop', 'jarvis'], capture_output=True)
-            subprocess.run(['systemctl', '--user', 'disable', 'jarvis'], capture_output=True)
+            subprocess.run(['systemctl', '--user', 'stop', 'jarvis'],
+                           capture_output=True, env=sanitized_env())
+            subprocess.run(['systemctl', '--user', 'disable', 'jarvis'],
+                           capture_output=True, env=sanitized_env())
             unit_path.unlink()
-            subprocess.run(['systemctl', '--user', 'daemon-reload'], capture_output=True)
+            subprocess.run(['systemctl', '--user', 'daemon-reload'],
+                           capture_output=True, env=sanitized_env())
             print(f"✅ Сервис удалён")
         else:
             print(f"❌ Сервис не найден")
 
     elif args.action == 'status':
-        subprocess.run(['systemctl', '--user', 'status', 'jarvis'])
+        subprocess.run(['systemctl', '--user', 'status', 'jarvis'],
+                       env=sanitized_env())
 
 
 def main():
