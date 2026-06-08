@@ -1,20 +1,22 @@
 FROM archlinux:latest
 
-RUN pacman -Syu --noconfirm && \
-    pacman -S --noconfirm \
+# Обновляем ключи и ставим пакеты за один проход (экономит ~1 мин двойного sync)
+RUN pacman-key --init && pacman-key --populate archlinux && \
+    pacman -Sy --noconfirm --needed \
         base-devel \
         python \
         python-pip \
         portaudio \
         wtype \
         xdotool \
-        git
+        git \
+    && pacman -Scc --noconfirm
 
 WORKDIR /app
 COPY . .
 
 RUN python -m venv venv && \
-    venv/bin/pip install --upgrade pip setuptools && \
-    venv/bin/pip install -e ".[dev]"
+    venv/bin/pip install --upgrade pip setuptools wheel && \
+    venv/bin/pip install --retries 5 --timeout 120 -e ".[dev]"
 
 CMD ["venv/bin/python", "-m", "pytest", "tests/", "-v", "-m", "not slow"]

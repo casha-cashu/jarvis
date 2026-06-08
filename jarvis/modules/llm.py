@@ -293,7 +293,14 @@ class OllamaClient(LLMClient):
 
 
 class LLMManager:
-    """Менеджер LLM с автоматическим fallback"""
+    """Менеджер LLM с автоматическим fallback и LRU-кэшем повторных запросов."""
+
+    # P9: для streaming запросов кэш бессмыслен (callback увидит частичные
+    # токены ОДИН раз), поэтому ключ — только текст. История разговора
+    # на ответ влияет, но для часто повторяющихся «как тебя зовут» / «какой
+    # сейчас час» кэш экономит API-вызовы. Если важна точность контекста,
+    # вызывающий код может игнорировать кэш через ``cached=False``.
+    _CACHE_MAXSIZE = 128
 
     def __init__(self, config: dict):
         """
@@ -303,6 +310,7 @@ class LLMManager:
         self.config = config
         self.provider = config.get('provider', 'kiro')
         self.clients = {}
+        self._cache: "OrderedDict[str, str]" = __import__('collections').OrderedDict()
 
         # Инициализируем клиенты
         self._init_clients()
@@ -348,13 +356,15 @@ class LLMManager:
         if not self.clients:
             raise RuntimeError("❌ Ни один LLM провайдер не доступен")
 
-    def chat(self, message: str, stream_callback=None) -> str:
+    def chat(self, message: str, stream_callback=None, cached: bool = True) -> str:
         """
         Отправляет сообщение в LLM
 
         Args:
             message: Сообщение пользователя
             stream_callback: Функция для streaming (опционально)
+            cached: использовать ли LRU-кэш для повторных вопросов (по умолч. да).
+                Авто-выключается при streaming — там кэш сломал бы UX.
 
         Returns:
             Ответ LLM
@@ -362,24 +372,42 @@ class LLMManager:
         if not self.primary:
             return "Извините, сэр, ИИ недоступен."
 
+        # Streaming кэшу не подлежит — callback должен видеть токены.
+        use_cache = cached and stream_callback is None
+        cache_key = message.strip().lower() if use_cache else None
+
+        if use_cache and cache_key in self._cache:
+            # LRU touch
+            self._cache.move_to_end(cache_key)
+            logger.debug(f"💾 LLM cache hit: {cache_key[:40]}")
+            return self._cache[cache_key]
+
         try:
             kwargs = {}
             if stream_callback is not None:
                 kwargs['stream_callback'] = stream_callback
-            return self.primary.chat(message, **kwargs)
+            response = self.primary.chat(message, **kwargs)
         except Exception as e:
             logger.error(f"❌ Ошибка LLM: {e}")
-
+            response = None
             # Пробуем fallback (без streaming)
             for name, client in self.clients.items():
-                if client != self.primary:
-                    try:
-                        logger.info(f"🔄 Пробую fallback: {name}")
-                        return client.chat(message)
-                    except:
-                        continue
+                if client is self.primary:
+                    continue
+                try:
+                    logger.info(f"🔄 Пробую fallback: {name}")
+                    response = client.chat(message)
+                    break
+                except Exception:
+                    continue
+            if response is None:
+                return "Извините, сэр, все ИИ системы недоступны."
 
-            return "Извините, сэр, все ИИ системы недоступны."
+        if use_cache and response:
+            self._cache[cache_key] = response
+            while len(self._cache) > self._CACHE_MAXSIZE:
+                self._cache.popitem(last=False)
+        return response
 
     def clear_history(self):
         """Очищает историю всех клиентов"""

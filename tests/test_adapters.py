@@ -3,6 +3,8 @@
 """
 
 import inspect
+from datetime import datetime
+
 import pytest
 from jarvis.adapters.base import BaseAdapter
 
@@ -123,6 +125,29 @@ class TestNewMethods:
             assert "reboot" in result.lower() or "restart" in result.lower()
         else:
             assert "restart" in result.lower()
+
+    @pytest.mark.parametrize("adapter_name", ALL_ADAPTERS)
+    def test_screenshot_path_is_resolved_per_call(self, adapter_name):
+        """Каждый вызов screenshot_screen должен возвращать строку без shell
+        substitutions ($(date), ~) — иначе shell=False создаст файл с
+        литералом '$(date...)' в имени, и screenshot не сохранится."""
+        import re
+        adapter = _get_adapter(adapter_name)
+        result = adapter.screenshot_screen()
+        # Команды могут вернуть "" если внешний инструмент отсутствует
+        # (sway/slurp на macOS) — это допустимо.
+        if not result:
+            return
+        assert "$(date" not in result, f"{adapter_name} leaks $(date) — shell=False won't expand it"
+        assert not re.search(r"(^|\s)~/", result), (
+            f"{adapter_name} leaks ~ — shell=False won't expand it"
+        )
+        # И сам timestamp должен присутствовать в имени файла, если адаптер
+        # пишет в файл (некоторые, как hyprland's grimblast и kde's spectacle,
+        # сами генерируют имя и timestamp в команде не нужен).
+        if any(tool in result for tool in ("scrot", "grim ", "gnome-screenshot", "screencapture")):
+            today = datetime.now().strftime("%Y%m%d")
+            assert today in result, f"{adapter_name} screenshot path missing today's date"
 
     @pytest.mark.parametrize("adapter_name", ALL_ADAPTERS)
     def test_system_shutdown(self, adapter_name):

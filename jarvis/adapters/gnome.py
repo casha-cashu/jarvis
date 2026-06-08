@@ -3,7 +3,17 @@
 GNOME adapter - commands for GNOME Shell (Mutter)
 """
 
+import os
+import shlex
+from datetime import datetime
+
 from .base import BaseAdapter
+
+
+def _screenshot_path() -> str:
+    return os.path.expanduser(
+        f"~/Pictures/screenshot-{datetime.now():%Y%m%d-%H%M%S}.png"
+    )
 
 
 class GNOMEAdapter(BaseAdapter):
@@ -47,15 +57,16 @@ class GNOMEAdapter(BaseAdapter):
     def window_prev(self) -> str:
         return "gdbus call --session --dest org.gnome.Shell --object-path /org/gnome/Shell --method org.gnome.Shell.Eval 'Main.activateWindow(global.display.get_tab_list(Meta.TabList.NORMAL, null).reverse()[1])'"
 
-    # Screenshots
+    # Screenshots — раскрываем ~ и timestamp здесь, иначе shell=False
+    # не распарсит $(date ...).
     def screenshot_screen(self) -> str:
-        return "gnome-screenshot -f ~/Pictures/screenshot-$(date +%Y%m%d-%H%M%S).png"
+        return f"gnome-screenshot -f {shlex.quote(_screenshot_path())}"
 
     def screenshot_area(self) -> str:
-        return "gnome-screenshot -a -f ~/Pictures/screenshot-$(date +%Y%m%d-%H%M%S).png"
+        return f"gnome-screenshot -a -f {shlex.quote(_screenshot_path())}"
 
     def screenshot_window(self) -> str:
-        return "gnome-screenshot -w -f ~/Pictures/screenshot-$(date +%Y%m%d-%H%M%S).png"
+        return f"gnome-screenshot -w -f {shlex.quote(_screenshot_path())}"
 
     # Audio control
     def volume_up(self, amount: int = 5) -> str:

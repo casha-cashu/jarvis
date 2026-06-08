@@ -3,7 +3,17 @@
 i3 adapter - commands for i3 window manager
 """
 
+import os
+import shlex
+from datetime import datetime
+
 from .base import BaseAdapter
+
+
+def _screenshot_path() -> str:
+    return os.path.expanduser(
+        f"~/Pictures/screenshot-{datetime.now():%Y%m%d-%H%M%S}.png"
+    )
 
 
 class I3Adapter(BaseAdapter):
@@ -45,15 +55,16 @@ class I3Adapter(BaseAdapter):
     def window_prev(self) -> str:
         return "i3-msg focus prev"
 
-    # Screenshots
+    # Screenshots — раскрываем ~ и timestamp здесь, иначе shell=False
+    # не распарсит $(date ...).
     def screenshot_screen(self) -> str:
-        return "scrot ~/Pictures/screenshot-$(date +%Y%m%d-%H%M%S).png"
+        return f"scrot {shlex.quote(_screenshot_path())}"
 
     def screenshot_area(self) -> str:
-        return "scrot -s ~/Pictures/screenshot-$(date +%Y%m%d-%H%M%S).png"
+        return f"scrot -s {shlex.quote(_screenshot_path())}"
 
     def screenshot_window(self) -> str:
-        return "scrot -u ~/Pictures/screenshot-$(date +%Y%m%d-%H%M%S).png"
+        return f"scrot -u {shlex.quote(_screenshot_path())}"
 
     # Audio control
     def volume_up(self, amount: int = 5) -> str:

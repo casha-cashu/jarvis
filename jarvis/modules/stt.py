@@ -312,27 +312,33 @@ class VoskSTT:
         """
         import wave
 
-        wf = wave.open(audio_file, "rb")
+        # P4: context-manager закрывает FD на любом из путей выхода.
+        # Раньше "wrong format" / exception в while-loop протекали через
+        # raw wave.open и оставляли FD открытым.
+        with wave.open(audio_file, "rb") as wf:
+            if (wf.getnchannels() != 1
+                    or wf.getsampwidth() != 2
+                    or wf.getframerate() != self.sample_rate):
+                logger.error(
+                    f"❌ Неверный формат аудио. Нужно: моно, 16bit, {self.sample_rate}Hz"
+                )
+                return ""
 
-        if wf.getnchannels() != 1 or wf.getsampwidth() != 2 or wf.getframerate() != self.sample_rate:
-            logger.error(f"❌ Неверный формат аудио. Нужно: моно, 16bit, {self.sample_rate}Hz")
-            return ""
+            recognizer = KaldiRecognizer(self.model, self.sample_rate)
 
-        recognizer = KaldiRecognizer(self.model, self.sample_rate)
+            while True:
+                data = wf.readframes(4000)
+                if len(data) == 0:
+                    break
 
-        while True:
-            data = wf.readframes(4000)
-            if len(data) == 0:
-                break
+                if recognizer.AcceptWaveform(data):
+                    result = json.loads(recognizer.Result())
+                    text = result.get('text', '')
+                    if text:
+                        return text
 
-            if recognizer.AcceptWaveform(data):
-                result = json.loads(recognizer.Result())
-                text = result.get('text', '')
-                if text:
-                    return text
-
-        final = json.loads(recognizer.FinalResult())
-        return final.get('text', '')
+            final = json.loads(recognizer.FinalResult())
+            return final.get('text', '')
 
     def close(self):
         """Закрывает ресурсы"""

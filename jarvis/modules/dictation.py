@@ -12,6 +12,8 @@ import subprocess
 import numpy as np
 from typing import Optional, Callable
 
+from jarvis._env import sanitized_env
+
 logger = logging.getLogger(__name__)
 
 
@@ -30,7 +32,8 @@ def _type_text(text: str):
     if os.environ.get('WAYLAND_DISPLAY'):
         # Wayland
         try:
-            subprocess.run(['wtype', '-'], input=escaped.encode(), timeout=5)
+            subprocess.run(['wtype', '-'], input=escaped.encode(),
+                           timeout=5, env=sanitized_env())
         except FileNotFoundError:
             logger.warning("⚠️ wtype не найден. Установи: pacman -S wtype")
         except Exception as e:
@@ -38,7 +41,8 @@ def _type_text(text: str):
     else:
         # X11
         try:
-            subprocess.run(['xdotool', 'type', '--', text], timeout=5)
+            subprocess.run(['xdotool', 'type', '--', text],
+                           timeout=5, env=sanitized_env())
         except FileNotFoundError:
             logger.warning("⚠️ xdotool не найден. Установи: pacman -S xdotool")
         except Exception as e:

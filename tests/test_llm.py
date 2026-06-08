@@ -1,71 +1,77 @@
 """
-Тесты для LLM модуля (jarvis/modules/llm.py) и Jarvis._expand_env_vars.
+Тесты для LLM модуля (jarvis/modules/llm.py) и ConfigLoader._expand.
 """
 
 import os
 import pytest
 from unittest.mock import patch, MagicMock
 
+from jarvis.config_loader import ConfigLoader
+
 
 # ──────────────────────────────────────────────
-# Тесты Jarvis._expand_env_vars
+# Тесты ConfigLoader._expand (переехали из Jarvis._expand_env_vars)
 # ──────────────────────────────────────────────
 
 class TestExpandEnvVars:
-    """Тестирует Jarvis._expand_env_vars напрямую."""
+    """Тестирует ConfigLoader._expand (экс-Jarvis._expand_env_vars)."""
 
-    def test_simple_string(self, jarvis_instance):
+    @pytest.fixture
+    def loader(self):
+        return ConfigLoader("/nonexistent/config.yaml")
+
+    def test_simple_string(self, loader):
         """${VAR} подставляется из окружения."""
         os.environ["_TEST_JARVIS_VAR_"] = "hello"
-        result = jarvis_instance._expand_env_vars("prefix_${_TEST_JARVIS_VAR_}_suffix")
+        result = loader._expand("prefix_${_TEST_JARVIS_VAR_}_suffix")
         assert result == "prefix_hello_suffix"
         del os.environ["_TEST_JARVIS_VAR_"]
 
-    def test_dict_recursive(self, jarvis_instance):
+    def test_dict_recursive(self, loader):
         """Рекурсивная подстановка в dict."""
         os.environ["_TEST_JARVIS_VAR_"] = "world"
         d = {"key": "hello_${_TEST_JARVIS_VAR_}", "nested": {"inner": "${_TEST_JARVIS_VAR_}_end"}}
-        result = jarvis_instance._expand_env_vars(d)
+        result = loader._expand(d)
         assert result["key"] == "hello_world"
         assert result["nested"]["inner"] == "world_end"
         del os.environ["_TEST_JARVIS_VAR_"]
 
-    def test_list_recursive(self, jarvis_instance):
+    def test_list_recursive(self, loader):
         """Рекурсивная подстановка в list."""
         os.environ["_TEST_JARVIS_VAR_"] = "42"
         lst = ["item_${_TEST_JARVIS_VAR_}", ["deep_${_TEST_JARVIS_VAR_}"]]
-        result = jarvis_instance._expand_env_vars(lst)
+        result = loader._expand(lst)
         assert result[0] == "item_42"
         assert result[1][0] == "deep_42"
         del os.environ["_TEST_JARVIS_VAR_"]
 
-    def test_home_variable(self, jarvis_instance):
+    def test_home_variable(self, loader):
         """$HOME заменяется на домашнюю директорию."""
-        result = jarvis_instance._expand_env_vars("$HOME/models")
+        result = loader._expand("$HOME/models")
         assert result.startswith("/")
         assert result.endswith("/models")
 
-    def test_tilde_expansion(self, jarvis_instance):
+    def test_tilde_expansion(self, loader):
         """~ в начале пути раскрывается."""
-        result = jarvis_instance._expand_env_vars("~/test/path")
+        result = loader._expand("~/test/path")
         assert result.startswith("/")
         assert result.endswith("/test/path")
 
-    def test_no_variable(self, jarvis_instance):
+    def test_no_variable(self, loader):
         """Строка без переменных остаётся без изменений."""
-        result = jarvis_instance._expand_env_vars("plain string")
+        result = loader._expand("plain string")
         assert result == "plain string"
 
-    def test_non_string(self, jarvis_instance):
+    def test_non_string(self, loader):
         """Не-строки возвращаются как есть."""
-        assert jarvis_instance._expand_env_vars(42) == 42
-        assert jarvis_instance._expand_env_vars(3.14) == 3.14
-        assert jarvis_instance._expand_env_vars(None) is None
-        assert jarvis_instance._expand_env_vars(True) is True
+        assert loader._expand(42) == 42
+        assert loader._expand(3.14) == 3.14
+        assert loader._expand(None) is None
+        assert loader._expand(True) is True
 
-    def test_empty_var(self, jarvis_instance):
+    def test_empty_var(self, loader):
         """Неустановленная переменная заменяется на пустую строку."""
-        result = jarvis_instance._expand_env_vars("prefix_${_NONEXISTENT_VAR_}_suffix")
+        result = loader._expand("prefix_${_NONEXISTENT_VAR_}_suffix")
         assert result == "prefix__suffix"
 
 
