@@ -1,0 +1,62 @@
+# JARVIS — Minimal test configuration
+# Используется в CI и локальных тестах (не требует реальных моделей/ключей)
+
+audio:
+  microphone:
+    device_name: null
+    sample_rate: 16000
+    channels: 1
+    chunk_size: 512
+  output:
+    device_name: null
+    sample_rate: 48000
+
+stt:
+  engine: "vosk"
+  sample_rate: 16000
+  vosk:
+    model_path: "auto"
+  wake_word: "джарвис"
+  wake_word_alternatives:
+    - "жарвис"
+    - "jarvis"
+  phrase_time_limit: 10
+  pause_threshold: 1.2
+  multi_turn_timeout: 10
+
+vad:
+  enabled: false
+
+tts:
+  engine: "gtts"
+  piper:
+    binary_path: null
+    model_path: null
+    config_path: "auto"
+  gtts:
+    lang: "ru"
+    slow: false
+
+llm:
+  provider: "ollama"
+  ollama:
+    base_url: "http://localhost:11434"
+    model: "test-model"
+    temperature: 0.7
+  max_history: 20
+  system_prompt: ""
+
+commands:
+  dictionary_path: "data/commands.json"
+  apps_dictionary_path: "data/apps.json"
+  fuzzy_threshold: 0.8
+  execution_timeout: 30
+
+logging:
+  level: "WARNING"
+  file: "/tmp/jarvis-test.log"
+  max_size: 10485760
+  backup_count: 5
+
+misc:
+  temp_dir: "/tmp/jarvis-test"
