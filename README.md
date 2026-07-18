@@ -1,0 +1,174 @@
+# JARVIS — голосовой ассистент
+
+Голосовой ИИ-ассистент для Linux и macOS. Распознаёт речь (Vosk / Whisper), выполняет системные команды, отвечает через LLM (локально или через API), синтезирует речь (Piper TTS).
+
+## Возможности
+
+- **Распознавание речи** — Vosk (быстрый, офлайн) или faster-whisper (точный)
+- **Синтез речи** — Piper TTS (русский голос Дмитрия), gTTS fallback
+- **LLM интеграция** — Ollama (локально), OpenAI-совместимые API, Anthropic Claude
+- **Управление системой** — воркспейсы, окна, скриншоты, звук, блокировка
+- **Кроссплатформенность** — автоопределение DE/WM (Hyprland, KDE, GNOME, i3, Sway, macOS)
+- **Multi-turn диалоги** — 10с таймаут на follow-up, mute/unmute голосом
+- **Напоминания** — «напомни через 10 минут», «таймер на 5 минут»
+- **Диктовка** — голосовой ввод текста через wtype/xdotool
+- **Wake word** — «джарвис» + альтернативы
+
+## Поддерживаемые платформы
+
+| OS | DE/WM | Статус |
+|---|---|---|
+| Linux (Arch) | Hyprland | ✅ |
+| Linux (Arch/Debian/Fedora) | KDE Plasma | ✅ |
+| Linux (Arch/Debian/Fedora) | GNOME | ✅ |
+| Linux (Arch/Debian/Fedora) | i3 | ✅ |
+| Linux (Arch/Debian/Fedora) | Sway | ✅ |
+| macOS | macOS | ✅ |
+
+## Быстрый старт
+
+```bash
+# Клонирование
+git clone https://github.com/casha-cashu/jarvis.git
+cd jarvis
+
+# Установка (автоопределит Arch/Debian/Fedora/macOS)
+bash install.sh
+
+# Активация venv (если устанавливали с --venv)
+source venv/bin/activate
+
+# Запуск
+jarvis run
+```
+
+Скажите «джарвис» и дайте команду.
+
+## Установка вручную
+
+### Системные зависимости
+
+**Arch Linux:**
+```bash
+sudo pacman -S python python-pip portaudio wtype xdotool
+yay -S piper-tts  # из AUR
+```
+
+**Debian/Ubuntu:**
+```bash
+sudo apt install python3 python3-pip portaudio19-dev libnotify-bin xdotool wtype espeak-ng
+```
+
+**Fedora:**
+```bash
+sudo dnf install python3 python3-pip portaudio-devel libnotify xdotool wtype espeak-ng
+```
+
+**macOS:**
+```bash
+brew install python portaudio
+```
+
+### Python зависимости
+
+```bash
+git clone https://github.com/casha-cashu/jarvis.git
+cd jarvis
+
+python -m venv venv
+source venv/bin/activate
+pip install -e .
+```
+
+Или вручную:
+```bash
+pip install pyyaml vosk pyaudio numpy torch faster-whisper silero-vad anthropic requests gtts audioop-lts
+```
+
+> **Важно:** `torch` нужен для Silero VAD. Если у вас NVIDIA GPU — поставьте CUDA-версию: `pip install torch --index-url https://download.pytorch.org/whl/cu118`
+
+### Модели
+
+- **Vosk**: `python -c "from jarvis.setup import download_vosk; download_vosk()"`
+- **faster-whisper**: скачивается автоматически при первом запуске. Для офлайн-использования укажите `model_path` в `config.yaml` (см. ниже)
+- **Piper TTS**: `yay -S piper-tts` (Arch) или бинарник с [GitHub](https://github.com/rhasspy/piper/releases)
+
+## Конфигурация
+
+Отредактируйте `config.yaml`:
+
+- **Микрофон**: укажите `device_name` вашего микрофона (список устройств выводится при запуске)
+- **STT**: выберите `vosk` (быстрый) или `whisper` (точный)
+- **LLM**: укажите провайдер (`ollama`, `kiro`, `openrouter`, `anthropic`)
+- **TTS**: настройте пути к Piper бинарнику и модели
+
+## Использование
+
+```bash
+# Полный список команд
+jarvis --help
+
+# Запуск с интерактивным выбором провайдера
+jarvis run
+
+# Запуск с конкретным провайдером
+jarvis run -p ollama
+
+# Запуск с пресетом
+jarvis run --preset prod
+
+# Режим без wake word
+jarvis run --mode continuous
+
+# Режим диктовки
+jarvis dictation
+
+# Управление пресетами
+jarvis presets
+
+# Тест модулей
+jarvis test
+
+# Systemd автозапуск (только Linux)
+jarvis service install
+```
+
+## Примеры команд
+
+| Голосовая команда | Действие |
+|---|---|
+| «первый воркспейс» / «воркспейс 3» | Переключение рабочего стола |
+| «следующий воркспейс» | Следующий рабочий стол |
+| «закрой окно» | Закрыть активное окно |
+| «полный экран» | Развернуть на весь экран |
+| «скриншот экрана» | Скриншот всего экрана |
+| «громче» / «тише» | Регулировка громкости |
+| «заблокируй экран» | Блокировка |
+| «открой браузер» / «открой телеграм» | Запуск приложений |
+| «какое время» / «какая дата» | Текущее время/дата |
+| «диктовка» | Режим голосового ввода |
+| «напомни через 10 минут» | Установка напоминания |
+
+Всё, что не распознано как команда — отправляется в LLM.
+
+## Как это работает
+
+1. **Автоопределение платформы** — при запуске определяется ОС, дистрибутив и DE/WM
+2. **Загрузка адаптера** — выбирается соответствующий адаптер (Hyprland, KDE, GNOME, etc.)
+3. **Генерация команд** — команды генерируются динамически под текущую платформу
+4. **Распознавание речи** — Vosk/Whisper слушает wake word и команды
+5. **Pipeline обработки**: exact → fuzzy → pattern (открой {app}) → standalone app → voice cmd → LLM
+6. **Озвучка** — Piper TTS озвучивает ответ
+7. **Multi-turn** — после ответа 10с ожидание follow-up (прерывается wake word)
+
+## Лицензия
+
+MIT
+
+## Благодарности
+
+- [Vosk](https://alphacephei.com/vosk/) — Speech recognition
+- [faster-whisper](https://github.com/SYSTRAN/faster-whisper) — Speech recognition
+- [Piper](https://github.com/rhasspy/piper) — Text-to-speech
+- [Silero VAD](https://github.com/snakers4/silero-vad) — Voice Activity Detection
+- [Ollama](https://ollama.ai/) — Local LLM

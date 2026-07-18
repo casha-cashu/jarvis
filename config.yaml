@@ -1,0 +1,159 @@
+# JARVIS Configuration File
+# Голосовой ассистент для CachyOS + Hyprland
+
+# === АУДИО ===
+audio:
+  # Микрофон (Fifine K669 USB)
+  microphone:
+    device_name: "USB PnP Audio Device"  # Часть имени устройства для поиска
+    sample_rate: 48000
+    channels: 1
+    chunk_size: 512  # Для VAD (было 1024)
+
+  # Динамики
+  output:
+    device_name: null  # null = системный дефолт
+    sample_rate: 48000
+
+# === РАСПОЗНАВАНИЕ РЕЧИ (STT) ===
+stt:
+  engine: "whisper"  # vosk | whisper
+  sample_rate: 16000
+
+  # Vosk (лёгкий, быстрый, для команд)
+  vosk:
+    model_path: "auto"  # auto = поиск в models/, ~/.local/share/vosk
+    # sample_rate наследуется из stt.sample_rate
+
+  # Whisper (точный, но тяжелее, для диалогов)
+  whisper:
+    model_path: "$HOME/models/whisper/tiny"  # путь к локальной модели (null = скачать из HF)
+    model_size: "tiny"  # tiny | base | small | medium | large (используется если model_path=null)
+    # Чем больше модель, тем выше точность и больше RAM:
+    #   tiny  ~1GB  RAM  ~2x realtime
+    #   base  ~1.5GB RAM  ~1x realtime
+    #   small ~3GB   RAM  ~0.5x realtime
+
+  # Wake word detection
+  wake_word: "джарвис"
+  wake_word_alternatives:
+    - "жарвис"
+    - "джервис"
+    - "jarvis"
+
+  # Таймауты
+  phrase_time_limit: 10  # секунд
+  pause_threshold: 1.2   # секунд тишины = конец фразы
+  multi_turn_timeout: 10  # секунд ожидания продолжения разговора (после ответа)
+  wake_mode: "classic"   # classic | vad — метод детекции wake word
+
+# === ДЕТЕКЦИЯ ГОЛОСА (VAD) ===
+vad:
+  enabled: true
+  engine: "silero"  # silero | webrtc
+
+  silero:
+    model_path: "auto"  # auto = поиск в models/, ~/.local/share/silero
+    threshold: 0.5        # 0.0-1.0, чем выше = строже
+    min_speech_duration: 0.25   # минимум речи (сек)
+    min_silence_duration: 0.5   # минимум тишины (сек)
+    speech_pad_ms: 30           # padding вокруг речи (мс)
+
+# === СИНТЕЗ РЕЧИ (TTS) ===
+tts:
+  engine: "piper"  # piper | gtts | speecht5
+
+  piper:
+    binary_path: "$HOME/.local/bin/piper"
+    model_path: "$HOME/models/piper/ru_RU-dmitri-medium.onnx"
+    config_path: "auto"
+    lib_path: "/usr/share/steam/compatibilitytools.d/proton-ge-custom/files/lib/x86_64-linux-gnu"  # Только для Arch/CachyOS
+    speaker_id: 0
+    length_scale: 1.0  # скорость (1.0 = норма, <1 = быстрее, >1 = медленнее)
+
+  # Fallback на gTTS если Piper не работает
+  gtts:
+    lang: "ru"
+    slow: false
+
+  # SpeechT5 — голос Джарвиса из фильма (локальная копия)
+  speecht5:
+    model: "$HOME/models/jarvis-tts/speecht5_tts_jarvis"
+    vocoder_path: "$HOME/models/jarvis-tts/hifigan"
+    device: "cpu"  # cpu | cuda (GTX 1050 несовместима с текущим PyTorch)
+    speaker_id: 0
+
+# === ЯЗЫКОВАЯ МОДЕЛЬ (LLM) ===
+llm:
+  provider: "ollama"  # prod: ollama (локально, без интернета)
+
+  # Kiro AI (Omniroute) - локальный endpoint
+  kiro:
+    api_key: "${KIRO_API_KEY}"  # Из переменной окружения
+    base_url: "http://localhost:20128/v1"  # Локальный Omniroute
+    model: "kr/claude-sonnet-4.5"  # Sonnet 4.5 (стабильнее Haiku)
+    temperature: 0.7
+    max_tokens: 1024
+    timeout: 30
+
+  # OpenRouter (fallback)
+  openrouter:
+    api_key: "${OPENROUTER_API_KEY}"
+    model: "anthropic/claude-3.5-sonnet"
+    temperature: 0.7
+
+  # Ollama (локальный fallback)
+  ollama:
+    base_url: "http://localhost:11434"
+    model: "qwen2.5:3b"
+    temperature: 0.7
+
+  # История диалога
+  max_history: 20
+
+  # System prompt
+  system_prompt: |
+    Ты — Джарвис, голосовой ИИ-ассистент. Платформа: {platform}.
+
+    Твоя роль:
+    - Отвечать на вопросы пользователя
+    - Вести естественный диалог
+    - Помогать с информацией
+
+    ВАЖНО: Ты НЕ выполняешь системные команды (открыть приложение, скриншот и т.д.).
+    Системные команды обрабатываются отдельным модулем.
+
+    Стиль общения:
+    - Кратко и по делу
+    - Дружелюбно, но профессионально
+    - Обращайся к пользователю "сэр" или по имени (Миша)
+
+# === КОМАНДЫ ===
+commands:
+  # Локальный словарь команд (обрабатываются БЕЗ LLM)
+  dictionary_path: "data/commands.json"  # Используй commands_base.json для минимальной версии
+  apps_dictionary_path: "data/apps.json"
+
+  # Fuzzy matching для команд
+  fuzzy_threshold: 0.8  # 0.0-1.0, чем выше = строже
+
+  # Таймаут выполнения команды
+  execution_timeout: 30
+
+# === ЛОГИРОВАНИЕ ===
+logging:
+  level: "INFO"  # DEBUG | INFO | WARNING | ERROR
+  file: "logs/jarvis.log"
+  max_size: 10485760  # 10MB
+  backup_count: 5
+
+  # Логировать распознанный текст
+  log_recognized_text: true
+
+  # Логировать команды LLM
+  log_llm_requests: true
+
+# === РАЗНОЕ ===
+misc:
+  # Временные файлы
+  temp_dir: "/tmp/jarvis"
