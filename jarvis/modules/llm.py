@@ -308,8 +308,19 @@ class OllamaClient(LLMClient):
         self.base_url = ollama_config.get("base_url", "http://localhost:11434")
         self.model = ollama_config.get("model", "qwen2.5:3b")
         self.temperature = ollama_config.get("temperature", 0.7)
+        self.timeout = ollama_config.get("timeout", 30)
 
         logger.info(f"✅ Ollama клиент: {self.model}")
+
+    def _post_chat(self, payload: dict) -> dict:
+        """Low-level POST to /api/chat. Raises requests.HTTPError on bad status."""
+        resp = requests.post(
+            f"{self.base_url}/api/chat",
+            json=payload,
+            timeout=self.timeout,
+        )
+        resp.raise_for_status()
+        return resp.json()
 
     def chat(self, message: str) -> str:
         """Отправляет сообщение в Ollama"""
@@ -329,12 +340,7 @@ class OllamaClient(LLMClient):
                 "options": {"temperature": self.temperature},
             }
 
-            response = requests.post(
-                f"{self.base_url}/api/chat", json=payload, timeout=30
-            )
-
-            response.raise_for_status()
-            data = response.json()
+            data = self._post_chat(payload)
 
             answer = data["message"]["content"].strip()
             self.add_to_history("assistant", answer)
@@ -343,6 +349,102 @@ class OllamaClient(LLMClient):
 
         except Exception as e:
             logger.error(f"❌ Ошибка Ollama: {e}")
+            return "Извините, сэр, локальная модель недоступна."
+
+    def chat_with_tools(
+        self,
+        message: str,
+        tools: list,
+        on_tool_call=None,
+        max_iterations: int = 5,
+    ) -> str:
+        """LLM ↔ tools conversation loop.
+
+        Args:
+            message: User query.
+            tools: OpenAI-style tool schemas (list of {type:function,
+                function:{...}}). See jarvis.modules.bash_agent.get_tool_schemas().
+            on_tool_call: Callable(name, arguments_dict) -> str result. Required.
+            max_iterations: Safety cap to prevent infinite tool-call loops.
+
+        Returns:
+            Final assistant text response AFTER all tool calls have been
+            executed and their results fed back to the LLM.
+        """
+        if on_tool_call is None:
+            raise RuntimeError("chat_with_tools requires on_tool_call callback")
+        try:
+            self.add_to_history("user", message)
+
+            base_messages = []
+            if self.system_prompt:
+                base_messages.append({"role": "system", "content": self.system_prompt})
+            base_messages.extend(self.history)
+
+            for iteration in range(max_iterations):
+                payload = {
+                    "model": self.model,
+                    "messages": base_messages,
+                    "tools": tools,
+                    "stream": False,
+                    "options": {"temperature": self.temperature},
+                }
+                data = self._post_chat(payload)
+                msg = data.get("message", {})
+
+                tool_calls = msg.get("tool_calls") or []
+                content = (msg.get("content") or "").strip()
+
+                if not tool_calls:
+                    if content:
+                        self.add_to_history("assistant", content)
+                        return content
+                    return ""
+
+                # Append the assistant's tool-call message to the running
+                # transcript so Ollama sees its own prior call.
+                base_messages.append(
+                    {"role": "assistant", "content": content, "tool_calls": tool_calls}
+                )
+
+                # Execute each tool call and feed back results
+                for call in tool_calls:
+                    fn = call.get("function", {})
+                    name = fn.get("name", "")
+                    raw_args = fn.get("arguments", {})
+                    if isinstance(raw_args, str):
+                        try:
+                            args = json.loads(raw_args)
+                        except json.JSONDecodeError:
+                            args = {}
+                    else:
+                        args = raw_args or {}
+
+                    try:
+                        result = str(on_tool_call(name, args))
+                    except Exception as e:
+                        result = f"[tool error: {e}]"
+
+                    logger.debug(
+                        "ollama tool_call iter=%d name=%s args=%s -> %s",
+                        iteration,
+                        name,
+                        args,
+                        result[:120],
+                    )
+                    base_messages.append({"role": "tool", "content": result})
+
+            logger.warning(
+                "Ollama tool loop exceeded max_iterations=%d", max_iterations
+            )
+            return (
+                content
+                if content
+                else "Извините, сэр, задача потребовала слишком много шагов."
+            )
+
+        except Exception as e:
+            logger.error(f"❌ Ошибка Ollama chat_with_tools: {e}")
             return "Извините, сэр, локальная модель недоступна."
 
 

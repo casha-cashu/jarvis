@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "jarvis-voice-assistant"
-version = "2.2.0"
+version = "2.3.0"
 description = "JARVIS — голосовой ассистент для Linux и macOS"
 readme = "README.md"
 license = {text = "MIT"}
@@ -58,6 +58,8 @@ markers = [
     "sway: tests specific to Sway",
     "x11: tests that need X11 display",
     "wayland: tests that need Wayland display",
+    "ollama: integration tests that need a running local Ollama server",
+    "llm: tests that exercise real LLM providers",
 ]
 
 [tool.setuptools.package-data]

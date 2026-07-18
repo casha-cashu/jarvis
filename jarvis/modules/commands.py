@@ -47,6 +47,8 @@ class CommandExecutor:
         fuzzy_threshold: float = 0.8,
         platform_adapter: Optional[PlatformAdapter] = None,
         execution_timeout: int = 30,
+        nlu_router: "Optional[object]" = None,
+        nlu_confidence_threshold: float = 0.65,
     ):
         self.fuzzy_threshold = fuzzy_threshold
         self.platform = platform_adapter or PlatformAdapter()
@@ -56,6 +58,11 @@ class CommandExecutor:
         # (ждущая password, interactive prompt, deadlock IPC) не оставит
         # зомби-процесс и не зависит в main loop.
         self.execution_timeout = max(1, int(execution_timeout))
+        # NLU front-end — optional. When provided, executes before fuzzy
+        # matching. If NLU returns confident intent + slots, dispatches
+        # directly; otherwise falls through to existing pipeline.
+        self.nlu = nlu_router
+        self.nlu_confidence_threshold = nlu_confidence_threshold
 
         # Загружаем словари
         json_data = self._load_json(commands_file)
@@ -251,6 +258,15 @@ class CommandExecutor:
         """
         Пытается выполнить команду.
         Возвращает текст для озвучки или None (→ LLM).
+
+        Pipeline order:
+          1. Exact match
+          1.5. NLU (если подключён) — intent + slots dispatch
+          2. Fuzzy match
+          3. Pattern match (открой/запусти {app}, найди {query})
+          4. Standalone app name
+          5. Voice command markers
+          6. → LLM
         """
         q = query.strip().lower()
         if not q:
@@ -263,6 +279,12 @@ class CommandExecutor:
             logger.info(f"🎯 Exact match: '{q}'")
             self._run(commands[q]["cmd"])
             return commands[q].get("say", "Готово, сэр.")
+
+        # ── Шаг 1.5: NLU (если подключён) ──
+        if self.nlu is not None:
+            nlu_resp = self._nlu_dispatch(q)
+            if nlu_resp is not None:
+                return nlu_resp
 
         # ── Шаг 2: Fuzzy match ──
         match = self._best_fuzzy(q, commands)
@@ -307,6 +329,66 @@ class CommandExecutor:
             return voice_marker
 
         # ── Команда не найдена → LLM ──
+        return None
+
+    def _nlu_dispatch(self, query: str) -> Optional[str]:
+        """NLU-driven dispatch. Returns response str or None to fall through.
+
+        Strategy: invoke ``IntentRouter.parse()``. If intent confidence is
+        high enough AND slots contain actionable entities (app/search/
+        workspace), dispatch directly — skipping fuzzy/pattern steps.
+
+        Bare intent without slots (e.g. "system") is NOT enough — fuzzy
+        matching on the existing command table stays authoritative there,
+        since NLU's category is coarse-grained.
+        """
+        if self.nlu is None:
+            return None
+        try:
+            result = self.nlu.parse(query)
+        except Exception as e:
+            logger.warning(f"NLU parse failed: {e}")
+            return None
+
+        confidence = result.get("intent_confidence", 0.0)
+        if confidence < self.nlu_confidence_threshold:
+            return None
+
+        slots = result.get("slots") or {}
+        intent = result.get("intent")
+
+        # open_app + app slot → launch app
+        if intent == "open_app" and "app" in slots:
+            app_name = slots["app"]
+            app_cmd = self._find_app_cmd(app_name)
+            if app_cmd:
+                logger.info(
+                    f"🎯 NLU open_app: '{app_name}' → '{app_cmd}' (conf={confidence:.2f})"
+                )
+                self._run(app_cmd)
+                return f"Запускаю {app_name}"
+
+        # search + query slot → web search
+        if intent == "search" and "search" in slots:
+            search = slots["search"]
+            logger.info(f"🔍 NLU search: '{search}' (conf={confidence:.2f})")
+            self._web_search(search)
+            return f"Ищу {search}"
+
+        # workspace switch via slot
+        if intent == "system" and "workspace" in slots:
+            ws = slots["workspace"]
+            try:
+                ws_num = int(ws)
+            except (TypeError, ValueError):
+                return None
+            if 1 <= ws_num <= 10:
+                cmd = self.platform.workspace_switch(ws_num)
+                if cmd:
+                    logger.info(f"🎯 NLU workspace: {ws_num} (conf={confidence:.2f})")
+                    self._run(cmd)
+                    return f"Воркспейс {ws_num}"
+
         return None
 
     # ── Исполнение ────────────────────────────────────────────
@@ -448,9 +530,15 @@ class CommandExecutor:
 class CommandManager:
     """Главный менеджер команд — владеет CommandExecutor."""
 
-    def __init__(self, config: dict):
+    def __init__(self, config: dict, nlu_router: "Optional[object]" = None):
         commands_cfg = config.get("commands", {})
         self.platform = PlatformAdapter()
+
+        # NLU: if caller provides a router ( tests, or wiring from outside ),
+        # use it. Otherwise, default-enable NLU if not explicitly disabled
+        # in config and training data files exist.
+        if nlu_router is None:
+            nlu_router = self._maybe_init_nlu(config, commands_cfg)
 
         self.executor = CommandExecutor(
             commands_file=commands_cfg.get("dictionary_path", "data/commands.json"),
@@ -458,8 +546,28 @@ class CommandManager:
             fuzzy_threshold=commands_cfg.get("fuzzy_threshold", 0.8),
             platform_adapter=self.platform,
             execution_timeout=commands_cfg.get("execution_timeout", 30),
+            nlu_router=nlu_router,
+            nlu_confidence_threshold=commands_cfg.get("nlu_confidence_threshold", 0.65),
         )
         logger.info("✅ CommandManager инициализирован")
+
+    @staticmethod
+    def _maybe_init_nlu(config: dict, commands_cfg: dict) -> "Optional[object]":
+        """Build an IntentRouter from data files unless explicitly disabled."""
+        if commands_cfg.get("nlu_enabled", True) is False:
+            return None
+        try:
+            from jarvis.modules.nlu import IntentRouter
+
+            cmds_path = commands_cfg.get("dictionary_path", "data/commands.json")
+            apps_path = commands_cfg.get("apps_dictionary_path", "data/apps.json")
+            return IntentRouter(
+                commands_file=cmds_path,
+                apps_file=apps_path,
+            )
+        except Exception as e:
+            logger.warning(f"⚠️ NLU недоступен: {e} — fallback на fuzzy pipeline")
+            return None
 
     def process(self, query: str) -> Optional[str]:
         return self.executor.execute(query)

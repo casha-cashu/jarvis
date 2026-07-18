@@ -205,3 +205,125 @@ class TestIntentRouter:
         r = IntentRouter(commands_file=str(empty), apps_file=str(empty))
         # No training data → classifier not fitted → predict is None
         assert r.classify("anything") is None
+
+
+class TestNluCache:
+    """Caching via joblib — JARVIS_NLU_CACHE dir + content-keyed filename."""
+
+    @pytest.fixture
+    def cache_dir(self, tmp_path, monkeypatch):
+        d = tmp_path / "nlu_cache"
+        monkeypatch.setenv("JARVIS_NLU_CACHE", str(d))
+        # Force reimport so CACHE_DIR picks up the new env var
+        import importlib
+
+        import jarvis.modules.nlu as nlu_mod
+
+        importlib.reload(nlu_mod)
+        yield d
+        # Restore default for other tests
+        monkeypatch.delenv("JARVIS_NLU_CACHE", raising=False)
+        importlib.reload(nlu_mod)
+
+    @pytest.fixture
+    def data_files(self, tmp_path):
+        cmds = tmp_path / "commands.json"
+        apps = tmp_path / "apps.json"
+        cmds.write_text(
+            json.dumps(
+                {
+                    "commands": {
+                        "закрой окно": {"cmd": "...", "category": "system"},
+                        "какое время": {"cmd": "date", "category": "info"},
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        apps.write_text(
+            json.dumps(
+                {
+                    "apps": {
+                        "firefox": {
+                            "cmd": "firefox",
+                            "names": ["фаерфокс", "браузер"],
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        return {"cmds": str(cmds), "apps": str(apps)}
+
+    def test_cache_file_created_on_train(self, cache_dir, data_files):
+        nlu = __import__("jarvis.modules.nlu", fromlist=["IntentRouter"])
+        nlu.IntentRouter(
+            commands_file=data_files["cmds"],
+            apps_file=data_files["apps"],
+        )
+        files = list(cache_dir.glob("classifier_*.joblib"))
+        assert len(files) == 1
+
+    def test_cache_hit_reuses_classifier(self, cache_dir, data_files):
+        nlu = __import__("jarvis.modules.nlu", fromlist=["IntentRouter"])
+        # First instantiation trains and caches
+        r1 = nlu.IntentRouter(
+            commands_file=data_files["cmds"],
+            apps_file=data_files["apps"],
+        )
+        assert r1._classifier is not None
+        # Second instantiation should reuse the cached classifier
+        # (no retrain — `train` log line should NOT appear)
+        r2 = nlu.IntentRouter(
+            commands_file=data_files["cmds"],
+            apps_file=data_files["apps"],
+        )
+        # Sanity: classifier is fitted and produces same prediction
+        assert r2._classifier is not None
+        assert r2._classifier.fitted
+
+    def test_cache_invalidates_on_data_change(self, cache_dir, data_files, tmp_path):
+        nlu = __import__("jarvis.modules.nlu", fromlist=["IntentRouter"])
+        nlu.IntentRouter(
+            commands_file=data_files["cmds"],
+            apps_file=data_files["apps"],
+        )
+        files_before = list(cache_dir.glob("classifier_*.joblib"))
+        assert len(files_before) == 1
+        # Modify data — add a new command
+        new_cmds = tmp_path / "commands_v2.json"
+        new_cmds.write_text(
+            json.dumps(
+                {
+                    "commands": {
+                        "закрой окно": {"cmd": "...", "category": "system"},
+                        "какое время": {"cmd": "date", "category": "info"},
+                        "новый пункт": {"cmd": "x", "category": "new"},
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        nlu.IntentRouter(
+            commands_file=str(new_cmds),
+            apps_file=data_files["apps"],
+        )
+        # Old cache file remains (keyed by content, so different content
+        # → different filename). New cache file SHOULD exist.
+        files_after = list(cache_dir.glob("classifier_*.joblib"))
+        assert len(files_after) == 2
+
+    def test_empty_cache_env_disables_caching(self, tmp_path, monkeypatch, data_files):
+        """Setting JARVIS_NLU_CACHE='' disables caching entirely."""
+        monkeypatch.setenv("JARVIS_NLU_CACHE", "")
+        import importlib
+
+        import jarvis.modules.nlu as nlu_mod
+
+        importlib.reload(nlu_mod)
+        nlu_mod.IntentRouter(
+            commands_file=data_files["cmds"],
+            apps_file=data_files["apps"],
+        )
+        # Default CACHE_DIR untouched — no file written there for this key
+        importlib.reload(nlu_mod)

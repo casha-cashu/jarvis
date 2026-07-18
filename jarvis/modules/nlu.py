@@ -38,6 +38,17 @@ CACHE_DIR = Path(
 logger = logging.getLogger(__name__)
 
 
+def _try_import_joblib():
+    """joblib is an optional dep — fall back to no caching if unavailable."""
+    try:
+        import joblib
+
+        return joblib
+    except ImportError:
+        logger.debug("joblib not installed — NLU caching disabled")
+        return None
+
+
 # ── Slot patterns ───────────────────────────────────────────────────────────
 # Each pattern is (regex, slot_name, priority). Higher priority wins on overlaps.
 
@@ -152,6 +163,48 @@ class IntentClassifier:
     @property
     def fitted(self) -> bool:
         return self._fitted
+
+    def save(self, path: Path) -> None:
+        """Persist vectorizer + classifier + labels to ``path`` via joblib."""
+        if not self._fitted:
+            return
+        joblib = _try_import_joblib()
+        if joblib is None:
+            return
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix(path.suffix + ".tmp")
+            joblib.dump(
+                {
+                    "vectorizer": self.vectorizer,
+                    "clf": self.clf,
+                    "labels": self._intent_labels,
+                },
+                tmp,
+            )
+            os.replace(tmp, path)
+            logger.debug("NLU classifier cached to %s", path)
+        except Exception as e:
+            logger.warning("Failed to cache NLU classifier: %s", e)
+
+    @classmethod
+    def load(cls, path: Path) -> "Optional[IntentClassifier]":
+        """Load a cached classifier. Returns None on miss / corruption."""
+        joblib = _try_import_joblib()
+        if joblib is None or not path.exists():
+            return None
+        try:
+            data = joblib.load(path)
+            inst = cls(phrases=[])  # skip training
+            inst.vectorizer = data["vectorizer"]
+            inst.clf = data["clf"]
+            inst._intent_labels = data["labels"]
+            inst._fitted = True
+            logger.info("NLU classifier loaded from cache %s", path)
+            return inst
+        except Exception as e:
+            logger.warning("Failed to load NLU cache: %s", e)
+            return None
 
     def train(self, examples: List[IntentExample]) -> None:
         if not examples or len(set(e.intent for e in examples)) < 2:
@@ -280,10 +333,40 @@ class IntentRouter:
 
     def _train(self) -> None:
         examples = build_training_data(self._commands, self._apps)
-        if examples:
-            self._classifier = IntentClassifier(examples)
-        else:
+        if not examples:
             logger.warning("No training data — IntentRouter will always fallback")
+            return
+
+        # Cache check: classifier is deterministic given the same training
+        # data, so a content-hash is a stable cache key. Cache file lives in
+        # CACHE_DIR (env-overridable). Skip cache entirely if JARVIS_NLU_CACHE
+        # is set to empty string.
+        cache_key = self._cache_key()
+        cache_path = CACHE_DIR / f"classifier_{cache_key}.joblib"
+        if cache_key and cache_path.exists():
+            loaded = IntentClassifier.load(cache_path)
+            if loaded is not None:
+                self._classifier = loaded
+                return
+
+        clf = IntentClassifier(examples)
+        if cache_key:
+            clf.save(cache_path)
+        self._classifier = clf
+
+    def _cache_key(self) -> str:
+        """Stable hash of (commands, apps) content — invalidates on data change."""
+        try:
+            import hashlib
+
+            blob = json.dumps(
+                {"commands": self._commands, "apps": self._apps},
+                ensure_ascii=False,
+                sort_keys=True,
+            ).encode("utf-8")
+            return hashlib.sha256(blob).hexdigest()[:16]
+        except Exception:
+            return ""
 
     def classify(self, text: str) -> Optional[Tuple[str, float]]:
         if self._classifier is None:
