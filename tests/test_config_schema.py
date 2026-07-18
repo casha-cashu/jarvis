@@ -70,7 +70,7 @@ class TestTTSConfig:
 
 class TestLLMConfig:
     def test_provider_valid(self):
-        for p in ("ollama", "kiro", "openrouter", "anthropic"):
+        for p in ("ollama", "openai", "openrouter", "anthropic"):
             assert LLMConfig(provider=p).provider == p
 
     def test_provider_invalid(self):
@@ -86,10 +86,22 @@ class TestLLMConfig:
         assert c.ollama.base_url == "http://localhost:11434"
         assert c.ollama.model == "qwen2.5:3b"
 
-    def test_kiro_api_key_optional(self):
+    def test_openai_api_key_optional(self):
         # api_key может быть None — нет ключа → пустая подстановка в ConfigLoader
         c = LLMConfig()
-        assert c.kiro.api_key is None
+        assert c.openai.api_key is None
+
+    def test_anthropic_api_key_optional(self):
+        c = LLMConfig()
+        assert c.anthropic.api_key is None
+
+    def test_agent_approval_mode_valid(self):
+        for m in ("auto", "strict", "yolo"):
+            assert LLMConfig(agent_approval_mode=m).agent_approval_mode == m
+
+    def test_agent_approval_mode_invalid(self):
+        with pytest.raises(ValidationError):
+            LLMConfig(agent_approval_mode="paranoid")
 
 
 class TestLoggingConfig:

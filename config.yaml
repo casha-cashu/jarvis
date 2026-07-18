@@ -85,28 +85,43 @@ tts:
 
 # === ЯЗЫКОВАЯ МОДЕЛЬ (LLM) ===
 llm:
-  provider: "ollama"  # prod: ollama (локально, без интернета)
+  provider: "ollama"  # ollama | openai | anthropic | openrouter
 
-  # Kiro AI (Omniroute) - локальный endpoint
-  kiro:
-    api_key: "${KIRO_API_KEY}"  # Из переменной окружения
-    base_url: "http://localhost:20128/v1"  # Локальный Omniroute
-    model: "kr/claude-sonnet-4.5"  # Sonnet 4.5 (стабильнее Haiku)
+  # Ollama (локально, по умолчанию)
+  ollama:
+    base_url: "http://localhost:11434"
+    model: "qwen2.5:3b"
+    temperature: 0.7
+
+  # OpenAI (нативный API) — нужен OPENAI_API_KEY в окружении
+  openai:
+    api_key: "${OPENAI_API_KEY}"
+    # base_url: null  # не задан → api.openai.com
+    model: "gpt-4o-mini"
     temperature: 0.7
     max_tokens: 1024
     timeout: 30
 
-  # OpenRouter (fallback)
+  # Anthropic (нативный API) — нужен ANTHROPIC_API_KEY в окружении
+  anthropic:
+    api_key: "${ANTHROPIC_API_KEY}"
+    model: "claude-3-5-sonnet-20241022"
+    temperature: 0.7
+    max_tokens: 1024
+    timeout: 30
+
+  # OpenRouter (OpenAI-compatible aggregator) — нужен OPENROUTER_API_KEY
   openrouter:
     api_key: "${OPENROUTER_API_KEY}"
     model: "anthropic/claude-3.5-sonnet"
     temperature: 0.7
 
-  # Ollama (локальный fallback)
-  ollama:
-    base_url: "http://localhost:11434"
-    model: "qwen2.5:3b"
-    temperature: 0.7
+  # Bash-агент loop: когда unmatched запрос падает в LLM, провайдер
+  # с поддержкой tool-calling (ollama/openai/anthropic) может вызывать
+  # bash/read/write tools. См. jarvis.response_pipeline.
+  agent_enabled: false       # true чтобы включить
+  agent_max_iterations: 5   # предел итераций tool-loop
+  agent_approval_mode: "auto"  # auto | strict | yolo
 
   # История диалога
   max_history: 20

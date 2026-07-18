@@ -316,7 +316,7 @@ def main():
     p_run.add_argument(
         "-p",
         "--provider",
-        choices=["kiro", "openrouter", "anthropic", "ollama"],
+        choices=["ollama", "openai", "openrouter", "anthropic"],
         help="LLM провайдер (без меню)",
     )
     p_run.add_argument(
@@ -348,7 +348,7 @@ def main():
     # ── test ──
     p_test = sub.add_parser("test", help="Тест модулей (dry-run)")
     p_test.add_argument(
-        "-p", "--provider", choices=["kiro", "openrouter", "anthropic", "ollama"]
+        "-p", "--provider", choices=["ollama", "openai", "openrouter", "anthropic"]
     )
     p_test.add_argument("--preset", type=str, metavar="NAME")
     p_test.add_argument("--config", type=str, default="config.yaml")
@@ -370,7 +370,7 @@ def main():
     p_dict.add_argument(
         "-p",
         "--provider",
-        choices=["kiro", "openrouter", "anthropic", "ollama"],
+        choices=["ollama", "openai", "openrouter", "anthropic"],
         help="LLM провайдер (не исп. в диктовке)",
     )
     p_dict.add_argument(

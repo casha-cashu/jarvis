@@ -306,14 +306,238 @@ class TestOpenRouterClient:
                 OpenRouterClient({"openrouter": {}})
 
 
-class TestKiroAIClient:
+# ──────────────────────────────────────────────
+# chat_with_tools — unit tests with mocked SDK
+# (covers LLM ↔ tools loop logic without real API calls)
+# ──────────────────────────────────────────────
+
+
+class _FakeToolCall:
+    """Mimics openai's ChatCompletionMessageToolCall."""
+
+    def __init__(self, name, args_json="{}", id_="call_x"):
+        self.id = id_
+        self.type = "function"
+        self.function = MagicMock()
+        self.function.name = name
+        self.function.arguments = args_json
+
+
+class _FakeAssistantMsg:
+    """Mimics openai's ChatCompletionMessage."""
+
+    def __init__(self, content=None, tool_calls=None):
+        self.content = content
+        self.tool_calls = tool_calls
+
+
+class _FakeChatCompletion:
+    def __init__(self, msg):
+        self.choices = [MagicMock(message=msg)]
+
+
+class TestOpenAIChatWithTools:
+    @pytest.fixture
+    def client(self, monkeypatch):
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        from jarvis.modules.llm import OpenAIClient
+
+        return OpenAIClient({"openai": {"model": "gpt-4o-mini"}})
+
+    def test_requires_on_tool_call(self, client):
+        with pytest.raises(RuntimeError, match="on_tool_call"):
+            client.chat_with_tools("hi", tools=[], on_tool_call=None)
+
+    def test_no_tool_call_returns_text(self, client):
+        """When LLM returns no tool_calls → final text returned."""
+        msg = _FakeAssistantMsg(content="answer", tool_calls=None)
+        completion = _FakeChatCompletion(msg)
+        client.client = MagicMock()
+        client.client.chat.completions.create.return_value = completion
+
+        result = client.chat_with_tools(
+            "test",
+            tools=[],
+            on_tool_call=lambda name, args: "",
+            max_iterations=2,
+        )
+        assert result == "answer"
+
+    def test_tool_call_executed_and_fed_back(self, client):
+        """LLM calls bash(echo) → we run callback → next iteration returns text."""
+        first_msg = _FakeAssistantMsg(
+            content=None,
+            tool_calls=[_FakeToolCall("bash", '{"cmd": "echo hi"}')],
+        )
+        second_msg = _FakeAssistantMsg(content="hi", tool_calls=None)
+        completions = [
+            _FakeChatCompletion(first_msg),
+            _FakeChatCompletion(second_msg),
+        ]
+        client.client = MagicMock()
+        client.client.chat.completions.create.side_effect = completions
+
+        seen = []
+
+        def on_tool(name, args):
+            seen.append((name, args))
+            return "hi"
+
+        result = client.chat_with_tools(
+            "test",
+            tools=[{"type": "function", "function": {"name": "bash"}}],
+            on_tool_call=on_tool,
+            max_iterations=3,
+        )
+        assert result == "hi"
+        assert seen == [("bash", {"cmd": "echo hi"})]
+        # Verify 2 iterations: first with tool_call, second without
+        assert client.client.chat.completions.create.call_count == 2
+
+    def test_max_iterations_cap(self, client):
+        """When LLM keeps calling tools forever → stop after max_iterations."""
+        looping_msg = _FakeAssistantMsg(
+            content=None,
+            tool_calls=[_FakeToolCall("bash", '{"cmd": "ls"}')],
+        )
+        client.client = MagicMock()
+        client.client.chat.completions.create.return_value = _FakeChatCompletion(
+            looping_msg
+        )
+
+        result = client.chat_with_tools(
+            "test",
+            tools=[],
+            on_tool_call=lambda name, args: "x",
+            max_iterations=4,
+        )
+        # After exhausting budget, returns empty content fallback message
+        assert "слишком много шагов" in result
+        assert client.client.chat.completions.create.call_count == 4
+
+
+class _FakeAnthropicToolUseBlock:
+    def __init__(self, name, args, id_="toolu_x"):
+        self.type = "tool_use"
+        self.name = name
+        self.input = args
+        self.id = id_
+
+
+class _FakeAnthropicTextBlock:
+    def __init__(self, text):
+        self.type = "text"
+        self.text = text
+
+
+class _FakeAnthropicResponse:
+    def __init__(self, content_blocks):
+        self.content = content_blocks
+
+
+class TestAnthropicChatWithTools:
+    @pytest.fixture
+    def client(self, monkeypatch):
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        from jarvis.modules.llm import AnthropicClient
+
+        return AnthropicClient({"anthropic": {"model": "claude-3-5-sonnet"}})
+
+    def test_requires_on_tool_call(self, client):
+        with pytest.raises(RuntimeError, match="on_tool_call"):
+            client.chat_with_tools("hi", tools=[], on_tool_call=None)
+
+    def test_text_only_response(self, client):
+        """Pure text response (no tool_use blocks) → returns text."""
+        resp = _FakeAnthropicResponse([_FakeAnthropicTextBlock("answer")])
+        client.client = MagicMock()
+        client.client.messages.create.return_value = resp
+
+        result = client.chat_with_tools(
+            "test",
+            tools=[],
+            on_tool_call=lambda n, a: "x",
+            max_iterations=2,
+        )
+        assert result == "answer"
+
+    def test_tool_use_executed_and_fed_back(self, client):
+        """LLM invokes bash tool → we execute → second response is text-only."""
+        first = _FakeAnthropicResponse(
+            [_FakeAnthropicToolUseBlock("bash", {"cmd": "echo hi"})]
+        )
+        second = _FakeAnthropicResponse([_FakeAnthropicTextBlock("hi")])
+        client.client = MagicMock()
+        client.client.messages.create.side_effect = [first, second]
+
+        seen = []
+
+        def on_tool(name, args):
+            seen.append((name, args))
+            return "hi"
+
+        result = client.chat_with_tools(
+            "test",
+            tools=[
+                {"type": "function", "function": {"name": "bash", "parameters": {}}}
+            ],
+            on_tool_call=on_tool,
+            max_iterations=3,
+        )
+        assert result == "hi"
+        assert seen == [("bash", {"cmd": "echo hi"})]
+        assert client.client.messages.create.call_count == 2
+
+    def test_schema_conversion(self, client):
+        """OpenAI-style tool schema is converted to Anthropic shape."""
+        resp = _FakeAnthropicResponse([_FakeAnthropicTextBlock("done")])
+        client.client = MagicMock()
+        client.client.messages.create.return_value = resp
+
+        openai_schema = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "bash",
+                    "description": "Execute bash command",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }
+        ]
+
+        client.chat_with_tools(
+            "test",
+            tools=openai_schema,
+            on_tool_call=lambda n, a: "x",
+            max_iterations=1,
+        )
+        # Inspect what was passed to the SDK
+        call_kwargs = client.client.messages.create.call_args.kwargs
+        assert "tools" in call_kwargs
+        # Anthropic shape: {name, description, input_schema}
+        tool = call_kwargs["tools"][0]
+        assert tool["name"] == "bash"
+        assert tool["description"] == "Execute bash command"
+        assert "input_schema" in tool
+
+
+class TestOpenAIClient:
     def test_init_missing_key(self):
-        """Без KIRO_API_KEY — ValueError."""
-        from jarvis.modules.llm import KiroAIClient
+        """Без OPENAI_API_KEY — ValueError."""
+        from jarvis.modules.llm import OpenAIClient
 
         with patch.dict("os.environ", {}, clear=True):
-            with pytest.raises(ValueError, match="KIRO_API_KEY"):
-                KiroAIClient({"kiro": {}})
+            with pytest.raises(ValueError, match="OPENAI_API_KEY"):
+                OpenAIClient({"openai": {}})
+
+    def test_init_ok(self):
+        """С ключом —客户端 строится."""
+        from jarvis.modules.llm import OpenAIClient
+
+        with patch.dict("os.environ", {"OPENAI_API_KEY": "sk-test"}, clear=True):
+            client = OpenAIClient({"openai": {"model": "gpt-4o-mini"}})
+            assert client.model == "gpt-4o-mini"
+            assert client.max_tokens == 1024
 
 
 # ──────────────────────────────────────────────
@@ -412,14 +636,11 @@ class TestHistoryPersistence:
         """Главный UX-кейс: сменили provider — диалог не теряется."""
         from jarvis.modules.llm import OllamaClient
 
-        # Kiro требует api_key, поэтому эмулируем через monkeypatch env.
-        # Но persist проверяем на уровне LLMClient — он общий.
         c1 = OllamaClient(self._config())
         c1.add_to_history("user", "расскажи шутку")
         c1.add_to_history("assistant", "почему программисты путают Halloween")
 
-        # KiroAIClient.__init__ упадёт без ключа, но его parent init уже
-        # вызвал _load_history(). Проверяем через прямой вызов вспом. ф-ии.
+        # Новый клиент того же (или другого) провайдера читает общий файл.
         from jarvis.modules.llm import _load_history
 
         loaded = _load_history()

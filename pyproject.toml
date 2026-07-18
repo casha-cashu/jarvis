@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "jarvis-voice-assistant"
-version = "2.3.0"
+version = "2.4.0"
 description = "JARVIS — голосовой ассистент для Linux и macOS"
 readme = "README.md"
 license = {text = "MIT"}
@@ -28,6 +28,7 @@ dependencies = [
     "faster-whisper>=1.0",
     "silero-vad>=0.2",
     "anthropic>=0.30",
+    "openai>=1.40",
     "requests>=2.30",
     "gtts>=2.5",
     "pydantic>=2.0",

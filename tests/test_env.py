@@ -7,7 +7,6 @@ def test_drops_known_secret_vars(monkeypatch):
     """API ключи и токены не должны попадать в окружение child-процессов."""
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-leak-me")
     monkeypatch.setenv("OPENROUTER_API_KEY", "or-leak-me")
-    monkeypatch.setenv("KIRO_API_KEY", "kiro-leak-me")
     monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-leak-me")
     monkeypatch.setenv("GITHUB_TOKEN", "gh-leak-me")
     monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "aws-leak-me")
@@ -19,7 +18,6 @@ def test_drops_known_secret_vars(monkeypatch):
     for forbidden in (
         "ANTHROPIC_API_KEY",
         "OPENROUTER_API_KEY",
-        "KIRO_API_KEY",
         "OPENAI_API_KEY",
         "GITHUB_TOKEN",
         "AWS_SECRET_ACCESS_KEY",

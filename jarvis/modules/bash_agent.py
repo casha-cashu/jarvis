@@ -3,10 +3,10 @@
 Bash agent — LLM-driven system automation with approval gate.
 
 When a query doesn't match any command (exact/fuzzy/pattern/app/voice), it
-falls through to the LLM. If the LLM is an agent-capable provider (Ollama with
-tool-calling models, Kiro, Anthropic, OpenRouter), it receives a set of tools
-and can execute bash commands, read/write files, and search the web to
-fulfill the request.
+falls through to the LLM. If the LLM is an agent-capable provider (Ollama,
+OpenAI, Anthropic — all with native tool-calling), it receives a set of
+tools and can execute bash commands, read/write files, and search the web
+to fulfill the request.
 
 Safety: three-layer approval — hardline blocklist (catastrophic commands),
 dangerous-pattern regex detector (~40 patterns), and optional voice confirmation.

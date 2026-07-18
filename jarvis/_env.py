@@ -1,7 +1,7 @@
 """Sanitized environment for subprocess calls.
 
 Any child process spawned from JARVIS must NOT inherit API keys
-(ANTHROPIC_API_KEY, OPENROUTER_API_KEY, KIRO_API_KEY, …) or other
+(ANTHROPIC_API_KEY, OPENAI_API_KEY, OPENROUTER_API_KEY, …) or other
 sensitive variables — they have no business in screenshot tools,
 audio players, or the like.
 

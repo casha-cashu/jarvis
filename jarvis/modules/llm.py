@@ -1,7 +1,14 @@
 #!/usr/bin/env python3
 """
-LLM module for dialogue
-Поддержка Kiro AI (Omniroute), OpenRouter, Anthropic, Ollama
+LLM module for dialogue.
+
+Supported providers:
+  - Ollama (local, with native tool calling)
+  - OpenAI (with Responses / chat.completions tool calling)
+  - Anthropic Claude (with native tool calling)
+  - OpenRouter (OpenAI-compatible aggregator, plain chat only)
+
+Kiro was removed — it requires Omniroute which isn't publicly available.
 """
 
 import json
@@ -14,12 +21,19 @@ from typing import List, Dict
 import anthropic
 import requests
 
+try:
+    # `openai` is an optional dep — the client init raises only when the
+    # user actually picks provider="openai".
+    import openai as _openai_mod
+except ImportError:
+    _openai_mod = None
+
 logger = logging.getLogger(__name__)
 
 
 # ── Persistence ────────────────────────────────────────────────────────────
 # История диалога живёт в ~/.local/share/jarvis/history.json. Переключение
-# провайдера (kiro → ollama → …) сохраняет общий контекст — каждый новый
+# провайдера (ollama → openai → …) сохраняет общий контекст — каждый новый
 # LLMClient читает тот же файл при старте. Файл атомарно перезаписывается
 # через temp+rename, чтобы конкурентные записи не разорвали его.
 
@@ -90,118 +104,13 @@ class LLMClient(ABC):
         """Отправляет сообщение и получает ответ"""
 
 
-class KiroAIClient(LLMClient):
-    """Клиент для Kiro AI (Omniroute) с Claude Sonnet 4.5"""
-
-    def __init__(self, config: dict):
-        super().__init__(config)
-
-        kiro_config = config.get("kiro", {})
-        self.api_key = os.getenv("KIRO_API_KEY") or kiro_config.get("api_key")
-        self.base_url = kiro_config.get("base_url", "https://api.kiroai.com/v1")
-        self.model = kiro_config.get("model", "claude-sonnet-4-5")
-        self.temperature = kiro_config.get("temperature", 0.7)
-        self.max_tokens = kiro_config.get("max_tokens", 1024)
-        self.timeout = kiro_config.get("timeout", 30)
-
-        if not self.api_key:
-            raise ValueError("KIRO_API_KEY не установлен")
-
-        logger.info(f"✅ Kiro AI клиент: {self.model}")
-
-    def chat(self, message: str, stream_callback=None) -> str:
-        """
-        Отправляет сообщение в Kiro AI
-
-        Args:
-            message: Сообщение пользователя
-            stream_callback: Функция для обработки streaming ответа (опционально)
-        """
-        try:
-            self.add_to_history("user", message)
-
-            # Формируем запрос
-            headers = {
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json",
-            }
-
-            messages = []
-            if self.system_prompt:
-                messages.append({"role": "system", "content": self.system_prompt})
-
-            messages.extend(self.history)
-
-            payload = {
-                "model": self.model,
-                "messages": messages,
-                "temperature": self.temperature,
-                "max_tokens": self.max_tokens,
-                "stream": bool(stream_callback),  # Streaming если есть callback
-            }
-
-            # Отправляем запрос
-            response = requests.post(
-                f"{self.base_url}/chat/completions",
-                headers=headers,
-                json=payload,
-                timeout=self.timeout,
-                stream=bool(stream_callback),
-            )
-
-            response.raise_for_status()
-
-            # Streaming режим
-            if stream_callback:
-                full_text = ""
-                for line in response.iter_lines():
-                    if line:
-                        line = line.decode("utf-8")
-                        if line.startswith("data: "):
-                            data = line[6:]
-                            if data == "[DONE]":
-                                break
-                            try:
-                                chunk = json.loads(data)
-                                delta = chunk["choices"][0]["delta"].get("content", "")
-                                if delta:
-                                    full_text += delta
-                                    stream_callback(delta)
-                            except (
-                                json.JSONDecodeError,
-                                KeyError,
-                                IndexError,
-                                TypeError,
-                            ):
-                                continue
-
-                self.add_to_history("assistant", full_text)
-                return full_text
-
-            # Обычный режим
-            data = response.json()
-            answer = data["choices"][0]["message"]["content"].strip()
-            self.add_to_history("assistant", answer)
-            return answer
-
-        except requests.exceptions.Timeout:
-            logger.error("❌ Таймаут Kiro AI")
-            return "Извините, сэр, превышено время ожидания ответа."
-        except requests.exceptions.RequestException as e:
-            logger.error(f"❌ Ошибка Kiro AI: {e}")
-            return "Извините, сэр, произошла ошибка связи с ИИ."
-        except Exception as e:
-            logger.error(f"❌ Неожиданная ошибка: {e}")
-            return "Извините, сэр, произошла системная ошибка."
-
-
 class AnthropicClient(LLMClient):
-    """Клиент для Anthropic API (прямой)"""
+    """Клиент для Anthropic API (прямой) с поддержкой tool calling."""
 
     def __init__(self, config: dict):
         super().__init__(config)
 
-        anthropic_config = config.get("anthropic", {})
+        anthropic_config = config.get("anthropic", {}) or {}
         api_key = os.getenv("ANTHROPIC_API_KEY") or anthropic_config.get("api_key")
 
         if not api_key:
@@ -211,6 +120,7 @@ class AnthropicClient(LLMClient):
         self.model = anthropic_config.get("model", "claude-3-5-sonnet-20241022")
         self.temperature = anthropic_config.get("temperature", 0.7)
         self.max_tokens = anthropic_config.get("max_tokens", 1024)
+        self.timeout = anthropic_config.get("timeout", 30)
 
         logger.info(f"✅ Anthropic клиент: {self.model}")
 
@@ -225,6 +135,7 @@ class AnthropicClient(LLMClient):
                 temperature=self.temperature,
                 system=self.system_prompt,
                 messages=self.history,
+                timeout=self.timeout,
             )
 
             answer = response.content[0].text.strip()
@@ -234,6 +145,103 @@ class AnthropicClient(LLMClient):
 
         except Exception as e:
             logger.error(f"❌ Ошибка Anthropic: {e}")
+            return "Извините, сэр, произошла ошибка связи с ИИ."
+
+    def chat_with_tools(
+        self,
+        message: str,
+        tools: list,
+        on_tool_call=None,
+        max_iterations: int = 5,
+    ) -> str:
+        """LLM ↔ tools loop via Anthropic's native tools API.
+
+        Anthropic schema differs from OpenAI: ``tools`` is a list of
+        ``{name, description, input_schema}`` (NOT ``{type, function}``).
+        We perform the conversion on the fly from the OpenAI-style schemas
+        produced by bash_agent.get_tool_schemas().
+        """
+        if on_tool_call is None:
+            raise RuntimeError("chat_with_tools requires on_tool_call callback")
+        try:
+            self.add_to_history("user", message)
+
+            # Convert OpenAI tool schema → Anthropic schema
+            anthropic_tools = []
+            for t in tools:
+                fn = t.get("function", t)
+                anthropic_tools.append(
+                    {
+                        "name": fn["name"],
+                        "description": fn.get("description", ""),
+                        "input_schema": fn.get("parameters", {"type": "object"}),
+                    }
+                )
+
+            base_messages = list(self.history)
+
+            for iteration in range(max_iterations):
+                response = self.client.messages.create(
+                    model=self.model,
+                    max_tokens=self.max_tokens,
+                    temperature=self.temperature,
+                    system=self.system_prompt,
+                    messages=base_messages,
+                    tools=anthropic_tools,
+                    timeout=self.timeout,
+                )
+
+                # Anthropic returns content as a list of blocks
+                # (TextBlock | ToolUseBlock)
+                tool_use_blocks = [b for b in response.content if b.type == "tool_use"]
+                text_blocks = [b for b in response.content if b.type == "text"]
+                final_text = "".join(b.text for b in text_blocks).strip()
+
+                if not tool_use_blocks:
+                    if final_text:
+                        self.add_to_history("assistant", final_text)
+                        return final_text
+                    return ""
+
+                # Append the assistant message verbatim (content blocks as-is)
+                base_messages.append({"role": "assistant", "content": response.content})
+
+                # Execute each tool call and feed back via user-role tool_result
+                tool_results = []
+                for block in tool_use_blocks:
+                    name = block.name
+                    args = block.input or {}
+                    try:
+                        result = str(on_tool_call(name, args))
+                    except Exception as e:
+                        result = f"[tool error: {e}]"
+                    logger.debug(
+                        "anthropic tool_call iter=%d name=%s args=%s -> %s",
+                        iteration,
+                        name,
+                        args,
+                        result[:120],
+                    )
+                    tool_results.append(
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": block.id,
+                            "content": result,
+                        }
+                    )
+                base_messages.append({"role": "user", "content": tool_results})
+
+            logger.warning(
+                "Anthropic tool loop exceeded max_iterations=%d", max_iterations
+            )
+            return (
+                final_text
+                if final_text
+                else "Извините, сэр, задача потребовала слишком много шагов."
+            )
+
+        except Exception as e:
+            logger.error(f"❌ Ошибка Anthropic chat_with_tools: {e}")
             return "Извините, сэр, произошла ошибка связи с ИИ."
 
 
@@ -295,6 +303,165 @@ class OpenRouterClient(LLMClient):
 
         except Exception as e:
             logger.error(f"❌ Ошибка OpenRouter: {e}")
+            return "Извините, сэр, произошла ошибка связи с ИИ."
+
+
+class OpenAIClient(LLMClient):
+    """Native OpenAI client with tool calling support.
+
+    Uses the OpenAI Python SDK (`openai>=1.40`). Supports ``chat_with_tools``
+    via the standard ``tools`` parameter of ``chat.completions.create`` —
+    the same wire format as bash_agent.get_tool_schemas() returns, so we
+    pass them through verbatim.
+    """
+
+    def __init__(self, config: dict):
+        super().__init__(config)
+
+        if _openai_mod is None:
+            raise RuntimeError(
+                "openai package not installed — run `pip install openai>=1.40`"
+            )
+
+        openai_cfg = config.get("openai", {}) or {}
+        api_key = os.getenv("OPENAI_API_KEY") or openai_cfg.get("api_key")
+        if not api_key:
+            raise ValueError("OPENAI_API_KEY не установлен")
+
+        self.client = _openai_mod.OpenAI(
+            api_key=api_key,
+            base_url=openai_cfg.get("base_url"),
+            timeout=openai_cfg.get("timeout", 30),
+        )
+        self.model = openai_cfg.get("model", "gpt-4o-mini")
+        self.temperature = openai_cfg.get("temperature", 0.7)
+        self.max_tokens = openai_cfg.get("max_tokens", 1024)
+
+        logger.info(f"✅ OpenAI клиент: {self.model}")
+
+    def _build_messages(self) -> list:
+        msgs = []
+        if self.system_prompt:
+            msgs.append({"role": "system", "content": self.system_prompt})
+        msgs.extend(self.history)
+        return msgs
+
+    def chat(self, message: str) -> str:
+        try:
+            self.add_to_history("user", message)
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=self._build_messages(),
+                temperature=self.temperature,
+                max_tokens=self.max_tokens,
+            )
+            answer = (response.choices[0].message.content or "").strip()
+            self.add_to_history("assistant", answer)
+            return answer
+        except Exception as e:
+            logger.error(f"❌ Ошибка OpenAI: {e}")
+            return "Извините, сэр, произошла ошибка связи с ИИ."
+
+    def chat_with_tools(
+        self,
+        message: str,
+        tools: list,
+        on_tool_call=None,
+        max_iterations: int = 5,
+    ) -> str:
+        """LLM ↔ tools loop via OpenAI chat.completions with ``tools``.
+
+        ``tools`` schemas are OpenAI-shaped already — passed verbatim.
+        The ``tool_call`` response is a list of ``response.choices[0].message.tool_calls``,
+        each with ``id``, ``function.name``, ``function.arguments`` (JSON string).
+        We feed back results as ``role: "tool"`` messages with ``tool_call_id``.
+        """
+        if on_tool_call is None:
+            raise RuntimeError("chat_with_tools requires on_tool_call callback")
+        try:
+            self.add_to_history("user", message)
+            base_messages = self._build_messages()
+
+            for iteration in range(max_iterations):
+                response = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=base_messages,
+                    tools=tools,
+                    tool_choice="auto",
+                    temperature=self.temperature,
+                    max_tokens=self.max_tokens,
+                )
+                msg = response.choices[0].message
+                content = (msg.content or "").strip()
+
+                tool_calls = getattr(msg, "tool_calls", None) or []
+                if not tool_calls:
+                    if content:
+                        self.add_to_history("assistant", content)
+                        return content
+                    return ""
+
+                # Append the assistant message with tool_calls to the running
+                # transcript. OpenAI needs both content and tool_calls fields.
+                base_messages.append(
+                    {
+                        "role": "assistant",
+                        "content": content,
+                        "tool_calls": [
+                            {
+                                "id": tc.id,
+                                "type": "function",
+                                "function": {
+                                    "name": tc.function.name,
+                                    "arguments": tc.function.arguments,
+                                },
+                            }
+                            for tc in tool_calls
+                        ],
+                    }
+                )
+
+                for tc in tool_calls:
+                    name = tc.function.name
+                    raw_args = tc.function.arguments or "{}"
+                    try:
+                        args = (
+                            json.loads(raw_args)
+                            if isinstance(raw_args, str)
+                            else raw_args
+                        )
+                    except json.JSONDecodeError:
+                        args = {}
+                    try:
+                        result = str(on_tool_call(name, args))
+                    except Exception as e:
+                        result = f"[tool error: {e}]"
+                    logger.debug(
+                        "openai tool_call iter=%d name=%s args=%s -> %s",
+                        iteration,
+                        name,
+                        args,
+                        result[:120],
+                    )
+                    base_messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tc.id,
+                            "content": result,
+                        }
+                    )
+
+            logger.warning(
+                "OpenAI tool loop exceeded max_iterations=%d", max_iterations
+            )
+            return (
+                content
+                if content
+                else "Извините, сэр, задача потребовала слишком много шагов."
+            )
+
+        except Exception as e:
+            logger.error(f"❌ Ошибка OpenAI chat_with_tools: {e}")
             return "Извините, сэр, произошла ошибка связи с ИИ."
 
 
@@ -464,7 +631,7 @@ class LLMManager:
             config: Словарь с настройками из config.yaml['llm']
         """
         self.config = config
-        self.provider = config.get("provider", "kiro")
+        self.provider = config.get("provider", "ollama")
         self.clients = {}
         self._cache: "OrderedDict[str, str]" = OrderedDict()
 
@@ -482,12 +649,20 @@ class LLMManager:
 
     def _init_clients(self):
         """Инициализирует доступные клиенты"""
-        # Kiro AI
+        # Ollama — всегда доступен по умолчанию (локально)
         try:
-            if self.config.get("kiro", {}).get("api_key") or os.getenv("KIRO_API_KEY"):
-                self.clients["kiro"] = KiroAIClient(self.config)
+            self.clients["ollama"] = OllamaClient(self.config)
         except Exception as e:
-            logger.warning(f"⚠️ Kiro AI недоступен: {e}")
+            logger.warning(f"⚠️ Ollama недоступен: {e}")
+
+        # OpenAI (нативный)
+        try:
+            if self.config.get("openai", {}).get("api_key") or os.getenv(
+                "OPENAI_API_KEY"
+            ):
+                self.clients["openai"] = OpenAIClient(self.config)
+        except Exception as e:
+            logger.warning(f"⚠️ OpenAI недоступен: {e}")
 
         # Anthropic
         try:
@@ -498,7 +673,7 @@ class LLMManager:
         except Exception as e:
             logger.warning(f"⚠️ Anthropic недоступен: {e}")
 
-        # OpenRouter
+        # OpenRouter (OpenAI-compatible aggregator)
         try:
             if self.config.get("openrouter", {}).get("api_key") or os.getenv(
                 "OPENROUTER_API_KEY"
@@ -506,12 +681,6 @@ class LLMManager:
                 self.clients["openrouter"] = OpenRouterClient(self.config)
         except Exception as e:
             logger.warning(f"⚠️ OpenRouter недоступен: {e}")
-
-        # Ollama
-        try:
-            self.clients["ollama"] = OllamaClient(self.config)
-        except Exception as e:
-            logger.warning(f"⚠️ Ollama недоступен: {e}")
 
         if not self.clients:
             raise RuntimeError("❌ Ни один LLM провайдер не доступен")

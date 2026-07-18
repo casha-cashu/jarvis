@@ -63,7 +63,7 @@ def mock_env_vars(monkeypatch):
     """Устанавливает тестовые переменные окружения и чистит после теста."""
     monkeypatch.setenv("TEST_VAR", "test_value")
     monkeypatch.setenv("HOME", "/home/testuser")
-    monkeypatch.setenv("KIRO_API_KEY", "test-kiro-key")
+    monkeypatch.setenv("OPENAI_API_KEY", "test-openai-key")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-anthropic-key")
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-openrouter-key")
     yield

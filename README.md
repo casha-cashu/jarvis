@@ -1,18 +1,21 @@
 # JARVIS — голосовой ассистент
 
-Голосовой ИИ-ассистент для Linux и macOS. Распознаёт речь (Vosk / Whisper), выполняет системные команды, отвечает через LLM (локально или через API), синтезирует речь (Piper TTS).
+Голосовой ИИ-ассистент для Linux и macOS. Распознаёт речь (Vosk / Whisper), выполняет системные команды, отвечает через LLM (локально или через API), синтезирует речь (Piper TTS). При подключённом локальном Ollama умеет автономно выполнять задачи через bash/read/write tools с approval gate.
 
 ## Возможности
 
 - **Распознавание речи** — Vosk (быстрый, офлайн) или faster-whisper (точный)
 - **Синтез речи** — Piper TTS (русский голос Дмитрия), gTTS fallback
-- **LLM интеграция** — Ollama (локально), OpenAI-совместимые API, Anthropic Claude
+- **LLM интеграция** — Ollama (локально, с tool-use), OpenAI (нативный API, с tool-use), Anthropic Claude (нативный API, с tool-use), OpenRouter (агрегатор, чат)
+- **NLU-классификатор** — TF-IDF + LogisticRegression intent classifier (кэшируется через joblib). Маршрутизирует русские фразы в команды по intent+slots, fallback на fuzzy-match
+- **Bash-агент** — LLM (Ollama) может вызывать bash/read/write tools через нативный Ollama tool-calling API. Трёхслойный approval gate: hardline blocklist (`rm -rf /`, `mkfs`, `dd of=/dev/`, fork bombs, ...) → dangerous-pattern детектор (~20 паттернов: `curl|sh`, `git push -f`, `iptables -F`, ...) → approval gate (`auto` / `strict` / `yolo`)
 - **Управление системой** — воркспейсы, окна, скриншоты, звук, блокировка
 - **Кроссплатформенность** — автоопределение DE/WM (Hyprland, KDE, GNOME, i3, Sway, macOS)
 - **Multi-turn диалоги** — 10с таймаут на follow-up, mute/unmute голосом
 - **Напоминания** — «напомни через 10 минут», «таймер на 5 минут»
 - **Диктовка** — голосовой ввод текста через wtype/xdotool
 - **Wake word** — «джарвис» + альтернативы
+- **Persistence LLM-истории** — диалог сохраняется в `~/.local/share/jarvis/history.json`, переключение провайдера не теряет контекст
 
 ## Поддерживаемые платформы
 
@@ -99,7 +102,7 @@ pip install pyyaml vosk pyaudio numpy torch faster-whisper silero-vad anthropic 
 
 - **Микрофон**: укажите `device_name` вашего микрофона (список устройств выводится при запуске)
 - **STT**: выберите `vosk` (быстрый) или `whisper` (точный)
-- **LLM**: укажите провайдер (`ollama`, `kiro`, `openrouter`, `anthropic`)
+- **LLM**: укажите провайдер (`ollama`, `openai`, `anthropic`, `openrouter`)
 - **TTS**: настройте пути к Piper бинарнику и модели
 
 ## Использование

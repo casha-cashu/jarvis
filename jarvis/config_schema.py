@@ -112,15 +112,6 @@ class TTSConfig(BaseModel):
         return v
 
 
-class KiroConfig(BaseModel):
-    api_key: Optional[str] = None
-    base_url: str = "http://localhost:20128/v1"
-    model: str = "kr/claude-sonnet-4.5"
-    temperature: float = 0.7
-    max_tokens: int = 1024
-    timeout: int = 30
-
-
 class OpenRouterConfig(BaseModel):
     api_key: Optional[str] = None
     model: str = "anthropic/claude-3.5-sonnet"
@@ -133,20 +124,50 @@ class OllamaConfig(BaseModel):
     temperature: float = 0.7
 
 
+class OpenAIConfig(BaseModel):
+    api_key: Optional[str] = None
+    base_url: Optional[str] = None  # None → api.openai.com
+    model: str = "gpt-4o-mini"
+    temperature: float = 0.7
+    max_tokens: int = 1024
+    timeout: int = 30
+
+
+class AnthropicConfig(BaseModel):
+    api_key: Optional[str] = None
+    model: str = "claude-3-5-sonnet-20241022"
+    temperature: float = 0.7
+    max_tokens: int = 1024
+    timeout: int = 30
+
+
 class LLMConfig(BaseModel):
     provider: str = "ollama"
-    kiro: KiroConfig = Field(default_factory=KiroConfig)
-    openrouter: OpenRouterConfig = Field(default_factory=OpenRouterConfig)
     ollama: OllamaConfig = Field(default_factory=OllamaConfig)
+    openai: OpenAIConfig = Field(default_factory=OpenAIConfig)
+    anthropic: AnthropicConfig = Field(default_factory=AnthropicConfig)
+    openrouter: OpenRouterConfig = Field(default_factory=OpenRouterConfig)
+    # Agent loop options — see jarvis.response_pipeline
+    agent_enabled: bool = False
+    agent_max_iterations: int = 5
+    agent_approval_mode: str = "auto"
     max_history: int = 20
     system_prompt: Optional[str] = None
 
     @field_validator("provider")
     @classmethod
     def validate_provider(cls, v: str) -> str:
-        allowed = ("ollama", "kiro", "openrouter", "anthropic")
+        allowed = ("ollama", "openai", "openrouter", "anthropic")
         if v not in allowed:
             raise ValueError(f"LLM provider must be one of {allowed}, got '{v}'")
+        return v
+
+    @field_validator("agent_approval_mode")
+    @classmethod
+    def validate_approval_mode(cls, v: str) -> str:
+        allowed = ("auto", "strict", "yolo")
+        if v not in allowed:
+            raise ValueError(f"agent_approval_mode must be one of {allowed}, got '{v}'")
         return v
 
 

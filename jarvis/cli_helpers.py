@@ -101,46 +101,51 @@ def select_provider_interactive(config: dict) -> Tuple[str, dict]:
     print("╔" + "═" * 56 + "╗")
     print("║            🤖  НАСТРОЙКА LLM               ║")
     print("╠" + "═" * 56 + "╣")
-    print("║  1. 🌐 OpenAI-совместимый (Kiro, OpenRouter, ║")
-    print("║     локальный LLM, любой OpenAI proxy)      ║")
+    print("║  1. 🌐 OpenAI (нативный API)                ║")
     print("║  2. 🎯 Anthropic Claude (прямой API)        ║")
     print("║  3. 💻 Ollama (локально)                    ║")
+    print("║  4. 🔄 OpenRouter (агрегатор OpenAI-совм.)  ║")
     print("║  0. Выйти                                   ║")
     print("╚" + "═" * 56 + "╝")
 
     while True:
         try:
-            choice = input("\n  👉 Тип подключения (0-3): ").strip()
+            choice = input("\n  👉 Тип подключения (0-4): ").strip()
         except (EOFError, KeyboardInterrupt):
             print("\n  👋 Выход.")
             sys.exit(0)
 
         if choice == "1":
-            print("\n  ── OpenAI-совместимый API ──")
-            url = _input_str("  Введи base URL (с /v1)", "http://localhost:20128/v1")
-            api_key = input("  Введи API ключ (Enter если не нужен): ").strip()
+            print("\n  ── OpenAI ──")
+            api_key = _input_str(
+                "  Введи API ключ OpenAI", os.getenv("OPENAI_API_KEY", "")
+            )
+            if not api_key:
+                print("  ❌ API ключ обязателен")
+                continue
+            base_url = (
+                input("  Введи base URL (Enter для api.openai.com): ").strip() or None
+            )
 
-            print(f"  🔍 Проверяю {url}...")
-            models = _fetch_openai_models(url, api_key)
-            if models:
-                print(f"  ✅ Сервер ответил, моделей: {len(models)}")
-            else:
-                print("  ⚠️  Не удалось получить список моделей")
+            openai_models = [
+                "gpt-4o-mini",
+                "gpt-4o",
+                "gpt-4-turbo",
+                "gpt-3.5-turbo",
+            ]
+            model = _pick_model(openai_models, "  👉 Выбери модель OpenAI")
 
-            model = _pick_model(models, "  👉 Выбери модель")
-
-            # api_key уезжает в override (и затем в Jarvis(provider_config=))
-            # — не пишем в os.environ, чтобы ключ не утёк в child subprocess'ы.
             override = {
-                "base_url": url,
                 "api_key": api_key,
                 "model": model,
                 "temperature": 0.7,
                 "max_tokens": 1024,
                 "timeout": 30,
             }
+            if base_url:
+                override["base_url"] = base_url
             print(f"\n  ✅ Настроено: OpenAI ({model})")
-            return ("kiro", override)
+            return ("openai", override)
 
         elif choice == "2":
             print("\n  ── Anthropic Claude ──")
@@ -186,8 +191,31 @@ def select_provider_interactive(config: dict) -> Tuple[str, dict]:
             print(f"\n  ✅ Настроено: Ollama {url} / {model}")
             return ("ollama", override)
 
+        elif choice == "4":
+            print("\n  ── OpenRouter ──")
+            api_key = _input_str(
+                "  Введи API ключ OpenRouter", os.getenv("OPENROUTER_API_KEY", "")
+            )
+            if not api_key:
+                print("  ❌ API ключ обязателен")
+                continue
+            or_models = [
+                "anthropic/claude-3.5-sonnet",
+                "openai/gpt-4o-mini",
+                "google/gemini-flash-1.5",
+                "meta-llama/llama-3.1-70b-instruct",
+            ]
+            model = _pick_model(or_models, "  👉 Выбери модель OpenRouter")
+            override = {
+                "api_key": api_key,
+                "model": model,
+                "temperature": 0.7,
+            }
+            print(f"\n  ✅ Настроено: OpenRouter {model}")
+            return ("openrouter", override)
+
         elif choice == "0":
             print("\n  👋 Выход.")
             sys.exit(0)
         else:
-            print("  ❌ Введи 0, 1, 2 или 3")
+            print("  ❌ Введи 0, 1, 2, 3 или 4")
