@@ -1,0 +1,153 @@
+@import "tailwindcss";
+@plugin "@tailwindcss/typography";
+
+@theme {
+  --color-bg: #0a0a0b;
+  --color-surface: #141417;
+  --color-surface-2: #1d1d20;
+  --color-border: #2a2a2e;
+  --color-text: #ededee;
+  --color-text-muted: #8a8a90;
+  --color-accent: #60a5fa;
+  --color-accent-bg: #1e3a5f;
+  --color-warn: #f59e0b;
+  --color-danger: #ef4444;
+
+  --font-sans: "Inter var", "Inter", "SF Pro Display", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", "SF Mono", "Geist Mono", monospace;
+}
+
+:root, [data-theme="dark"] {
+  color-scheme: dark;
+}
+
+[data-theme="light"] {
+  color-scheme: light;
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+}
+
+:root[data-theme="light"] input,
+:root[data-theme="light"] select,
+:root[data-theme="light"] textarea,
+:root[data-theme="light"] option {
+  background-color: var(--color-surface-2);
+  color: var(--color-text);
+}
+
+html, body, #root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background-color: var(--color-bg);
+  color: var(--color-text);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+  user-select: none;
+}
+
+[data-tauri-drag-region] {
+  -webkit-app-region: drag;
+}
+
+button, a, input, textarea, select {
+  -webkit-app-region: no-drag;
+  user-select: text;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--color-border);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-text-muted);
+}
+
+/* ── Animations ──────────────────────────────────────────────────────────── */
+
+@keyframes fade-slide-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes pop-in {
+  from {
+    opacity: 0;
+    transform: scale(0.94);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes glow-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 8px color-mix(in srgb, var(--color-accent) 35%, transparent);
+  }
+  50% {
+    box-shadow: 0 0 20px color-mix(in srgb, var(--color-accent) 60%, transparent);
+  }
+}
+
+.animate-fade-in {
+  animation: fade-slide-in 0.22s ease-out both;
+}
+
+.animate-pop-in {
+  animation: pop-in 0.18s ease-out both;
+}
+
+.animate-glow {
+  animation: glow-pulse 2.4s ease-in-out infinite;
+}
+
+/* Smooth theme + hover transitions everywhere (colors only — cheap). */
+body,
+body * {
+  transition-property: background-color, border-color, color, fill, stroke;
+  transition-duration: 160ms;
+  transition-timing-function: ease;
+}
+/* ...except where motion is explicit or per-frame (indicators). */
+.animate-spin,
+.animate-bounce,
+.animate-pulse,
+.animate-glow {
+  animation-duration: unset;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-fade-in,
+  .animate-pop-in,
+  .animate-glow {
+    animation: none;
+  }
+  body,
+  body * {
+    transition-duration: 0ms !important;
+  }
+}

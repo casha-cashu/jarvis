@@ -109,7 +109,7 @@ pip install pyyaml vosk pyaudio numpy torch faster-whisper silero-vad scikit-lea
 
 ### Модели
 
-- **Vosk**: `python -c "from jarvis.setup import download_vosk; download_vosk()"`
+- **Vosk**: запустите мастер `jarvis setup` (скачает модель) или укажите `model_path` в config.yaml
 - **faster-whisper**: скачивается автоматически при первом запуске. Для офлайн-использования укажите `model_path` в `config.yaml` (см. ниже)
 - **Piper TTS**: `yay -S piper-tts` (Arch) или бинарник с [GitHub](https://github.com/rhasspy/piper/releases)
 

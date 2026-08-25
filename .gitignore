@@ -54,3 +54,8 @@ SESSION.md
 # ── Local artifacts (review) ──
 *.joblib
 audit-review/
+
+# ── jarvis-ui ──
+node_modules/
+src-tauri/target/
+dist/
