@@ -35,7 +35,7 @@ class VoskSTT:
         Args:
             model_path: Путь к модели Vosk
             sample_rate: Частота для Vosk (обычно 16000)
-            device_name: Часть имени микрофона для поиска (например "USB PnP")
+            device_name: Часть имени микрофона для поиска (например "Blue Microphones")
             use_vad: Использовать Silero VAD
             vad_threshold: Порог VAD (0.0-1.0)
         """
@@ -213,7 +213,6 @@ class VoskSTT:
         silence_start = None
         silence_threshold = 2.0  # секунд тишины для завершения фразы
         min_phrase_duration = 0.5  # минимальная длительность речи (сек)
-        extra_listen_after_wake = 2.0  # дослушиваем после wake word
 
         try:
             while stream.is_active():
@@ -245,7 +244,7 @@ class VoskSTT:
                 audio_float32 = audio_int16.astype(np.float32) / 32768.0
                 peak = np.max(np.abs(audio_float32))
                 if peak > 0 and peak < 0.15:  # Только если сигнал слишком тихий
-                    gain = min(0.7 / peak, 4.0)  # Поднимаем до -3dB, макс增益 4x
+                    gain = min(0.7 / peak, 4.0)  # Поднимаем до -3dB, максимум 4x
                     audio_float32 = audio_float32 * gain
                     audio_int16 = np.clip(
                         (audio_float32 * 32768.0).astype(np.int16), -32768, 32767

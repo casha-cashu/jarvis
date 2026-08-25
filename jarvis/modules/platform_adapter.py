@@ -98,9 +98,12 @@ def _detect_de_from_env() -> Optional[str]:
 
 def _detect_de_from_session() -> Optional[str]:
     """Шаг 2: ``loginctl show-session`` — DesktopName=… (systemd-only)."""
+    session_id = os.environ.get("XDG_SESSION_ID", "")
+    if not session_id:
+        return None
     try:
         result = subprocess.run(
-            ["loginctl", "show-session"],
+            ["loginctl", "show-session", session_id],
             capture_output=True,
             text=True,
             timeout=2,

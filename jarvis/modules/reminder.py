@@ -20,8 +20,23 @@ logger = logging.getLogger(__name__)
 
 REMINDERS_FILE = Path.home() / ".local" / "share" / "jarvis" / "reminders.json"
 
+# Serialises every read-modify-write cycle on REMINDERS_FILE. The instance
+# _lock only guards the in-memory timer list — without this module lock,
+# add() racing a timer-thread prune() could drop a reminder.
+_file_lock = threading.Lock()
+
 
 def _load_reminders() -> list:
+    with _file_lock:
+        return _load_reminders_locked()
+
+
+def _save_reminders_locked(reminders: list):
+    with _file_lock:
+        _save_reminders_locked(reminders)
+
+
+def _load_reminders_locked() -> list:
     """Загружает активные напоминания"""
     if REMINDERS_FILE.exists():
         try:
@@ -212,13 +227,30 @@ class ReminderManager:
         logger.info(f"⏰ Напоминание установлено: «{text}» через {time_str}")
         return f"Хорошо, сэр. Я напомню {time_str}."
 
+    @staticmethod
+    def _plural(n: int, one: str, few: str, many: str) -> str:
+        n = abs(n) % 100
+        if 11 <= n <= 19:
+            return many
+        d = n % 10
+        if d == 1:
+            return one
+        if 2 <= d <= 4:
+            return few
+        return many
+
     def _format_time(self, seconds: int) -> str:
         if seconds < 60:
-            return f"через {seconds} секунд"
+            w = self._plural(seconds, "секунду", "секунды", "секунд")
+            return f"через {seconds} {w}"
         elif seconds < 3600:
-            return f"через {seconds // 60} минут"
-        else:
-            return f"через {seconds // 3600} час {seconds % 3600 // 60} минут"
+            m = seconds // 60
+            w = self._plural(m, "минуту", "минуты", "минут")
+            return f"через {m} {w}"
+        h, m = seconds // 3600, seconds % 3600 // 60
+        hw = self._plural(h, "час", "часа", "часов")
+        part = f" {m} {self._plural(m, 'минуту', 'минуты', 'минут')}" if m else ""
+        return f"через {h} {hw}{part}"
 
     @staticmethod
     def list_active() -> list:

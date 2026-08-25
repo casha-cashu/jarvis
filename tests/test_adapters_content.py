@@ -117,10 +117,10 @@ def _t():
                 id="i3-window_floating",
             ),
             pytest.param(
-                i3, "window_next", {}, "i3-msg focus next", True, id="i3-window_next"
+                i3, "window_next", {}, "i3-msg focus right", True, id="i3-window_next"
             ),
             pytest.param(
-                i3, "window_prev", {}, "i3-msg focus prev", True, id="i3-window_prev"
+                i3, "window_prev", {}, "i3-msg focus left", True, id="i3-window_prev"
             ),
             # Screenshots (prefix check because of $(date ...))
             pytest.param(

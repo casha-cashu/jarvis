@@ -185,16 +185,17 @@ class TestOllamaClient:
         assert client.history[2] == {"role": "user", "content": "Second"}
 
     def test_chat_error(self):
-        """При ошибке HTTP возвращается сообщение об ошибке."""
-        from jarvis.modules.llm import OllamaClient
+        """При ошибке HTTP клиент бросает LLMError (для manager-fallback)."""
+        import pytest
+
+        from jarvis.modules.llm import LLMError, OllamaClient
 
         config = {"ollama": {}}
         client = OllamaClient(config)
 
         with patch("requests.post", side_effect=Exception("Connection refused")):
-            answer = client.chat("test")
-
-        assert "недоступна" in answer
+            with pytest.raises(LLMError):
+                client.chat("test")
 
 
 # ──────────────────────────────────────────────

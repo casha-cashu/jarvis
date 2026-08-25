@@ -38,6 +38,7 @@ _ALLOWED = frozenset(
         "LC_ALL",
         "LC_CTYPE",
         "DISPLAY",
+        "XAUTHORITY",
         "WAYLAND_DISPLAY",
         "XDG_RUNTIME_DIR",
         "XDG_CURRENT_DESKTOP",

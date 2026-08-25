@@ -11,6 +11,7 @@ P15: убран дубль wake-word проверки в _listen_follow_up — �
 from __future__ import annotations
 
 import logging
+import re
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -38,8 +39,9 @@ class ConversationManager:
             return False, None
         lower = text.lower()
         for wake in self.wake_words:
-            if wake in lower:
-                query = lower.replace(wake, "", 1).strip()
+            # Word-boundary match: "джарвиссимо" must NOT trigger.
+            if re.search(rf"\b{re.escape(wake)}\b", lower):
+                query = re.sub(rf"^.*?\b{re.escape(wake)}\b\s*", "", lower, count=1).strip()
                 return True, (query or None)
         return False, None
 

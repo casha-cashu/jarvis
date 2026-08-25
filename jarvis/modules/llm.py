@@ -15,6 +15,7 @@ import json
 import os
 import logging
 from abc import ABC, abstractmethod
+from datetime import datetime
 from collections import OrderedDict
 from pathlib import Path
 from typing import List, Dict
@@ -75,6 +76,10 @@ def _save_history(history: List[Dict[str, str]]) -> None:
         logger.warning(f"⚠️ Не удалось сохранить историю диалога: {e}")
 
 
+class LLMError(RuntimeError):
+    """Raised when a provider call fails; enables manager-level fallback."""
+
+
 class LLMClient(ABC):
     """Базовый класс для LLM клиентов"""
 
@@ -83,6 +88,23 @@ class LLMClient(ABC):
         self.history = _load_history()
         self.max_history = config.get("max_history", 20)
         self.system_prompt = config.get("system_prompt", "")
+
+    def _render_system_prompt(self) -> str:
+        """System prompt with live placeholders resolved per-request.
+
+        ``{datetime}`` must stay fresh — baking it in at startup goes stale
+        in long sessions, so it is substituted here on every call.
+        """
+        sp = self.system_prompt
+        if "{datetime}" in sp:
+            now = datetime.now()
+            weekdays = (
+                "понедельник", "вторник", "среда", "четверг",
+                "пятница", "суббота", "воскресенье",
+            )
+            dt_str = f"{now.strftime('%d.%m.%Y %H:%M')}, {weekdays[now.weekday()]}"
+            sp = sp.replace("{datetime}", dt_str)
+        return sp
 
     def add_to_history(self, role: str, content: str):
         """Добавляет сообщение в историю и персистит на диск."""
@@ -93,6 +115,17 @@ class LLMClient(ABC):
             self.history = self.history[-self.max_history :]
 
         _save_history(self.history)
+
+    def _discard_pending_user(self):
+        """Drop trailing user message left unanswered by a failed call.
+
+        Without this, one network failure leaves an orphaned user entry;
+        Anthropic/OpenAI then reject every following request with
+        "consecutive user messages" forever.
+        """
+        if self.history and self.history[-1].get("role") == "user":
+            self.history = self.history[:-1]
+            _save_history(self.history)
 
     def clear_history(self):
         """Очищает историю (в памяти и на диске)"""
@@ -116,8 +149,11 @@ class AnthropicClient(LLMClient):
         if not api_key:
             raise ValueError("ANTHROPIC_API_KEY не установлен")
 
-        self.client = anthropic.Anthropic(api_key=api_key)
-        self.model = anthropic_config.get("model", "claude-3-5-sonnet-20241022")
+        client_kwargs = {"api_key": api_key}
+        if anthropic_config.get("base_url"):
+            client_kwargs["base_url"] = anthropic_config["base_url"]
+        self.client = anthropic.Anthropic(**client_kwargs)
+        self.model = anthropic_config.get("model", "claude-sonnet-4-20250514")
         self.temperature = anthropic_config.get("temperature", 0.7)
         self.max_tokens = anthropic_config.get("max_tokens", 1024)
         self.timeout = anthropic_config.get("timeout", 30)
@@ -133,19 +169,24 @@ class AnthropicClient(LLMClient):
                 model=self.model,
                 max_tokens=self.max_tokens,
                 temperature=self.temperature,
-                system=self.system_prompt,
+                system=self._render_system_prompt(),
                 messages=self.history,
                 timeout=self.timeout,
             )
 
-            answer = response.content[0].text.strip()
+            # Empty or tool_use/thinking-only responses have no text block.
+            answer = next(
+                (b.text.strip() for b in response.content if getattr(b, "type", "") == "text"),
+                "",
+            )
             self.add_to_history("assistant", answer)
 
             return answer
 
         except Exception as e:
             logger.error(f"❌ Ошибка Anthropic: {e}")
-            return "Извините, сэр, произошла ошибка связи с ИИ."
+            self._discard_pending_user()
+            raise LLMError(str(e)) from e
 
     def chat_with_tools(
         self,
@@ -185,7 +226,7 @@ class AnthropicClient(LLMClient):
                     model=self.model,
                     max_tokens=self.max_tokens,
                     temperature=self.temperature,
-                    system=self.system_prompt,
+                    system=self._render_system_prompt(),
                     messages=base_messages,
                     tools=anthropic_tools,
                     timeout=self.timeout,
@@ -242,7 +283,8 @@ class AnthropicClient(LLMClient):
 
         except Exception as e:
             logger.error(f"❌ Ошибка Anthropic chat_with_tools: {e}")
-            return "Извините, сэр, произошла ошибка связи с ИИ."
+            self._discard_pending_user()
+            raise LLMError(str(e)) from e
 
 
 class OpenRouterClient(LLMClient):
@@ -257,6 +299,7 @@ class OpenRouterClient(LLMClient):
         )
         self.model = openrouter_config.get("model", "anthropic/claude-3.5-sonnet")
         self.temperature = openrouter_config.get("temperature", 0.7)
+        self.timeout = openrouter_config.get("timeout", 30)
 
         if not self.api_key:
             raise ValueError("OPENROUTER_API_KEY не установлен")
@@ -276,7 +319,7 @@ class OpenRouterClient(LLMClient):
 
             messages = []
             if self.system_prompt:
-                messages.append({"role": "system", "content": self.system_prompt})
+                messages.append({"role": "system", "content": self._render_system_prompt()})
 
             messages.extend(self.history)
 
@@ -290,7 +333,7 @@ class OpenRouterClient(LLMClient):
                 "https://openrouter.ai/api/v1/chat/completions",
                 headers=headers,
                 json=payload,
-                timeout=30,
+                timeout=self.timeout,
             )
 
             response.raise_for_status()
@@ -303,7 +346,8 @@ class OpenRouterClient(LLMClient):
 
         except Exception as e:
             logger.error(f"❌ Ошибка OpenRouter: {e}")
-            return "Извините, сэр, произошла ошибка связи с ИИ."
+            self._discard_pending_user()
+            raise LLMError(str(e)) from e
 
 
 class OpenAIClient(LLMClient):
@@ -342,13 +386,34 @@ class OpenAIClient(LLMClient):
     def _build_messages(self) -> list:
         msgs = []
         if self.system_prompt:
-            msgs.append({"role": "system", "content": self.system_prompt})
+            msgs.append({"role": "system", "content": self._render_system_prompt()})
         msgs.extend(self.history)
         return msgs
 
-    def chat(self, message: str) -> str:
+    def chat(self, message: str, stream_callback=None) -> str:
         try:
             self.add_to_history("user", message)
+
+            if stream_callback is not None:
+                stream = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=self._build_messages(),
+                    temperature=self.temperature,
+                    max_tokens=self.max_tokens,
+                    stream=True,
+                )
+                parts: list[str] = []
+                for chunk in stream:
+                    if not chunk.choices:
+                        continue
+                    delta = chunk.choices[0].delta.content
+                    if delta:
+                        parts.append(delta)
+                        stream_callback(delta)
+                answer = "".join(parts).strip() or "(пустой ответ)"
+                self.add_to_history("assistant", answer)
+                return answer
+
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=self._build_messages(),
@@ -360,7 +425,8 @@ class OpenAIClient(LLMClient):
             return answer
         except Exception as e:
             logger.error(f"❌ Ошибка OpenAI: {e}")
-            return "Извините, сэр, произошла ошибка связи с ИИ."
+            self._discard_pending_user()
+            raise LLMError(str(e)) from e
 
     def chat_with_tools(
         self,
@@ -368,6 +434,7 @@ class OpenAIClient(LLMClient):
         tools: list,
         on_tool_call=None,
         max_iterations: int = 5,
+        stream_callback=None,
     ) -> str:
         """LLM ↔ tools loop via OpenAI chat.completions with ``tools``.
 
@@ -383,18 +450,73 @@ class OpenAIClient(LLMClient):
             base_messages = self._build_messages()
 
             for iteration in range(max_iterations):
-                response = self.client.chat.completions.create(
-                    model=self.model,
-                    messages=base_messages,
-                    tools=tools,
-                    tool_choice="auto",
-                    temperature=self.temperature,
-                    max_tokens=self.max_tokens,
-                )
-                msg = response.choices[0].message
-                content = (msg.content or "").strip()
+                # Last allowed iteration must not stream: we need the whole
+                # text even if the model keeps trying to call tools.
+                can_stream = stream_callback is not None and iteration < max_iterations - 1
+                content_parts: list[str] = []
 
-                tool_calls = getattr(msg, "tool_calls", None) or []
+                if can_stream:
+                    stream = self.client.chat.completions.create(
+                        model=self.model,
+                        messages=base_messages,
+                        tools=tools,
+                        tool_choice="auto",
+                        temperature=self.temperature,
+                        max_tokens=self.max_tokens,
+                        stream=True,
+                    )
+                    tc_map: dict = {}
+                    for chunk in stream:
+                        if not chunk.choices:
+                            continue
+                        delta = chunk.choices[0].delta
+                        if delta and delta.content:
+                            content_parts.append(delta.content)
+                            stream_callback(delta.content)
+                        for tcd in (delta.tool_calls if delta else None) or []:
+                            slot = tc_map.setdefault(
+                                tcd.index, {"id": "", "name": "", "args": ""}
+                            )
+                            if tcd.id:
+                                slot["id"] = tcd.id
+                            if tcd.function and tcd.function.name:
+                                slot["name"] = tcd.function.name
+                            if tcd.function and tcd.function.arguments:
+                                slot["args"] += tcd.function.arguments
+                    content = "".join(content_parts).strip()
+                    tool_calls = [
+                        {
+                            "id": slot["id"] or f"call_{index}",
+                            "function": {
+                                "name": slot["name"],
+                                "arguments": slot["args"] or "{}",
+                            },
+                        }
+                        for index, slot in sorted(tc_map.items())
+                    ]
+                else:
+                    response = self.client.chat.completions.create(
+                        model=self.model,
+                        messages=base_messages,
+                        tools=tools,
+                        tool_choice="auto",
+                        temperature=self.temperature,
+                        max_tokens=self.max_tokens,
+                    )
+                    msg = response.choices[0].message
+                    content = (msg.content or "").strip()
+                    raw_calls = getattr(msg, "tool_calls", None) or []
+                    tool_calls = [
+                        {
+                            "id": tc.id,
+                            "function": {
+                                "name": tc.function.name,
+                                "arguments": tc.function.arguments,
+                            },
+                        }
+                        for tc in raw_calls
+                    ]
+
                 if not tool_calls:
                     if content:
                         self.add_to_history("assistant", content)
@@ -409,21 +531,21 @@ class OpenAIClient(LLMClient):
                         "content": content,
                         "tool_calls": [
                             {
-                                "id": tc.id,
+                                "id": call["id"],
                                 "type": "function",
                                 "function": {
-                                    "name": tc.function.name,
-                                    "arguments": tc.function.arguments,
+                                    "name": call["function"]["name"],
+                                    "arguments": call["function"]["arguments"],
                                 },
                             }
-                            for tc in tool_calls
+                            for call in tool_calls
                         ],
                     }
                 )
 
-                for tc in tool_calls:
-                    name = tc.function.name
-                    raw_args = tc.function.arguments or "{}"
+                for call in tool_calls:
+                    name = call["function"]["name"]
+                    raw_args = call["function"]["arguments"] or "{}"
                     try:
                         args = (
                             json.loads(raw_args)
@@ -446,7 +568,7 @@ class OpenAIClient(LLMClient):
                     base_messages.append(
                         {
                             "role": "tool",
-                            "tool_call_id": tc.id,
+                            "tool_call_id": call["id"],
                             "content": result,
                         }
                     )
@@ -462,7 +584,8 @@ class OpenAIClient(LLMClient):
 
         except Exception as e:
             logger.error(f"❌ Ошибка OpenAI chat_with_tools: {e}")
-            return "Извините, сэр, произошла ошибка связи с ИИ."
+            self._discard_pending_user()
+            raise LLMError(str(e)) from e
 
 
 class OllamaClient(LLMClient):
@@ -489,16 +612,21 @@ class OllamaClient(LLMClient):
         resp.raise_for_status()
         return resp.json()
 
-    def chat(self, message: str) -> str:
-        """Отправляет сообщение в Ollama"""
+    def chat(self, message: str, stream_callback=None) -> str:
+        """Отправляет сообщение в Ollama. Со stream_callback отдаёт дельты."""
         try:
             self.add_to_history("user", message)
 
             messages = []
             if self.system_prompt:
-                messages.append({"role": "system", "content": self.system_prompt})
+                messages.append({"role": "system", "content": self._render_system_prompt()})
 
             messages.extend(self.history)
+
+            if stream_callback is not None:
+                answer = self._chat_stream(messages, stream_callback)
+                self.add_to_history("assistant", answer)
+                return answer
 
             payload = {
                 "model": self.model,
@@ -516,15 +644,48 @@ class OllamaClient(LLMClient):
 
         except Exception as e:
             logger.error(f"❌ Ошибка Ollama: {e}")
-            return "Извините, сэр, локальная модель недоступна."
+            self._discard_pending_user()
+            raise LLMError(str(e)) from e
+
+    def _chat_stream(self, messages: list, stream_callback) -> str:
+        """Streaming variant of /api/chat; returns the full answer."""
+        payload = {
+            "model": self.model,
+            "messages": messages,
+            "stream": True,
+            "options": {"temperature": self.temperature},
+        }
+        parts: list[str] = []
+        with requests.post(
+            f"{self.base_url}/api/chat",
+            json=payload,
+            timeout=self.timeout,
+            stream=True,
+        ) as resp:
+            resp.raise_for_status()
+            for line in resp.iter_lines():
+                if not line:
+                    continue
+                try:
+                    chunk = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                delta = (chunk.get("message") or {}).get("content") or ""
+                if delta:
+                    parts.append(delta)
+                    stream_callback(delta)
+                if chunk.get("done"):
+                    break
+        return "".join(parts).strip() or "(пустой ответ)"
 
     def chat_with_tools(
         self,
         message: str,
         tools: list,
         on_tool_call=None,
-        max_iterations: int = 5,
-    ) -> str:
+            max_iterations: int = 5,
+            stream_callback=None,
+        ) -> str:
         """LLM ↔ tools conversation loop.
 
         Args:
@@ -533,6 +694,8 @@ class OllamaClient(LLMClient):
                 function:{...}}). See jarvis.modules.bash_agent.get_tool_schemas().
             on_tool_call: Callable(name, arguments_dict) -> str result. Required.
             max_iterations: Safety cap to prevent infinite tool-call loops.
+            stream_callback: Optional; receives content deltas of the FINAL
+                text answer (tool iterations stay silent).
 
         Returns:
             Final assistant text response AFTER all tool calls have been
@@ -545,18 +708,56 @@ class OllamaClient(LLMClient):
 
             base_messages = []
             if self.system_prompt:
-                base_messages.append({"role": "system", "content": self.system_prompt})
+                base_messages.append({"role": "system", "content": self._render_system_prompt()})
             base_messages.extend(self.history)
 
             for iteration in range(max_iterations):
+                # Last allowed iteration must not stream: we need the whole
+                # text even if the model keeps trying to call tools.
+                can_stream = stream_callback is not None and iteration < max_iterations - 1
+                parts: list[str] = []
+                data: dict | None = None
+
                 payload = {
                     "model": self.model,
                     "messages": base_messages,
                     "tools": tools,
-                    "stream": False,
+                    "stream": can_stream,
                     "options": {"temperature": self.temperature},
                 }
-                data = self._post_chat(payload)
+
+                if can_stream:
+                    with requests.post(
+                        f"{self.base_url}/api/chat",
+                        json=payload,
+                        timeout=self.timeout,
+                        stream=True,
+                    ) as resp:
+                        resp.raise_for_status()
+                        streamed_calls: list = []
+                        for line in resp.iter_lines():
+                            if not line:
+                                continue
+                            try:
+                                chunk = json.loads(line)
+                            except json.JSONDecodeError:
+                                continue
+                            msg_chunk = chunk.get("message") or {}
+                            delta = msg_chunk.get("content") or ""
+                            if delta:
+                                parts.append(delta)
+                                stream_callback(delta)
+                            for call in msg_chunk.get("tool_calls") or []:
+                                streamed_calls.append(call)
+                            if chunk.get("done"):
+                                break
+                        if streamed_calls:
+                            data = {"message": {"content": "".join(parts), "tool_calls": streamed_calls}}
+                        else:
+                            data = {"message": {"content": "".join(parts)}}
+                else:
+                    data = self._post_chat(payload)
+
                 msg = data.get("message", {})
 
                 tool_calls = msg.get("tool_calls") or []
@@ -612,7 +813,8 @@ class OllamaClient(LLMClient):
 
         except Exception as e:
             logger.error(f"❌ Ошибка Ollama chat_with_tools: {e}")
-            return "Извините, сэр, локальная модель недоступна."
+            self._discard_pending_user()
+            raise LLMError(str(e)) from e
 
 
 class LLMManager:
@@ -703,7 +905,8 @@ class LLMManager:
 
         # Streaming кэшу не подлежит — callback должен видеть токены.
         use_cache = cached and stream_callback is None
-        cache_key = message.strip().lower() if use_cache else None
+        cache_key = (f"{len(self.primary.history)}:{message.strip().lower()}"
+                     if use_cache else None)
 
         if use_cache and cache_key in self._cache:
             # LRU touch
@@ -719,12 +922,16 @@ class LLMManager:
         except Exception as e:
             logger.error(f"❌ Ошибка LLM: {e}")
             response = None
-            # Пробуем fallback (без streaming)
+            # Пробуем fallback (без streaming). Клиент держит свою копию
+            # истории — синхронизируем её с primary, иначе запрос уйдёт без
+            # последних сообщений диалога.
             for name, client in self.clients.items():
                 if client is self.primary:
                     continue
                 try:
                     logger.info(f"🔄 Пробую fallback: {name}")
+                    if hasattr(client, "history") and hasattr(self.primary, "history"):
+                        client.history = list(self.primary.history)
                     response = client.chat(message)
                     break
                 except Exception:
@@ -739,6 +946,7 @@ class LLMManager:
         return response
 
     def clear_history(self):
-        """Очищает историю всех клиентов"""
+        """Очищает историю всех клиентов и ответный кэш."""
         for client in self.clients.values():
             client.clear_history()
+        self._cache.clear()

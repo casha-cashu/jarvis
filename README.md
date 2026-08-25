@@ -16,6 +16,23 @@
 - **Диктовка** — голосовой ввод текста через wtype/xdotool
 - **Wake word** — «джарвис» + альтернативы
 - **Persistence LLM-истории** — диалог сохраняется в `~/.local/share/jarvis/history.json`, переключение провайдера не теряет контекст
+- **Стриминг ответов** — токены появляются по мере генерации; видно каждую выполняемую команду и её вывод
+- **Изоляция контекста** — каждый чат держит свою память LLM, диалоги не смешиваются
+
+## JARVIS UI (GUI)
+
+Десктопный интерфейс на Tauri 2 + React 19 в каталоге `jarvis-ui/`:
+
+- Тёмная/светлая тема, кастомный тайтлбар
+- Чаты с сохранением истории, стриминг ответов, траектория агента (команда → вывод)
+- Провайдеры моделей: добавьте endpoint+ключ один раз — модели всех провайдеров подгружаются и группируются в одном селекторе
+- Выбор микрофона (PulseAudio/PipeWire), системные статусы, напоминания
+
+```bash
+cd jarvis-ui
+npm install
+npm run tauri dev   # или npm run dev для браузерного режима
+```
 
 ## Поддерживаемые платформы
 
@@ -85,7 +102,7 @@ pip install -e .
 
 Или вручную:
 ```bash
-pip install pyyaml vosk pyaudio numpy torch faster-whisper silero-vad anthropic requests gtts audioop-lts
+pip install pyyaml vosk pyaudio numpy torch faster-whisper silero-vad scikit-learn joblib anthropic openai requests gtts pydantic rapidfuzz "audioop-lts>=0.2; python_version>='3.13'"
 ```
 
 > **Важно:** `torch` нужен для Silero VAD. Если у вас NVIDIA GPU — поставьте CUDA-версию: `pip install torch --index-url https://download.pytorch.org/whl/cu118`
@@ -98,7 +115,13 @@ pip install pyyaml vosk pyaudio numpy torch faster-whisper silero-vad anthropic 
 
 ## Конфигурация
 
-Отредактируйте `config.yaml`:
+Скопируйте пример и отредактируйте под себя:
+
+```bash
+cp config.example.yaml config.yaml
+```
+
+Основное:
 
 - **Микрофон**: укажите `device_name` вашего микрофона (список устройств выводится при запуске)
 - **STT**: выберите `vosk` (быстрый) или `whisper` (точный)

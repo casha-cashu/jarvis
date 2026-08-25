@@ -50,10 +50,10 @@ class I3Adapter(BaseAdapter):
         return "i3-msg floating toggle"
 
     def window_next(self) -> str:
-        return "i3-msg focus next"
+        return "i3-msg focus right"
 
     def window_prev(self) -> str:
-        return "i3-msg focus prev"
+        return "i3-msg focus left"
 
     # Screenshots — раскрываем ~ и timestamp здесь, иначе shell=False
     # не распарсит $(date ...).

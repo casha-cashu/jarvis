@@ -146,14 +146,12 @@ class TestJarvisConfigFull:
         assert c.tts.engine == "piper"  # default
 
     def test_unknown_field_extra_allowed_by_default(self):
-        """Pydantic v2 по умолчанию extra='ignore' для BaseModel —
-        поля которых нет в схеме тихо выбрасываются. Проверим это,
-        потому что файл config.yaml у пользователей может содержать
-        старые/комментарные ключи (например «hyprland», который мы удалили).
-        """
+        """Unknown keys MUST survive validation (review #7): a user setting
+        `nlu_enabled: false` in config.yaml silently disappearing was a
+        "setting doesn't work" bug class. extra="allow" keeps them."""
         c = JarvisConfig(hyprland={"enabled": False, "socket": "/tmp/x"})
-        # hyprland секция удалена из схемы — она игнорируется
-        assert not hasattr(c, "hyprland")
+        assert getattr(c, "hyprland", None) is not None
+        assert c.model_extra["hyprland"]["enabled"] is False
 
     def test_logging_level_propagates_error(self):
         """Неправильный logging.level ломает JarvisConfig."""
@@ -219,3 +217,19 @@ class TestNoDeadConfigKeys:
     def test_jarvis_has_no_hyprland_attr(self):
         c = JarvisConfig()
         assert not hasattr(c, "hyprland")
+
+
+class TestContractUndocumentedKeys:
+    """Regression for review #7: keys read by code must survive validation."""
+
+    def test_nlu_and_agent_keys_survive_dump(self):
+        from jarvis.config_schema import JarvisConfig
+
+        c = JarvisConfig(
+            commands={"nlu_enabled": False, "nlu_confidence_threshold": 0.9},
+            llm={"agent_query_prefix_enabled": True},
+        )
+        dumped = c.model_dump()
+        assert dumped["commands"]["nlu_enabled"] is False
+        assert dumped["commands"]["nlu_confidence_threshold"] == 0.9
+        assert dumped["llm"]["agent_query_prefix_enabled"] is True

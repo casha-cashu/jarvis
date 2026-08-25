@@ -12,6 +12,7 @@ Pipeline (строгий порядок):
 """
 
 import json
+import re
 import shlex
 import subprocess
 import logging
@@ -219,6 +220,14 @@ class CommandExecutor:
             return _rf_fuzz.ratio(a.lower(), b.lower()) / 100.0
         return SequenceMatcher(None, a.lower(), b.lower()).ratio()
 
+    # Пары команд, которые шумный STT путает между собой ("включи" -
+    # "выключи"). Для них fuzzy-порог повышен: неоднозначность -> LLM.
+    _FUZZY_CONFLICT_PAIRS = [
+        frozenset({"включи звук", "выключи звук"}),
+        frozenset({"включи микрофон", "выключи микрофон"}),
+        frozenset({"громче", "тише"}),
+    ]
+
     def _best_fuzzy(self, query: str, candidates: dict) -> Optional[Tuple[str, dict]]:
         best_key, best_data, best_score = None, None, 0.0
         for key, data in candidates.items():
@@ -226,6 +235,14 @@ class CommandExecutor:
             if score > best_score:
                 best_score, best_key, best_data = score, key, data
         if best_score >= self.fuzzy_threshold:
+            for pair in self._FUZZY_CONFLICT_PAIRS:
+                if best_key in pair and best_score < 0.93:
+                    logger.info(
+                        "🎚 Ambiguous fuzzy %.2f ('%s') — fallback to LLM",
+                        best_score,
+                        query,
+                    )
+                    return None
             return best_key, best_data
         return None
 
@@ -277,8 +294,9 @@ class CommandExecutor:
         # ── Шаг 1: Exact match ──
         if q in commands:
             logger.info(f"🎯 Exact match: '{q}'")
-            self._run(commands[q]["cmd"])
-            return commands[q].get("say", "Готово, сэр.")
+            entry = commands[q]
+            out = self._run(entry["cmd"], capture=bool(entry.get("capture")))
+            return self._compose_say(entry, out)
 
         # ── Шаг 1.5: NLU (если подключён) ──
         if self.nlu is not None:
@@ -291,8 +309,8 @@ class CommandExecutor:
         if match:
             key, data = match
             logger.info(f"🎯 Fuzzy match: '{q}' → '{key}'")
-            self._run(data["cmd"])
-            return data.get("say", "Готово, сэр.")
+            out = self._run(data["cmd"], capture=bool(data.get("capture")))
+            return self._compose_say(data, out)
 
         # ── Шаг 3: Pattern match (открой/запусти {app}) ──
         app_prefixes = ["открой ", "запусти ", "открыть ", "запустить ", "включи "]
@@ -393,7 +411,7 @@ class CommandExecutor:
 
     # ── Исполнение ────────────────────────────────────────────
 
-    def _run(self, cmd):
+    def _run(self, cmd, capture: bool = False):
         """Запускает команду через subprocess (shell=False).
 
         ``cmd`` может быть строкой или callable -> str. Callable вычисляется
@@ -401,6 +419,10 @@ class CommandExecutor:
         зависит от runtime-состояния (timestamp скриншота, geom от slurp).
         Пустая строка после вычисления означает «нечего запускать» (например,
         пользователь отменил выбор области) и тихо пропускается.
+
+        ``capture=True`` собирает stdout и возвращает его (stripped) — для
+        информационных команд типа ``date '+%H:%M'``, чей вывод подставляется
+        в ответ. Иначе запускается fire-and-forget Popen и возвращается None.
 
         Блокирует до ``execution_timeout`` секунд, затем шлёт SIGTERM (и
         SIGKILL через 2s grace). Для fire-and-forget launcher'ов (firefox,
@@ -410,32 +432,47 @@ class CommandExecutor:
             if callable(cmd):
                 cmd = cmd()
             if not cmd:
-                return
+                return None
             logger.info(f"🔧 Выполняю: {cmd}")
             # shlex.split корректно парсит команды с кавычками
             # (notify-send 'title' 'message', date '+%H:%M', etc.)
             # НЕ поддерживает shell-операторы (||, |, ;, 2>/dev/null)
             # — это сделано намеренно для безопасности.
+            if capture:
+                proc = subprocess.run(
+                    shlex.split(cmd),
+                    capture_output=True,
+                    text=True,
+                    timeout=self.execution_timeout,
+                    env=sanitized_env(),
+                )
+                return (proc.stdout or "").strip()
             proc = subprocess.Popen(
                 shlex.split(cmd),
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 env=sanitized_env(),
             )
+            # Short-lived commands (notify-send, xdotool) finish quickly and
+            # are reaped here. Long-lived launchers (firefox, telegram) are
+            # deliberately DETACHED after 2s — waiting the full timeout used
+            # to SIGTERM every GUI app 30s after opening it.
             try:
-                proc.wait(timeout=self.execution_timeout)
+                proc.wait(timeout=2)
             except subprocess.TimeoutExpired:
-                logger.warning(
-                    f"⏱️ Команда превысила timeout {self.execution_timeout}s: {cmd}"
-                )
-                proc.terminate()
-                try:
-                    proc.wait(timeout=2)
-                except subprocess.TimeoutExpired:
-                    proc.kill()
-                    proc.wait(timeout=2)
+                logger.debug(f"🚀 Detached long-running process: {cmd}")
+            return None
         except Exception as e:
             logger.error(f"❌ Ошибка выполнения: {e}")
+            return None
+
+    @staticmethod
+    def _compose_say(entry: dict, output) -> str:
+        """Формирует ответ: say-шаблон + захваченный вывод команды."""
+        say = entry.get("say", "")
+        if output:
+            return f"{say} {output}".strip() if say else str(output)
+        return say or "Готово, сэр."
 
     def _web_search(self, query: str):
         encoded = urllib.parse.quote_plus(query)
@@ -492,10 +529,18 @@ class CommandExecutor:
         ):
             return "__DICTATE__"
 
-        # Напоминания
+        # Напоминания — только явные интенты или голая длительность.
+        # Иначе "подожди пять минут и скажи анекдот" перехватится как
+        # reminder "...и скажи анекдот" и не дойдёт до LLM.
         from .reminder import parse_time
 
-        parsed = parse_time(q)
+        explicit_intent = bool(
+            re.match(r"^(напомни|напоминание|таймер|будильник|поставь таймер|через\s+\d)", q)
+        )
+        bare_duration = re.fullmatch(
+            r"(через\s+)?\d+\s*(секунд\w*|минут\w*|час\S*)", q
+        )
+        parsed = parse_time(q) if (explicit_intent or bare_duration) else None
         if parsed:
             seconds, text = parsed
             safe = text.replace(":", " ").replace("|", " ")

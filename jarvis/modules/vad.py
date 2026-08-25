@@ -39,13 +39,33 @@ class SileroVAD:
 
         # Загружаем модель Silero VAD
         try:
-            self.model, utils = torch.hub.load(
-                repo_or_dir="snakers4/silero-vad",
-                model="silero_vad",
-                force_reload=False,
-                onnx=False,
-                trust_repo=True,  # Доверяем репозиторию
-            )
+            try:
+                # pip-installed silero-vad ships the weights — works offline.
+                from silero_vad import (
+                    collect_chunks,
+                    get_speech_timestamps,
+                    load_silero_vad,
+                    read_audio,
+                    save_audio,
+                    VADIterator,
+                )
+
+                self.model = load_silero_vad()
+                utils = (
+                    get_speech_timestamps,
+                    save_audio,
+                    read_audio,
+                    VADIterator,
+                    collect_chunks,
+                )
+            except ImportError:
+                self.model, utils = torch.hub.load(
+                    repo_or_dir="snakers4/silero-vad",
+                    model="silero_vad",
+                    force_reload=False,
+                    onnx=False,
+                    trust_repo=True,  # Доверяем репозиторию
+                )
 
             (
                 self.get_speech_timestamps,

@@ -14,7 +14,7 @@ import os
 import time
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from jarvis._env import sanitized_env
 from jarvis.audio_pipeline import AudioPipeline
@@ -137,12 +137,12 @@ class Jarvis:
         self.lifecycle = LifecycleManager()
 
         # Аттрибуты, на которые опираются тесты / public API
-        self.stt = None
-        self.tts = None
-        self.llm = None
-        self.commands = None
-        self.platform = None
-        self.reminder_mgr = None
+        self.stt: Any = None
+        self.tts: Any = None
+        self.llm: Any = None
+        self.commands: Any = None
+        self.platform: Any = None
+        self.reminder_mgr: Any = None
         self.running = False
         self.last_speech_time = 0.0
         self.is_muted = muted
@@ -267,7 +267,9 @@ class Jarvis:
                 if response:
                     self.logger.info(f"🤖 Джарвис: {response}")
 
-                if response and not self.continuous:
+                if response:
+                    # Continuous-режим тоже озвучивает: молчание выглядело
+                    # как баг. Приглушение — через 'тихо' (__MUTE__).
                     self._speak(response)
                     self.last_speech_time = time.time()
                     self._multi_turn_loop(multi_turn_timeout, phrase_limit)

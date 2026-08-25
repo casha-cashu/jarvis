@@ -73,26 +73,31 @@
     "какое время": {
       "cmd": "date '+%H:%M'",
       "say": "Сейчас",
+      "capture": true,
       "category": "info"
     },
     "какая дата": {
       "cmd": "date '+%d.%m.%Y'",
       "say": "Сегодня",
+      "capture": true,
       "category": "info"
     },
     "сколько времени": {
       "cmd": "date '+%H:%M'",
       "say": "Сейчас",
+      "capture": true,
       "category": "info"
     },
     "который час": {
       "cmd": "date '+%H:%M'",
       "say": "Сейчас",
+      "capture": true,
       "category": "info"
     },
     "какой сегодня день": {
       "cmd": "date '+%A, %d %B %Y'",
       "say": "Сегодня",
+      "capture": true,
       "category": "info"
     }
   }

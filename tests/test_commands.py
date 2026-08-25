@@ -125,7 +125,7 @@ def executor(fake_commands_file, fake_apps_file, monkeypatch):
     # Stub _run чтобы тесты не запускали реальный subprocess (echo/date/
     # xdg-open/...). Pipeline-логику (routing по exact/fuzzy/pattern/voice)
     # мы тестируем, а не shell behaviour.
-    monkeypatch.setattr(CommandExecutor, "_run", lambda self, cmd: None)
+    monkeypatch.setattr(CommandExecutor, "_run", lambda self, cmd, capture=False: None)
     return CommandExecutor(
         commands_file=str(fake_commands_file),
         apps_file=str(fake_apps_file),
@@ -250,34 +250,29 @@ class TestExecutionTimeout:
         return ex
 
     def test_fast_command_completes(self, monkeypatch):
-        """Команда завершившаяся до timeout — должна выполниться нормально."""
+        """Команда завершившаяся до 2с — выполняется без детача."""
         ex = self._make_executor(monkeypatch, execution_timeout=5)
         with patch("subprocess.Popen") as mock_popen:
             proc = MagicMock()
-            proc.wait = MagicMock()  # не raise → завершилась до timeout
+            proc.wait = MagicMock()  # не raise → завершилась быстро
             mock_popen.return_value = proc
             ex._run("echo test")
-            proc.wait.assert_called_once_with(timeout=5)
+            proc.wait.assert_called_once_with(timeout=2)
             proc.terminate.assert_not_called()
 
-    def test_timeout_sends_sigterm_then_sigkill(self, monkeypatch):
-        """При timeout: SIGTERM → grace 2s → SIGKILL."""
+    def test_long_running_detached_not_killed(self, monkeypatch):
+        """GUI-launcher (firefox) живёт дольше 2с — detach, БЕЗ kill."""
         import subprocess
 
-        ex = self._make_executor(monkeypatch, execution_timeout=1)
+        ex = self._make_executor(monkeypatch, execution_timeout=30)
         with patch("subprocess.Popen") as mock_popen:
             proc = MagicMock()
-            # First wait() times out. terminate() not effective → second
-            # wait() also times out. kill() is last resort.
-            proc.wait.side_effect = [
-                subprocess.TimeoutExpired("cmd", 1),  # основной timeout
-                subprocess.TimeoutExpired("cmd", 2),  # grace 2s тоже
-            ]
+            proc.wait.side_effect = subprocess.TimeoutExpired("cmd", 2)
             mock_popen.return_value = proc
-            ex._run("sleep 1000")
-            proc.wait.assert_any_call(timeout=1)
-            proc.terminate.assert_called_once()
-            proc.kill.assert_called_once()
+            ex._run("firefox")
+            proc.wait.assert_called_once_with(timeout=2)
+            proc.terminate.assert_not_called()
+            proc.kill.assert_not_called()
 
     def test_execution_timeout_clamped_to_min_1(self, monkeypatch):
         """execution_timeout=0 или отрицательный → 1 секунда."""

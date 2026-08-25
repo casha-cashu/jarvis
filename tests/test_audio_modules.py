@@ -68,8 +68,10 @@ _ensure_stub("audioop")
 
 class TestVAD:
     def _make_vad(self):
-        # SileroVAD грузит модель в __init__ через torch.hub. Мокаем.
-        with patch("torch.hub.load") as mock_load:
+        # Мокаем ОБА источника: pip-пакет silero_vad и torch.hub fallback.
+        with patch("silero_vad.load_silero_vad", return_value=MagicMock()), patch(
+            "torch.hub.load"
+        ) as mock_load:
             mock_load.return_value = (
                 MagicMock(),  # model
                 (MagicMock(), MagicMock(), MagicMock(), MagicMock(), MagicMock()),
@@ -243,9 +245,7 @@ class TestGTTSTempFile:
     def test_temp_file_cleaned_on_exception(self, monkeypatch, tmp_path):
         from jarvis.modules import tts
 
-        # Перенаправляем /tmp/jarvis на tmp_path чтобы видеть остатки
-        real_mkdir = Path.mkdir
-        leak_dir = tmp_path / "jarvis"
+        # Перенаправляем /tmp/jarvis на tmp_path (сохранено для leak-проверок)
 
         class FakeGTTS:
             def __init__(self, *a, **kw):

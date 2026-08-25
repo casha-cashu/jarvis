@@ -9,5 +9,7 @@ anthropic>=0.30
 openai>=1.40
 requests>=2.30
 gtts>=2.5
+scikit-learn>=1.3
+joblib>=1.3
 rapidfuzz>=3.0
 audioop-lts>=0.2; python_version >= '3.13'

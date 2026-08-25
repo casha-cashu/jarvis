@@ -55,6 +55,8 @@ class ResponsePipeline:
             llm_cfg["system_prompt"] = llm_cfg["system_prompt"].replace(
                 "{platform}", platform_str
             )
+        # {datetime} НЕ заменяем здесь — клиент подставляет свежую дату
+        # на каждый запрос (см. LLMClient._render_system_prompt).
         self.llm = LLMManager(llm_cfg)
 
         # Commands
@@ -79,7 +81,10 @@ class ResponsePipeline:
         if self.tts:
             self.tts.speak(text)
 
-    def process_query(self, query: str) -> str:
+    def process_query(
+        self, query: str, stream_callback=None, tool_callback=None,
+        tool_result_callback=None,
+    ) -> str:
         """commands.py first, then LLM (optionally with bash-agent loop), then default."""
         if self.commands is None:
             return ""
@@ -96,12 +101,23 @@ class ResponsePipeline:
         # (currently Ollama), use chat_with_tools → bash_agent.
         if self.agent_enabled and self._can_use_agent():
             try:
-                return self._run_agent_loop(query) or ""
+                return (
+                    self._run_agent_loop(
+                        query,
+                        stream_callback=stream_callback,
+                        tool_callback=tool_callback,
+                        tool_result_callback=tool_result_callback,
+                    )
+                    or ""
+                )
             except Exception as e:
                 logger.error(f"❌ Agent loop failed: {e} — fallback to plain LLM")
 
         try:
-            return self.llm.chat(query) or ""
+            kwargs = {}
+            if stream_callback is not None:
+                kwargs["stream_callback"] = stream_callback
+            return self.llm.chat(query, **kwargs) or ""
         except Exception as e:
             logger.error(f"❌ LLM: {e}")
             return "Извините, сэр, произошла ошибка."
@@ -112,7 +128,10 @@ class ResponsePipeline:
             return False
         return hasattr(self.llm.primary, "chat_with_tools")
 
-    def _run_agent_loop(self, query: str) -> Optional[str]:
+    def _run_agent_loop(
+        self, query: str, stream_callback=None, tool_callback=None,
+        tool_result_callback=None,
+    ) -> Optional[str]:
         """Invoke chat_with_tools with bash_agent's tools + approval gate.
 
         The approval gate is enforced here (not inside bash_agent) so that
@@ -129,6 +148,12 @@ class ResponsePipeline:
         tools = bash_agent.get_tool_schemas()
 
         def _on_tool_call(name: str, args: dict) -> str:
+            if tool_callback is not None:
+                try:
+                    tool_callback(name, args)
+                except Exception:
+                    pass  # UI notification must not break execution
+            result = ""
             # Special: bash tool — apply approval gate before execute_tool.
             if name == "bash":
                 cmd = args.get("cmd", "")
@@ -136,15 +161,28 @@ class ResponsePipeline:
                     cmd, approval_mode=self.agent_approval_mode
                 )
                 if block_reason:
-                    return f"[BLOCKED] {block_reason}"
-            return bash_agent.execute_tool(name, args)
+                    result = f"[BLOCKED] {block_reason}"
+            if not result:
+                result = str(bash_agent.execute_tool(name, args))
+            # Token-budget guard + secret scrubbing before feeding back to LLM.
+            from jarvis.prompt_builder import redact_secrets, truncate_tool_output
 
-        return client.chat_with_tools(
-            query,
-            tools=tools,
-            on_tool_call=_on_tool_call,
-            max_iterations=self.agent_max_iterations,
-        )
+            result = truncate_tool_output(redact_secrets(result))
+            if tool_result_callback is not None:
+                try:
+                    tool_result_callback(name, args, result)
+                except Exception:
+                    pass
+            return result
+
+        kwargs = {
+            "tools": tools,
+            "on_tool_call": _on_tool_call,
+            "max_iterations": self.agent_max_iterations,
+        }
+        if stream_callback is not None:
+            kwargs["stream_callback"] = stream_callback
+        return client.chat_with_tools(query, **kwargs)
 
     def stop(self) -> None:
         # TTS/LLM/CommandManager не требуют явного shutdown.

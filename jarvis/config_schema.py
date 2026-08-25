@@ -4,10 +4,11 @@ Pydantic-модели для валидации конфигурации JARVIS.
 """
 
 from typing import Optional
-from pydantic import BaseModel, Field, field_validator
+from pydantic import ConfigDict, BaseModel, Field, field_validator
 
 
 class AudioMicrophoneConfig(BaseModel):
+    model_config = ConfigDict(extra="allow")  # keep undocumented keys
     device_name: str = "default"
     sample_rate: int = 48000
     channels: int = 1
@@ -15,25 +16,30 @@ class AudioMicrophoneConfig(BaseModel):
 
 
 class AudioOutputConfig(BaseModel):
+    model_config = ConfigDict(extra="allow")  # keep undocumented keys
     device_name: Optional[str] = None
     sample_rate: int = 48000
 
 
 class AudioConfig(BaseModel):
+    model_config = ConfigDict(extra="allow")  # keep undocumented keys
     microphone: AudioMicrophoneConfig = Field(default_factory=AudioMicrophoneConfig)
     output: AudioOutputConfig = Field(default_factory=AudioOutputConfig)
 
 
 class VoskConfig(BaseModel):
+    model_config = ConfigDict(extra="allow")  # keep undocumented keys
     model_path: str = "auto"
 
 
 class WhisperConfig(BaseModel):
+    model_config = ConfigDict(extra="allow")  # keep undocumented keys
     model_path: Optional[str] = None
     model_size: str = "tiny"
 
 
 class STTConfig(BaseModel):
+    model_config = ConfigDict(extra="allow")  # keep undocumented keys
     engine: str = "vosk"
     sample_rate: int = 16000
     vosk: VoskConfig = Field(default_factory=VoskConfig)
@@ -63,6 +69,7 @@ class STTConfig(BaseModel):
 
 
 class SileroVADConfig(BaseModel):
+    model_config = ConfigDict(extra="allow")  # keep undocumented keys
     model_path: str = "auto"
     threshold: float = 0.5
     min_speech_duration: float = 0.25
@@ -71,12 +78,14 @@ class SileroVADConfig(BaseModel):
 
 
 class VADConfig(BaseModel):
+    model_config = ConfigDict(extra="allow")  # keep undocumented keys
     enabled: bool = True
     engine: str = "silero"
     silero: SileroVADConfig = Field(default_factory=SileroVADConfig)
 
 
 class PiperConfig(BaseModel):
+    model_config = ConfigDict(extra="allow")  # keep undocumented keys
     binary_path: Optional[str] = None
     model_path: Optional[str] = None
     config_path: Optional[str] = None
@@ -86,11 +95,13 @@ class PiperConfig(BaseModel):
 
 
 class GTTSConfig(BaseModel):
+    model_config = ConfigDict(extra="allow")  # keep undocumented keys
     lang: str = "ru"
     slow: bool = False
 
 
 class SpeechT5Config(BaseModel):
+    model_config = ConfigDict(extra="allow")  # keep undocumented keys
     model: Optional[str] = None
     vocoder_path: Optional[str] = None
     device: str = "cpu"
@@ -98,6 +109,7 @@ class SpeechT5Config(BaseModel):
 
 
 class TTSConfig(BaseModel):
+    model_config = ConfigDict(extra="allow")  # keep undocumented keys
     engine: str = "piper"
     piper: PiperConfig = Field(default_factory=PiperConfig)
     gtts: GTTSConfig = Field(default_factory=GTTSConfig)
@@ -113,18 +125,22 @@ class TTSConfig(BaseModel):
 
 
 class OpenRouterConfig(BaseModel):
+    model_config = ConfigDict(extra="allow")  # keep undocumented keys
     api_key: Optional[str] = None
     model: str = "anthropic/claude-3.5-sonnet"
     temperature: float = 0.7
+    timeout: int = 30
 
 
 class OllamaConfig(BaseModel):
+    model_config = ConfigDict(extra="allow")  # keep undocumented keys
     base_url: str = "http://localhost:11434"
     model: str = "qwen2.5:3b"
     temperature: float = 0.7
 
 
 class OpenAIConfig(BaseModel):
+    model_config = ConfigDict(extra="allow")  # keep undocumented keys
     api_key: Optional[str] = None
     base_url: Optional[str] = None  # None → api.openai.com
     model: str = "gpt-4o-mini"
@@ -134,6 +150,7 @@ class OpenAIConfig(BaseModel):
 
 
 class AnthropicConfig(BaseModel):
+    model_config = ConfigDict(extra="allow")  # keep undocumented keys
     api_key: Optional[str] = None
     model: str = "claude-3-5-sonnet-20241022"
     temperature: float = 0.7
@@ -142,6 +159,7 @@ class AnthropicConfig(BaseModel):
 
 
 class LLMConfig(BaseModel):
+    model_config = ConfigDict(extra="allow")  # keep undocumented keys
     provider: str = "ollama"
     ollama: OllamaConfig = Field(default_factory=OllamaConfig)
     openai: OpenAIConfig = Field(default_factory=OpenAIConfig)
@@ -172,6 +190,7 @@ class LLMConfig(BaseModel):
 
 
 class CommandsConfig(BaseModel):
+    model_config = ConfigDict(extra="allow")  # keep undocumented keys
     dictionary_path: str = "data/commands.json"
     apps_dictionary_path: str = "data/apps.json"
     fuzzy_threshold: float = 0.8
@@ -179,6 +198,7 @@ class CommandsConfig(BaseModel):
 
 
 class LoggingConfig(BaseModel):
+    model_config = ConfigDict(extra="allow")  # keep undocumented keys
     level: str = "INFO"
     file: str = "logs/jarvis.log"
     max_size: int = 10485760
@@ -196,10 +216,12 @@ class LoggingConfig(BaseModel):
 
 
 class MiscConfig(BaseModel):
+    model_config = ConfigDict(extra="allow")  # keep undocumented keys
     temp_dir: str = "/tmp/jarvis"
 
 
 class JarvisConfig(BaseModel):
+    model_config = ConfigDict(extra="allow")  # keep undocumented keys
     """Полная схема конфигурации JARVIS"""
 
     audio: AudioConfig = Field(default_factory=AudioConfig)

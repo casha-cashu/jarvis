@@ -25,14 +25,12 @@ def _type_text(text: str):
     if not text.strip():
         return
 
-    # Экранирование для shell
-    escaped = text.replace('"', '\\"').replace("`", "\\`").replace("$", "\\$")
-
+    # wtype reads stdin as RAW text (no shell involved) — pass as-is.
     if os.environ.get("WAYLAND_DISPLAY"):
         # Wayland
         try:
             subprocess.run(
-                ["wtype", "-"], input=escaped.encode(), timeout=5, env=sanitized_env()
+                ["wtype", "-"], input=text.encode(), timeout=5, env=sanitized_env()
             )
         except FileNotFoundError:
             logger.warning("⚠️ wtype не найден. Установи: pacman -S wtype")
@@ -67,7 +65,7 @@ def dictation_loop(
     Args:
         stt: Экземпляр STT (VoskSTT или WhisperSTT)
         on_text: Callback при получении текста (для вывода)
-        silence_timeout: Пауза для分割 предложений (сек)
+        silence_timeout: Пауза для разбивки на предложения (сек)
         max_duration: Макс. длительность диктовки (сек)
 
     Returns:
@@ -106,7 +104,6 @@ def dictation_loop(
     need_resample = mic_rate != 16000
     speech_detected = False
     silence_timer = 0
-    last_speech_time = time.time()
     start_time = time.time()
 
     try:

@@ -343,7 +343,6 @@ def main():
     )
 
     # ── setup ──
-    p_setup = sub.add_parser("setup", help="Мастер настройки")
 
     # ── test ──
     p_test = sub.add_parser("test", help="Тест модулей (dry-run)")

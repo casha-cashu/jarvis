@@ -218,10 +218,11 @@ class PiperTTS:
                 str(self.length_scale),
             ]
 
-            if self.config_path:
+            if self.config_path and self.config_path != "auto":
                 cmd.extend(["--config", str(self.config_path)])
 
-            if self.speaker_id > 0:
+            if self.speaker_id >= 0:
+                # 0 is a legitimate voice in multi-speaker models.
                 cmd.extend(["--speaker", str(self.speaker_id)])
 
             # Запускаем piper с правильным окружением

@@ -212,7 +212,6 @@ class WhisperSTT:
         speech_detected = False
         silence_start = None
         silence_threshold = 1.0
-        has_emitted_partial = False
 
         try:
             while stream.is_active():

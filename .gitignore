@@ -50,4 +50,7 @@ htmlcov/
 
 # ── Session state (contains secrets) ──
 SESSION.md
-CLAUDE.md
+
+# ── Local artifacts (review) ──
+*.joblib
+audit-review/
