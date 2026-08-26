@@ -1,1 +1,0 @@
-"""Platform adapters for JARVIS"""
