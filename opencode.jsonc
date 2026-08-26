@@ -1,0 +1,84 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+
+  "instructions": ["AGENTS.md"],
+  "default_agent": "build",
+
+  "agent": {
+    "ox-alpha": {
+      "description": "JARVIS lead developer — Python backend + Tauri UI, orchestration",
+      "mode": "primary",
+      "model": "openrouter/stealth/ox-alpha",
+      "temperature": 0.4,
+      "permission": {
+        "bash": "allow",
+        "edit": "allow",
+        "webfetch": "allow"
+      }
+    }
+  },
+
+  "skills": {
+    "paths": [".opencode/skills"]
+  },
+
+  "mcp": {
+    "git": {
+      "type": "local",
+      "command": ["uvx", "mcp-server-git", "--repository", "/home/misha/Projects/jarvis-py/jarvis-github"],
+      "enabled": true,
+      "env": {}
+    },
+    "memory": {
+      "type": "local",
+      "command": ["npx", "-y", "@modelcontextprotocol/server-memory"],
+      "enabled": true,
+      "env": {
+        "MEMORY_FILE_PATH": "/home/misha/Projects/jarvis-py/docs/knowledge-base/memory.json"
+      }
+    },
+    "filesystem": {
+      "type": "local",
+      "command": [
+        "npx", "-y", "@modelcontextprotocol/server-filesystem",
+        "/home/misha/Projects/jarvis-py",
+        "/home/misha/Projects/jarvis-py/docs/knowledge-base"
+      ],
+      "enabled": true,
+      "env": {}
+    },
+    "obsidian": {
+      "type": "local",
+      "command": [
+        "npx", "-y", "obsidian-mcp-server",
+        "--vault", "/home/misha/Projects/jarvis-py/docs/knowledge-base"
+      ],
+      "enabled": true,
+      "env": {}
+    }
+  },
+
+  "permission": {
+    "read": "allow",
+    "glob": "allow",
+    "grep": "allow",
+    "list": "allow",
+    "edit": "allow",
+    "bash": "allow",
+    "external_directory": {
+      "/home/misha/Projects/jarvis-py/jarvis-claude/**": "allow",
+      "/home/misha/Projects/jarvis-py/jarvis-github/**": "allow",
+      "/home/misha/Projects/jarvis-py/jarvis-new/**": "allow",
+      "/home/misha/Projects/jarvis-py/docs/**": "allow",
+      "~/Projects/jarvis-py/**": "allow",
+      "*": "ask"
+    }
+  },
+
+  "formatter": true,
+  "lsp": false,
+
+  "compaction": { "auto": true, "tail_turns": 20 },
+
+  "tool_output": { "max_lines": 300, "max_bytes": 12288 }
+}

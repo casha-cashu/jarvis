@@ -51,9 +51,10 @@ struct MicrophoneDevice { name: String, description: String, is_default: bool }
 struct SystemStats { uptime_seconds: u64, memory_used_mb: u64, memory_total_mb: u64, load_average: f64, platform: String }
 
 fn bridge_root() -> PathBuf {
+  // Repo root = two levels above src-tauri (jarvis-ui/src-tauri).
   std::env::var_os("JARVIS_PYTHON_ROOT")
     .map(PathBuf::from)
-    .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../jarvis-claude"))
+    .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."))
 }
 
 fn ensure_bridge(state: &AppState) -> Result<(), String> {
@@ -65,7 +66,7 @@ fn ensure_bridge(state: &AppState) -> Result<(), String> {
   let script = root.join("jarvis").join("ui_bridge.py");
   let python = std::env::var_os("JARVIS_PYTHON")
     .map(PathBuf::from)
-    .unwrap_or_else(|| root.join("../jarvis-new/venv/bin/python"));
+    .unwrap_or_else(|| root.join("venv/bin/python"));
   let mut child = Command::new(python)
     .arg("-u")
     .arg(&script)

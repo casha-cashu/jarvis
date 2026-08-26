@@ -1,0 +1,64 @@
+{
+  "apps": {
+    "firefox": {
+      "cmd": "firefox",
+      "names": ["firefox", "браузер", "фаерфокс", "интернет", "веб", "мозилла"]
+    },
+    "telegram": {
+      "cmd": "telegram-desktop",
+      "names": ["telegram", "телеграм", "телеграмм", "телега", "тг"]
+    },
+    "kitty": {
+      "cmd": "kitty",
+      "names": ["kitty", "терминал", "консоль", "командная строка"]
+    },
+    "thunar": {
+      "cmd": "thunar",
+      "names": ["thunar", "файлы", "проводник", "файловый менеджер", "папки"]
+    },
+    "steam": {
+      "cmd": "steam",
+      "names": ["steam", "стим", "стимчик"]
+    },
+    "vscode": {
+      "cmd": "code",
+      "names": ["vscode", "code", "код", "редактор", "visual studio code", "вскод", "вс код"]
+    },
+    "discord": {
+      "cmd": "discord",
+      "names": ["discord", "дискорд", "дисик"]
+    },
+    "spotify": {
+      "cmd": "spotify",
+      "names": ["spotify", "спотифай", "споти", "музыка", "плеер"]
+    },
+    "obs": {
+      "cmd": "obs",
+      "names": ["obs", "обс", "запись", "студио", "о-би-эс"]
+    },
+    "gimp": {
+      "cmd": "gimp",
+      "names": ["gimp", "гимп", "фотошоп", "графический редактор"]
+    },
+    "blender": {
+      "cmd": "blender",
+      "names": ["blender", "блендер", "3д моделирование"]
+    },
+    "keepass": {
+      "cmd": "keepassxc",
+      "names": ["keepass", "кейпас", "пароли", "менеджер паролей"]
+    },
+    "virtmanager": {
+      "cmd": "virt-manager",
+      "names": ["virt-manager", "вирт менеджер", "виртуалка", "виртуальная машина"]
+    },
+    "slack": {
+      "cmd": "slack",
+      "names": ["slack", "слак", "слэк"]
+    },
+    "whatsapp": {
+      "cmd": "whatsapp-nativefier",
+      "names": ["whatsapp", "ватсап", "вотсап"]
+    }
+  }
+}

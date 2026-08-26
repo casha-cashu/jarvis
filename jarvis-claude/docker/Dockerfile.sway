@@ -1,0 +1,36 @@
+# Sway integration tests on Arch Linux (fresh packages)
+FROM archlinux:latest AS base
+
+RUN pacman -Syu --noconfirm && \
+    pacman -S --noconfirm \
+        base-devel \
+        python \
+        python-pip \
+        portaudio \
+        wtype \
+        xdotool \
+        git \
+        sway \
+        grim \
+        slurp \
+        xorg-server-xvfb \
+        libnotify \
+        xterm
+
+WORKDIR /app
+COPY . .
+
+RUN python -m venv venv && \
+    venv/bin/pip install --upgrade pip setuptools && \
+    venv/bin/pip install -e ".[dev]"
+
+FROM base AS integration
+
+COPY docker/sway/config /etc/sway/config
+COPY docker/sway/entrypoint-arch.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+ENV WLR_BACKENDS=headless
+ENV WLR_LIBINPUT_NO_DEVICES=1
+
+ENTRYPOINT ["/entrypoint.sh"]

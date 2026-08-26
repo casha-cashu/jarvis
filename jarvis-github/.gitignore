@@ -1,0 +1,61 @@
+# ── Secrets ──
+.env
+*.pem
+*.key
+
+# ── Python ──
+__pycache__/
+*.pyc
+*.pyo
+venv/
+.env/
+*.egg-info/
+dist/
+build/
+*.so
+
+# ── Logs ──
+logs/
+*.log
+
+# ── Models (downloaded separately) ──
+models/
+!models/.gitkeep
+
+# ── OS ──
+.DS_Store
+*.swp
+*.swo
+*~
+Thumbs.db
+
+# ── Backups ──
+*.bak
+*.orig
+
+# ── IDE ──
+.vscode/
+.idea/
+*.sublime-*
+
+# ── Temp ──
+/tmp/jarvis
+
+# ── Tests ──
+.pytest_cache/
+.coverage
+coverage/
+htmlcov/
+*.coverage
+
+# ── Session state (contains secrets) ──
+SESSION.md
+
+# ── Local artifacts (review) ──
+*.joblib
+audit-review/
+
+# ── jarvis-ui ──
+node_modules/
+src-tauri/target/
+dist/

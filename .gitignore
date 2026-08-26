@@ -1,5 +1,6 @@
 # ── Secrets ──
 .env
+config.yaml
 *.pem
 *.key
 
@@ -59,3 +60,4 @@ audit-review/
 node_modules/
 src-tauri/target/
 dist/
+HANDOFF.md
