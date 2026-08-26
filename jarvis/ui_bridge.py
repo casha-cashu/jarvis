@@ -128,8 +128,13 @@ class Bridge:
         self._shutdown_reminders()
 
         # Text mode: initialize only the response pipeline; never open audio.
+        import os
+
+        # CI/hermetic runs override via JARVIS_CONFIG_PATH (repo ships
+        # config.example.yaml only; personal config.yaml is gitignored).
+        config_path = os.environ.get("JARVIS_CONFIG_PATH", "config.yaml")
         self.jarvis = self._quiet_call(
-            lambda: Jarvis(config_path="config.yaml", dry_run=True)
+            lambda: Jarvis(config_path=config_path, dry_run=True)
         )
         self._apply_config()
         self._quiet_call(self.jarvis.response.start)

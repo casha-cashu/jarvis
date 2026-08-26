@@ -9,7 +9,7 @@ from pydantic import ConfigDict, BaseModel, Field, field_validator
 
 class AudioMicrophoneConfig(BaseModel):
     model_config = ConfigDict(extra="allow")  # keep undocumented keys
-    device_name: str = "default"
+    device_name: Optional[str] = "default"
     sample_rate: int = 48000
     channels: int = 1
     chunk_size: int = 512
