@@ -7,8 +7,6 @@ audio:
   microphone:
     device_name: ""  # Часть имени микрофона (пусто = системный по умолчанию)
     sample_rate: 48000
-    channels: 1
-    chunk_size: 512  # Для VAD (было 1024)
 
   # Динамики
   output:
@@ -29,6 +27,7 @@ stt:
   whisper:
     model_path: "$HOME/models/whisper/tiny"  # путь к локальной модели (null = скачать из HF)
     model_size: "tiny"  # tiny | base | small | medium | large (используется если model_path=null)
+    partial_interval_ms: 1000  # промежуточные гипотезы каждые N мс (0 = выключить)
     # Чем больше модель, тем выше точность и больше RAM:
     #   tiny  ~1GB  RAM  ~2x realtime
     #   base  ~1.5GB RAM  ~1x realtime
@@ -43,7 +42,7 @@ stt:
 
   # Таймауты
   phrase_time_limit: 10  # секунд
-  pause_threshold: 1.2   # секунд тишины = конец фразы
+  silence_threshold: null  # секунд тишины = конец фразы; null = дефолт движка (vosk 2.0, whisper 1.0)
   multi_turn_timeout: 10  # секунд ожидания продолжения разговора (после ответа)
   wake_mode: "classic"   # classic | vad — метод детекции wake word
 
@@ -55,9 +54,6 @@ vad:
   silero:
     model_path: "auto"  # auto = поиск в models/, ~/.local/share/silero
     threshold: 0.5        # 0.0-1.0, чем выше = строже
-    min_speech_duration: 0.25   # минимум речи (сек)
-    min_silence_duration: 0.5   # минимум тишины (сек)
-    speech_pad_ms: 30           # padding вокруг речи (мс)
 
 # === СИНТЕЗ РЕЧИ (TTS) ===
 tts:
@@ -163,12 +159,6 @@ logging:
   file: "logs/jarvis.log"
   max_size: 10485760  # 10MB
   backup_count: 5
-
-  # Логировать распознанный текст
-  log_recognized_text: true
-
-  # Логировать команды LLM
-  log_llm_requests: true
 
 # === РАЗНОЕ ===
 misc:

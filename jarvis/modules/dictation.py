@@ -53,13 +53,14 @@ def dictation_loop(
     on_text: Optional[Callable] = None,
     silence_timeout: float = 1.5,
     max_duration: int = 60,
+    stop_phrase_check: Optional[Callable[[str], bool]] = None,
 ) -> str:
     """
     Цикл диктовки:
       1. Слушает микрофон (VAD буферизация)
       2. При паузе > silence_timeout → транскрибация
       3. Текст печатается в активное окно
-      4. Продолжает слушать
+      4. Продолжает слушать, пока не скажешь стоп-фразу
       5. Возвращает полный текст по окончании
 
     Args:
@@ -67,13 +68,16 @@ def dictation_loop(
         on_text: Callback при получении текста (для вывода)
         silence_timeout: Пауза для разбивки на предложения (сек)
         max_duration: Макс. длительность диктовки (сек)
+        stop_phrase_check: Проверка каждой финализированной фразы;
+            True → диктовка завершается (стоп-фраза НЕ печатается и НЕ
+            попадает в результат)
 
     Returns:
-        Полный распознанный текст
+        Полный распознанный текст (без стоп-фразы)
     """
+    from jarvis.modules.stt_base import BaseSTT
     from jarvis.modules.vad import SileroVAD, VADIteratorWrapper
     import pyaudio
-    import audioop
 
     logger.info("🎤 Диктовка началась. Говори текст...")
 
@@ -114,17 +118,12 @@ def dictation_loop(
 
             data = stream.read(2048, exception_on_overflow=False)
 
-            # Стерео → моно (если 2 канала)
-            audio_int16 = np.frombuffer(data, dtype=np.int16)
-            if mic_channels > 1:
-                audio_int16 = audio_int16.reshape(-1, 2).mean(axis=1).astype(np.int16)
-
-            # Ресемплинг если нужно
+            # Стерео → моно + ресемплинг (общие помощники STT)
+            audio_int16 = BaseSTT._stereo_to_mono(data, mic_channels)
             if need_resample:
-                audio_data, _ = audioop.ratecv(
-                    audio_int16.tobytes(), 2, 1, mic_rate, 16000, None
+                audio_int16 = BaseSTT._resample_pcm16(
+                    audio_int16.tobytes(), mic_rate, 16000
                 )
-                audio_int16 = np.frombuffer(audio_data, dtype=np.int16)
 
             # VAD
             audio_float = audio_int16.astype(np.float32) / 32768.0
@@ -161,6 +160,13 @@ def dictation_loop(
                             text = _transcribe_vosk(stt, segment)
 
                         if text:
+                            # Голосовая команда остановки — выходим,
+                            # не печатая саму стоп-фразу
+                            if stop_phrase_check is not None and stop_phrase_check(
+                                text
+                            ):
+                                logger.info("🛑 Стоп-фраза — завершаю диктовку")
+                                break
                             full_text.append(text)
                             print(f"\r📝 {text}")
                             if on_text:
@@ -175,14 +181,14 @@ def dictation_loop(
         stream.close()
         audio.terminate()
 
-    # Финальный сегмент
+    # Финальный сегмент (например, по max_duration)
     if current_segment:
         segment = np.concatenate(current_segment)
         if hasattr(stt, "model") and "whisper" in type(stt).__name__.lower():
             text = _transcribe_whisper(stt, segment)
         else:
             text = _transcribe_vosk(stt, segment)
-        if text:
+        if text and (stop_phrase_check is None or not stop_phrase_check(text)):
             full_text.append(text)
             _type_text(text + " ")
 

@@ -12,6 +12,7 @@ from pydantic import ValidationError
 from jarvis.config_schema import (
     JarvisConfig,
     STTConfig,
+    WhisperConfig,
     TTSConfig,
     LLMConfig,
     LoggingConfig,
@@ -47,8 +48,24 @@ class TestSTTConfig:
         assert c.sample_rate == 16000
         assert c.wake_word == "джарвис"
         assert c.phrase_time_limit == 10
-        assert c.pause_threshold == 1.2
+        assert c.silence_threshold is None  # None → дефолт движка
         assert "jarvis" in c.wake_word_alternatives
+
+    def test_silence_threshold_custom(self):
+        assert STTConfig(silence_threshold=2.5).silence_threshold == 2.5
+
+    def test_silence_threshold_must_be_positive(self):
+        with pytest.raises(ValidationError):
+            STTConfig(silence_threshold=0)
+        with pytest.raises(ValidationError):
+            STTConfig(silence_threshold=-1.0)
+
+    def test_whisper_partial_interval_default_and_validation(self):
+        assert WhisperConfig().partial_interval_ms == 1000
+        assert WhisperConfig(partial_interval_ms=0).partial_interval_ms == 0
+        assert WhisperConfig(partial_interval_ms=500).partial_interval_ms == 500
+        with pytest.raises(ValidationError):
+            WhisperConfig(partial_interval_ms=-100)
 
 
 class TestTTSConfig:
@@ -121,8 +138,6 @@ class TestLoggingConfig:
         assert c.file == "logs/jarvis.log"
         assert c.max_size == 10485760
         assert c.backup_count == 5
-        assert c.log_recognized_text is True
-        assert c.log_llm_requests is True
 
 
 class TestJarvisConfigFull:
@@ -179,12 +194,12 @@ class TestValidateConfig:
 
         out = validate_config(
             {
-                "stt": {"engine": "whisper", "pause_threshold": 2.0},
+                "stt": {"engine": "whisper", "silence_threshold": 2.5},
                 "llm": {"provider": "anthropic", "max_history": 50},
             }
         )
         assert out["stt"]["engine"] == "whisper"
-        assert out["stt"]["pause_threshold"] == 2.0
+        assert out["stt"]["silence_threshold"] == 2.5
         assert out["llm"]["provider"] == "anthropic"
         assert out["llm"]["max_history"] == 50
 
@@ -217,6 +232,35 @@ class TestNoDeadConfigKeys:
     def test_jarvis_has_no_hyprland_attr(self):
         c = JarvisConfig()
         assert not hasattr(c, "hyprland")
+
+    def test_stt_has_no_pause_threshold(self):
+        """pause_threshold никогда не читался кодом — тишина считается
+        через stt.silence_threshold (движок-специфичный)."""
+        c = STTConfig()
+        assert not hasattr(c, "pause_threshold")
+
+    def test_microphone_has_no_channels_or_chunk_size(self):
+        """channels/chunk_size не читались: каналы/частота определяются
+        из device info (BaseSTT), chunk VAD — константа 512."""
+        c = JarvisConfig()
+        mic = c.audio.microphone
+        assert not hasattr(mic, "channels")
+        assert not hasattr(mic, "chunk_size")
+
+    def test_logging_has_no_recognized_text_or_llm_requests(self):
+        """log_recognized_text / log_llm_requests никогда не читались."""
+        c = LoggingConfig()
+        assert not hasattr(c, "log_recognized_text")
+        assert not hasattr(c, "log_llm_requests")
+
+    def test_vad_silero_has_no_timing_fields(self):
+        """min_speech_duration/min_silence_duration/speech_pad_ms не
+        прокидывались в SileroVAD — только threshold читается."""
+        c = JarvisConfig()
+        silero = c.vad.silero
+        assert not hasattr(silero, "min_speech_duration")
+        assert not hasattr(silero, "min_silence_duration")
+        assert not hasattr(silero, "speech_pad_ms")
 
 
 class TestContractUndocumentedKeys:

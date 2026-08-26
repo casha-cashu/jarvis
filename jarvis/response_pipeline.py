@@ -7,7 +7,10 @@
 from __future__ import annotations
 
 import logging
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
+
+if TYPE_CHECKING:
+    from jarvis.modules.tts import TTSWorker
 
 logger = logging.getLogger(__name__)
 
@@ -15,10 +18,15 @@ logger = logging.getLogger(__name__)
 class ResponsePipeline:
     """Owns TTS, LLM, CommandManager — routes user text to one of them."""
 
-    def __init__(self, config: dict, platform=None):
+    def __init__(self, config: dict, platform=None, tts_worker: "TTSWorker" = None):
         self.config = config
         self.platform = platform
         self.tts = None
+        # Фоновая очередь озвучки. Может быть внедрена снаружи (тесты/UI);
+        # иначе создаётся в start() вокруг TTSManager. Внедрённый worker
+        # при start() НЕ подменяется.
+        self.tts_worker = tts_worker
+        self._internal_worker = False
         self.llm = None
         self.commands = None
         self._started = False
@@ -36,9 +44,19 @@ class ResponsePipeline:
             return
 
         # TTS
-        from jarvis.modules.tts import TTSManager
+        from jarvis.modules.tts import TTSManager, TTSWorker
+
+        if self._internal_worker and self.tts_worker is not None:
+            # Перезапуск pipeline: глушим старый внутренний worker.
+            try:
+                self.tts_worker.close(timeout=2.0)
+            except Exception as e:
+                logger.warning(f"⚠️ Старый TTS worker не закрылся: {e}")
 
         self.tts = TTSManager(self.config.get("tts", {}))
+        if self.tts_worker is None or self._internal_worker:
+            self.tts_worker = TTSWorker(self.tts)
+            self._internal_worker = True
 
         # Platform (нужно ДО LLM — system_prompt подставляет platform info)
         if self.platform is None:
@@ -78,11 +96,30 @@ class ResponsePipeline:
 
     def speak(self, text: str) -> None:
         print(f"\r🤖 {text}")
-        if self.tts:
+        if self.tts_worker is not None:
+            self.tts_worker.speak(text)
+        elif self.tts is not None:
             self.tts.speak(text)
 
+    def cancel_speech(self) -> None:
+        """«Тихо»: глушит текущую озвучку и чистит очередь фраз."""
+        if self.tts_worker is not None:
+            self.tts_worker.cancel()
+
+    def wait_for_speech(self, timeout: Optional[float] = None) -> bool:
+        """Ждёт, пока worker доиграет очередь (чтобы не слушать свой голос).
+
+        Если worker'а нет — True немедленно.
+        """
+        if self.tts_worker is None:
+            return True
+        return self.tts_worker.wait_idle(timeout)
+
     def process_query(
-        self, query: str, stream_callback=None, tool_callback=None,
+        self,
+        query: str,
+        stream_callback=None,
+        tool_callback=None,
         tool_result_callback=None,
     ) -> str:
         """commands.py first, then LLM (optionally with bash-agent loop), then default."""
@@ -129,7 +166,10 @@ class ResponsePipeline:
         return hasattr(self.llm.primary, "chat_with_tools")
 
     def _run_agent_loop(
-        self, query: str, stream_callback=None, tool_callback=None,
+        self,
+        query: str,
+        stream_callback=None,
+        tool_callback=None,
         tool_result_callback=None,
     ) -> Optional[str]:
         """Invoke chat_with_tools with bash_agent's tools + approval gate.
@@ -185,5 +225,11 @@ class ResponsePipeline:
         return client.chat_with_tools(query, **kwargs)
 
     def stop(self) -> None:
-        # TTS/LLM/CommandManager не требуют явного shutdown.
+        # TTS worker: даём уже поставленным фразам доиграть и глушим поток.
+        if self.tts_worker is not None:
+            try:
+                self.tts_worker.close()
+            except Exception as e:
+                logger.error(f"❌ TTS worker shutdown: {e}")
+        # LLM/CommandManager явного shutdown'а не требуют.
         self._started = False

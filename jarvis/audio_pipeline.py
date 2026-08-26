@@ -43,6 +43,8 @@ class AudioPipeline:
         device_name = audio_cfg.get("microphone", {}).get("device_name")
         use_vad = vad_cfg.get("enabled", True)
         vad_threshold = vad_cfg.get("silero", {}).get("threshold", 0.5)
+        # None → движок возьмёт свой дефолт (vosk 2.0 / whisper 1.0)
+        silence_threshold = stt_cfg.get("silence_threshold")
 
         if engine == "whisper":
             from jarvis.modules.stt_whisper import WhisperSTT
@@ -55,6 +57,8 @@ class AudioPipeline:
                 device_name=device_name,
                 use_vad=use_vad,
                 vad_threshold=vad_threshold,
+                partial_interval_ms=wcfg.get("partial_interval_ms", 1000),
+                silence_threshold=silence_threshold,
             )
         else:
             from jarvis.modules.stt import VoskSTT
@@ -65,6 +69,7 @@ class AudioPipeline:
                 device_name=device_name,
                 use_vad=use_vad,
                 vad_threshold=vad_threshold,
+                silence_threshold=silence_threshold,
             )
 
         self.stt.list_devices()

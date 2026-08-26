@@ -27,7 +27,6 @@ def sample_config() -> dict:
             "wake_word": "джарвис",
             "wake_word_alternatives": [],
             "phrase_time_limit": 10,
-            "pause_threshold": 1.2,
             "multi_turn_timeout": 10,
         },
         "vad": {"enabled": False},

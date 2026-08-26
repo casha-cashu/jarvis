@@ -128,13 +128,17 @@ class Jarvis:
 
         wake_word = self.config.get("stt", {}).get("wake_word", "джарвис")
         wake_alts = self.config.get("stt", {}).get("wake_word_alternatives", [])
+        self.audio = AudioPipeline(self.config, dry_run=dry_run)
+        self.response = ResponsePipeline(self.config)
+        # «Тихо» (__MUTE__) должно глушить уже играющую озвучку —
+        # conversation_manager дёргает cancel_speech() при входе в тишину.
         self.conversation = ConversationManager(
             wake_words=[wake_word] + list(wake_alts),
             muted=muted,
+            on_mute=self.response.cancel_speech,
         )
-        self.audio = AudioPipeline(self.config, dry_run=dry_run)
-        self.response = ResponsePipeline(self.config)
         self.lifecycle = LifecycleManager()
+        self.dictation_stop_phrases = ("стоп диктовку", "закончить диктовку")
 
         # Аттрибуты, на которые опираются тесты / public API
         self.stt: Any = None
@@ -301,6 +305,8 @@ class Jarvis:
             self._speak(resp)
 
     def _recognize(self, phrase_limit: int) -> Optional[str]:
+        # Не слушаем собственный голос: дожидаемся опустошения очереди TTS.
+        self.response.wait_for_speech()
         return self.audio.recognize(phrase_limit, on_partial=self._on_partial)
 
     def _on_partial(self, text: str) -> None:
@@ -315,7 +321,7 @@ class Jarvis:
         parsed = self.commands.executor.parse_voice_command(text.lower().strip())
 
         if parsed == "__MUTE__":
-            self.conversation.is_muted = True
+            self.conversation.mute()
             self.is_muted = True
             return "Хорошо, сэр. Я замолкаю."
         if parsed == "__UNMUTE__":
@@ -330,7 +336,11 @@ class Jarvis:
             from jarvis.modules.dictation import dictation_loop
 
             try:
-                dictation_loop(self.stt, on_text=self._on_dictation_text)
+                dictation_loop(
+                    self.stt,
+                    on_text=self._on_dictation_text,
+                    stop_phrase_check=self._is_dictation_stop,
+                )
                 return "Диктовка завершена."
             except Exception as e:
                 self.logger.error(f"❌ Dictation: {e}")
@@ -379,11 +389,18 @@ class Jarvis:
     def _on_dictation_text(self, text: str) -> None:
         self.logger.info(f"📝 Диктовка: {text}")
 
+    def _is_dictation_stop(self, text: str) -> bool:
+        """True, если фраза — голосовая команда завершения диктовки."""
+        t = (text or "").lower().strip()
+        return any(phrase in t for phrase in self.dictation_stop_phrases)
+
     def _on_signal(self) -> None:
         self.running = False
 
     def shutdown(self) -> None:
         self.logger.info("🛑 Завершение...")
-        self.lifecycle.shutdown()
+        # Прощальная фраза ставится в очередь ДО остановки response pipeline —
+        # TTSWorker.close() даёт уже поставленным фразам доиграть.
         self._speak("До свидания, сэр.")
+        self.lifecycle.shutdown()
         self.logger.info("👋 JARVIS остановлен")

@@ -4,9 +4,12 @@ Text-to-Speech module using Piper TTS
 Синтез речи (офлайн, быстрый)
 """
 
+import queue
 import shutil
 import subprocess
 import tempfile
+import threading
+import time
 import logging
 from pathlib import Path
 from typing import Optional
@@ -14,6 +17,108 @@ from typing import Optional
 from jarvis._env import sanitized_env
 
 logger = logging.getLogger(__name__)
+
+
+# ── Воспроизведение с поддержкой отмены ──────────────────────────────
+# Плееры регистрируются в реестре, а cancel_playback() глушит активный
+# процесс и запрещает запуск следующего плеера из цепочки fallback'а.
+
+_active_players: set = set()
+_active_players_lock = threading.Lock()
+_cancel_event = threading.Event()
+
+
+def _player_commands(path: str) -> list:
+    return [
+        ["mpv", "--really-quiet", path],
+        ["ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet", path],
+        ["aplay", path],
+        ["paplay", path],
+    ]
+
+
+def _stop_proc(proc, grace: float = 1.0) -> None:
+    """terminate → пауза → kill (идемпотентно)."""
+    try:
+        if proc.poll() is not None:
+            return
+        proc.terminate()
+        proc.wait(timeout=grace)
+    except Exception:
+        try:
+            proc.kill()
+            proc.wait(timeout=grace)
+        except Exception:
+            pass
+
+
+def cancel_playback() -> int:
+    """Глушит текущее воспроизведение TTS (все активные плееры).
+
+    Вызывается из TTSWorker.cancel(); идемпотентно и потокобезопасно.
+    Returns:
+        Сколько активных процессов плеера было завершено.
+    """
+    _cancel_event.set()
+    with _active_players_lock:
+        procs = list(_active_players)
+    for p in procs:
+        _stop_proc(p)
+    return len(procs)
+
+
+def _reset_playback_cancel() -> None:
+    """Снимает флаг отмены перед началом новой фразы."""
+    _cancel_event.clear()
+
+
+def _play_audio_file(audio_file, timeout: float = 30.0) -> bool:
+    """Проигрывает аудиофайл первым доступным плеером.
+
+    В отличие от старой версии на ``subprocess.run`` процесс поллится:
+    по событию отмены (_cancel_event) плеер глушится немедленно и цепочка
+    fallback-плееров НЕ продолжается.
+    """
+    path = str(audio_file)
+    for cmd in _player_commands(path):
+        if _cancel_event.is_set():
+            return False
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                env=sanitized_env(),
+            )
+        except FileNotFoundError:
+            continue
+        except OSError as e:
+            logger.warning(f"⚠️ Плеер {cmd[0]} не запустился: {e}")
+            continue
+
+        with _active_players_lock:
+            _active_players.add(proc)
+        try:
+            deadline = time.monotonic() + timeout
+            while proc.poll() is None:
+                if _cancel_event.is_set():
+                    _stop_proc(proc)
+                    return False
+                if time.monotonic() > deadline:
+                    logger.warning(f"⚠️ Таймаут плеера {cmd[0]}, пробую следующий")
+                    _stop_proc(proc)
+                    break
+                time.sleep(0.05)
+            else:
+                if proc.returncode == 0:
+                    return True
+                logger.debug(f"Плеер {cmd[0]} вернул код {proc.returncode}")
+        finally:
+            with _active_players_lock:
+                _active_players.discard(proc)
+
+    logger.error("❌ Не найден аудио плеер (mpv/ffplay/aplay/paplay)")
+    return False
 
 
 def _auto_detect_piper_lib_path() -> Optional[str]:
@@ -260,34 +365,8 @@ class PiperTTS:
             return False
 
     def _play_audio(self, audio_file: Path):
-        """Воспроизводит аудио файл"""
-        # Пробуем разные плееры
-        players = [
-            ["mpv", "--really-quiet", str(audio_file)],
-            ["ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet", str(audio_file)],
-            ["aplay", str(audio_file)],
-            ["paplay", str(audio_file)],
-        ]
-
-        for player_cmd in players:
-            try:
-                subprocess.run(
-                    player_cmd,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    timeout=30,
-                    check=True,
-                    env=sanitized_env(),
-                )
-                return
-            except (
-                FileNotFoundError,
-                subprocess.TimeoutExpired,
-                subprocess.CalledProcessError,
-            ):
-                continue
-
-        logger.error("❌ Не найден аудио плеер (mpv/ffplay/aplay/paplay)")
+        """Воспроизводит аудио файл (с поддержкой отмены через cancel_playback)"""
+        _play_audio_file(audio_file)
 
 
 class GTTSFallback:
@@ -332,14 +411,8 @@ class GTTSFallback:
             tts = self.gTTS(text=text, lang=self.lang, slow=self.slow)
             tts.save(str(temp_path))
 
-            if play:
-                subprocess.run(
-                    ["mpv", "--really-quiet", str(temp_path)],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    timeout=30,
-                    env=sanitized_env(),
-                )
+            if play and not _play_audio_file(temp_path):
+                return False
 
             return True
 
@@ -433,7 +506,6 @@ class SpeechT5TTS:
             import torch
             import soundfile as sf
             import tempfile
-            import subprocess
             from pathlib import Path
 
             inputs = self._processor(text=text, return_tensors="pt").to(self.device)
@@ -453,31 +525,7 @@ class SpeechT5TTS:
             tmp.close()
 
             if play:
-                players = [
-                    ["mpv", "--really-quiet", tmp.name],
-                    ["ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet", tmp.name],
-                    ["aplay", tmp.name],
-                    ["paplay", tmp.name],
-                ]
-                import subprocess
-
-                for cmd in players:
-                    try:
-                        subprocess.run(
-                            cmd,
-                            stdout=subprocess.DEVNULL,
-                            stderr=subprocess.DEVNULL,
-                            timeout=30,
-                            check=True,
-                            env=sanitized_env(),
-                        )
-                        break
-                    except (
-                        FileNotFoundError,
-                        subprocess.TimeoutExpired,
-                        subprocess.CalledProcessError,
-                    ):
-                        continue
+                _play_audio_file(tmp.name)
 
             Path(tmp.name).unlink(missing_ok=True)
             return True
@@ -568,3 +616,123 @@ class TTSManager:
 
         logger.error("❌ Все TTS движки недоступны")
         return False
+
+
+class TTSWorker:
+    """Фоновый поток озвучки: FIFO-очередь фраз + мгновенная отмена.
+
+    Зачем: движки синхронные (subprocess до конца файла), поэтому
+    reminder-поток мог наложиться на main-loop TTS, а «тихо» не глушало
+    уже играющую фразу. Worker сериализует фразы и умеет убивать текущий
+    плеер (cancel() через cancel_playback()).
+
+    Обратная совместимость: ``tts=None`` разрешён — все методы no-op.
+    """
+
+    def __init__(self, tts=None):
+        """
+        Args:
+            tts: Движок с методом speak(text) -> bool (обычно TTSManager)
+        """
+        self.tts = tts
+        self._queue: "queue.Queue[str]" = queue.Queue()
+        self._stopped = False
+        self._busy = False
+        self._thread = threading.Thread(
+            target=self._run, name="jarvis-tts-worker", daemon=True
+        )
+        self._thread.start()
+
+    @property
+    def busy(self) -> bool:
+        """True пока проигрывается очередная фраза."""
+        return self._busy
+
+    @property
+    def pending(self) -> int:
+        """Сколько фраз ждёт в очереди."""
+        return self._queue.qsize()
+
+    def speak(self, text: str) -> bool:
+        """Ставит фразу в очередь (не блокирует).
+
+        Returns:
+            True если фраза поставлена в очередь.
+        """
+        if self.tts is None or not text or not text.strip():
+            return False
+        if self._stopped:
+            logger.debug("🔇 TTSWorker остановлен — фраза пропущена")
+            return False
+        self._queue.put(text)
+        return True
+
+    def cancel(self) -> int:
+        """Чистит очередь и глушит текущий плеер («тихо»).
+
+        Returns:
+            Сколько фраз было выброшено из очереди.
+        """
+        dropped = self._drain_queue()
+        cancel_playback()
+        # Повторный дренаж: между первым дренажом и глушением плеера
+        # продюсер мог успеть поставить ещё фразу.
+        dropped += self._drain_queue()
+        return dropped
+
+    def wait_idle(self, timeout: Optional[float] = None) -> bool:
+        """Блокирует, пока очередь не опустеет и текущая фраза не доиграет.
+
+        Нужен, чтобы распознавание не стартовало поверх собственного голоса.
+
+        Returns:
+            True если worker простаивает, False по таймауту.
+        """
+        deadline = None if timeout is None else time.monotonic() + timeout
+        while self._busy or not self._queue.empty():
+            if deadline is not None and time.monotonic() >= deadline:
+                return False
+            time.sleep(0.02)
+        return True
+
+    def close(self, timeout: float = 10.0) -> None:
+        """Останавливает поток. Уже поставленные фразы доиграют (в пределах
+        timeout), новые speak() отклоняются."""
+        if self._stopped:
+            return
+        self._stopped = True
+        if self._thread.is_alive():
+            self._thread.join(timeout=timeout)
+
+    def _drain_queue(self) -> int:
+        dropped = 0
+        while True:
+            try:
+                self._queue.get_nowait()
+                dropped += 1
+            except queue.Empty:
+                break
+        return dropped
+
+    def _run(self):
+        while True:
+            try:
+                text = self._queue.get(timeout=0.1)
+            except queue.Empty:
+                if self._stopped:
+                    break
+                continue
+
+            self._busy = True
+            _reset_playback_cancel()
+            try:
+                if self.tts is not None and text.strip():
+                    self.tts.speak(text)
+            except Exception as e:
+                logger.error(f"❌ TTS worker: {e}")
+            finally:
+                self._busy = False
+
+            # После close() доигрываем уже поставленные фразы и выходим.
+            if self._stopped and self._queue.empty():
+                break

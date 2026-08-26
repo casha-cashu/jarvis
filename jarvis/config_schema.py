@@ -11,8 +11,6 @@ class AudioMicrophoneConfig(BaseModel):
     model_config = ConfigDict(extra="allow")  # keep undocumented keys
     device_name: Optional[str] = "default"
     sample_rate: int = 48000
-    channels: int = 1
-    chunk_size: int = 512
 
 
 class AudioOutputConfig(BaseModel):
@@ -36,6 +34,8 @@ class WhisperConfig(BaseModel):
     model_config = ConfigDict(extra="allow")  # keep undocumented keys
     model_path: Optional[str] = None
     model_size: str = "tiny"
+    # Интервал промежуточных гипотез (мс); 0 = выключить
+    partial_interval_ms: int = Field(default=1000, ge=0)
 
 
 class STTConfig(BaseModel):
@@ -47,9 +47,11 @@ class STTConfig(BaseModel):
     wake_word: str = "джарвис"
     wake_word_alternatives: list = ["жарвис", "джервис", "jarvis"]
     phrase_time_limit: int = 10
-    pause_threshold: float = 1.2
     multi_turn_timeout: int = 10
     wake_mode: str = "classic"
+    # Секунд тишины для завершения фразы; None → дефолт движка
+    # (vosk 2.0, whisper 1.0)
+    silence_threshold: Optional[float] = None
 
     @field_validator("engine")
     @classmethod
@@ -67,14 +69,18 @@ class STTConfig(BaseModel):
             raise ValueError(f"wake_mode must be one of {allowed}, got '{v}'")
         return v
 
+    @field_validator("silence_threshold")
+    @classmethod
+    def validate_silence_threshold(cls, v: Optional[float]) -> Optional[float]:
+        if v is not None and v <= 0:
+            raise ValueError("silence_threshold must be a positive number of seconds")
+        return v
+
 
 class SileroVADConfig(BaseModel):
     model_config = ConfigDict(extra="allow")  # keep undocumented keys
     model_path: str = "auto"
     threshold: float = 0.5
-    min_speech_duration: float = 0.25
-    min_silence_duration: float = 0.5
-    speech_pad_ms: int = 30
 
 
 class VADConfig(BaseModel):
@@ -203,8 +209,6 @@ class LoggingConfig(BaseModel):
     file: str = "logs/jarvis.log"
     max_size: int = 10485760
     backup_count: int = 5
-    log_recognized_text: bool = True
-    log_llm_requests: bool = True
 
     @field_validator("level")
     @classmethod

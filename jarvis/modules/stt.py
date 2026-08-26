@@ -4,24 +4,26 @@ Speech-to-Text module using Vosk
 Распознавание речи с поддержкой Silero VAD
 """
 
-import audioop
 import json
 import queue
 from pathlib import Path
-import numpy as np
 import pyaudio
 from vosk import Model, KaldiRecognizer
 from typing import Optional, Callable
 import logging
 import time
 
+from .stt_base import BaseSTT
 from .vad import SileroVAD, VADIteratorWrapper
 
 logger = logging.getLogger(__name__)
 
 
-class VoskSTT:
+class VoskSTT(BaseSTT):
     """Vosk Speech-to-Text с VAD"""
+
+    # Дефолт: секунд тишины для завершения фразы (если не задан в конфиге)
+    DEFAULT_SILENCE_THRESHOLD = 2.0
 
     def __init__(
         self,
@@ -30,6 +32,7 @@ class VoskSTT:
         device_name: Optional[str] = None,
         use_vad: bool = True,
         vad_threshold: float = 0.5,
+        silence_threshold: Optional[float] = None,
     ):
         """
         Args:
@@ -38,25 +41,19 @@ class VoskSTT:
             device_name: Часть имени микрофона для поиска (например "Blue Microphones")
             use_vad: Использовать Silero VAD
             vad_threshold: Порог VAD (0.0-1.0)
+            silence_threshold: Секунд тишины для завершения фразы
+                (None → DEFAULT_SILENCE_THRESHOLD)
         """
-        self.sample_rate = sample_rate
-        self.device_name = device_name
+        super().__init__(sample_rate=sample_rate, device_name=device_name)
         self.use_vad = use_vad
+        self.silence_threshold = (
+            float(silence_threshold)
+            if silence_threshold and silence_threshold > 0
+            else self.DEFAULT_SILENCE_THRESHOLD
+        )
 
         # Разрешаем "auto" путь до модели
         model_path = self._resolve_model_path(model_path)
-
-        # Единый экземпляр PyAudio для всех методов
-        self.audio = pyaudio.PyAudio()
-
-        # Находим микрофон
-        self.device_index = self._find_device()
-
-        # Определяем частоту микрофона
-        self.mic_sample_rate = self._get_device_sample_rate()
-
-        # Определяем количество каналов (1 раз, без fallback-задержек)
-        self.mic_channels = self._get_device_channels()
 
         # Загружаем модель Vosk
         logger.info(f"Загрузка Vosk модели: {model_path}")
@@ -107,66 +104,6 @@ class VoskSTT:
         logger.warning("⚠️ Vosk модель не найдена, используется путь 'auto'")
         return "auto"
 
-    def _find_device(self) -> Optional[int]:
-        """Находит микрофон по имени (использует self.audio)"""
-        # Если имя не указано, используем дефолтный
-        if not self.device_name:
-            default_device = self.audio.get_default_input_device_info()
-            logger.info(f"Используется дефолтный микрофон: {default_device['name']}")
-            return None
-
-        # Ищем по имени
-        for i in range(self.audio.get_device_count()):
-            info = self.audio.get_device_info_by_index(i)
-            if info["maxInputChannels"] > 0:
-                if self.device_name.lower() in info["name"].lower():
-                    logger.info(f"✅ Найден микрофон: {info['name']} (index={i})")
-                    return i
-
-        logger.warning(
-            f"⚠️ Микрофон '{self.device_name}' не найден, используется дефолтный"
-        )
-        return None
-
-    def _get_device_sample_rate(self) -> int:
-        """Получает частоту дискретизации микрофона (использует self.audio)"""
-        if self.device_index is not None:
-            info = self.audio.get_device_info_by_index(self.device_index)
-        else:
-            info = self.audio.get_default_input_device_info()
-
-        rate = int(info["defaultSampleRate"])
-
-        logger.info(f"📊 Частота микрофона: {rate}Hz, Vosk: {self.sample_rate}Hz")
-        return rate
-
-    def _get_device_channels(self) -> int:
-        """Определяет количество входных каналов микрофона (однократно)."""
-        if self.device_index is not None:
-            info = self.audio.get_device_info_by_index(self.device_index)
-        else:
-            info = self.audio.get_default_input_device_info()
-        channels = int(info.get("maxInputChannels", 1))
-        # Большинство Vosk-моделей работают с моно; если устройство шлёт 2,
-        # мы смешаем в моно в recognise_from_mic
-        if channels > 2:
-            channels = 2  # Каналы выше 2 — виртуальные устройства, берём стерео
-        logger.info(f"🎤 Каналов микрофона: {channels}")
-        return channels
-
-    def list_devices(self):
-        """Выводит список всех аудио устройств (использует self.audio)"""
-        print("\n=== АУДИО УСТРОЙСТВА ===")
-        for i in range(self.audio.get_device_count()):
-            info = self.audio.get_device_info_by_index(i)
-            if info["maxInputChannels"] > 0:
-                print(f"{i}: {info['name']}")
-                print(
-                    f"   Каналов: {info['maxInputChannels']}, "
-                    f"Частота: {int(info['defaultSampleRate'])}Hz"
-                )
-        print("=" * 40)
-
     def recognize_from_mic(
         self,
         phrase_time_limit: int = 10,
@@ -211,7 +148,6 @@ class VoskSTT:
         speech_detected = False
         speech_start_time = None
         silence_start = None
-        silence_threshold = 2.0  # секунд тишины для завершения фразы
         min_phrase_duration = 0.5  # минимальная длительность речи (сек)
 
         try:
@@ -225,33 +161,18 @@ class VoskSTT:
                 except queue.Empty:
                     continue
 
-                # === Шаг 1: Стерео → Моно (только если 2 канала) ===
-                audio_int16 = np.frombuffer(data, dtype=np.int16)
-                if self.mic_channels > 1:
-                    audio_int16 = (
-                        audio_int16.reshape(-1, 2).mean(axis=1).astype(np.int16)
+                # === Стерео → Моно + Ресемплинг + Нормализация ===
+                audio_int16 = self._stereo_to_mono(data, self.mic_channels)
+                if need_resample:
+                    audio_int16 = self._resample_pcm16(
+                        audio_int16.tobytes(),
+                        self.mic_sample_rate,
+                        self.sample_rate,
                     )
+                audio_int16, audio_float32 = self._normalize_volume(audio_int16)
                 data = audio_int16.tobytes()
 
-                # === Шаг 2: Ресемплинг 48→16kHz с anti-aliasing (audioop.ratecv) ===
-                if need_resample:
-                    data, _ = audioop.ratecv(
-                        data, 2, 1, self.mic_sample_rate, self.sample_rate, None
-                    )
-                    audio_int16 = np.frombuffer(data, dtype=np.int16)
-
-                # === Шаг 4: Нормализация громкости (подтягиваем тихий голос) ===
-                audio_float32 = audio_int16.astype(np.float32) / 32768.0
-                peak = np.max(np.abs(audio_float32))
-                if peak > 0 and peak < 0.15:  # Только если сигнал слишком тихий
-                    gain = min(0.7 / peak, 4.0)  # Поднимаем до -3dB, максимум 4x
-                    audio_float32 = audio_float32 * gain
-                    audio_int16 = np.clip(
-                        (audio_float32 * 32768.0).astype(np.int16), -32768, 32767
-                    )
-                    data = audio_int16.tobytes()
-
-                # === Шаг 3: VAD ПОСЛЕ ресемплинга (на правильной частоте 16kHz) ===
+                # === VAD на правильной частоте (16kHz) ===
                 if self.use_vad and self.vad_iterator:
                     vad_result = self.vad_iterator.process_chunk(audio_float32)
 
@@ -273,7 +194,7 @@ class VoskSTT:
                             speech_start_time or time.time()
                         )
                         if speech_duration >= min_phrase_duration:
-                            if time.time() - silence_start > silence_threshold:
+                            if time.time() - silence_start > self.silence_threshold:
                                 logger.debug("✅ Фраза завершена")
                                 break
 

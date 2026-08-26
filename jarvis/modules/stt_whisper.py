@@ -4,29 +4,35 @@ Speech-to-Text module using faster-whisper (OpenAI Whisper CTranslate2)
 Опциональный бэкенд — выше точность, но больше RAM (tiny ~1GB)
 """
 
-import audioop
 import queue
-import numpy as np
 import pyaudio
 from typing import Optional, Callable, List
 import logging
 import time
 
 from pathlib import Path
+import numpy as np
+
+from .stt_base import BaseSTT
 from .vad import SileroVAD, VADIteratorWrapper
 
 logger = logging.getLogger(__name__)
 
 
-class WhisperSTT:
+class WhisperSTT(BaseSTT):
     """
     Распознавание речи через faster-whisper
 
     В отличие от Vosk (streaming), Whisper работает батчами:
     1. Записывает аудио в буфер пока говорит пользователь
-    2. Когда наступила тишина — транскрибирует весь буфер разом
+    2. Раз в partial_interval_ms прогоняет буфер через модель и отдаёт
+       промежуточную гипотезу в callback (не пишется в историю)
+    3. Когда наступила тишина — транскрибирует весь буфер разом
     Это даёт более высокое качество, но добавляет задержку (~200-500ms).
     """
+
+    # Дефолт: секунд тишины для завершения фразы (если не задан в конфиге)
+    DEFAULT_SILENCE_THRESHOLD = 1.0
 
     def __init__(
         self,
@@ -36,27 +42,31 @@ class WhisperSTT:
         device_name: Optional[str] = None,
         use_vad: bool = True,
         vad_threshold: float = 0.5,
+        partial_interval_ms: int = 1000,
+        silence_threshold: Optional[float] = None,
     ):
         """
         Args:
             model_size: Размер модели (tiny|base|small|medium|large)
             model_path: Путь к локальной модели (если None, скачивает из HF)
-            sample_rate: Частота дискретизации для VAD/Vosk
+            sample_rate: Частота дискретизации для VAD/Whisper
             device_name: Часть имени микрофона
             use_vad: Использовать Silero VAD
             vad_threshold: Порог VAD
+            partial_interval_ms: Интервал промежуточных гипотез (мс; 0 = off)
+            silence_threshold: Секунд тишины для завершения фразы
+                (None → DEFAULT_SILENCE_THRESHOLD)
         """
+        super().__init__(sample_rate=sample_rate, device_name=device_name)
         self.model_size = model_size if model_size != "auto" else "tiny"
         self.model_path = model_path
-        self.sample_rate = sample_rate
-        self.device_name = device_name
         self.use_vad = use_vad
-
-        # PyAudio (единый экземпляр)
-        self.audio = pyaudio.PyAudio()
-        self.device_index = self._find_device()
-        self.mic_sample_rate = self._get_device_sample_rate()
-        self.mic_channels = self._get_device_channels()
+        self.partial_interval_ms = max(0, int(partial_interval_ms))
+        self.silence_threshold = (
+            float(silence_threshold)
+            if silence_threshold and silence_threshold > 0
+            else self.DEFAULT_SILENCE_THRESHOLD
+        )
 
         # Определяем источник модели
         model_source = self.model_path or self.model_size
@@ -110,65 +120,6 @@ class WhisperSTT:
                 logger.warning(f"⚠️ VAD не загружен: {e}")
                 self.use_vad = False
 
-    # ── Поиск устройств (аналогично VoskSTT) ─────────────────────────
-
-    def _find_device(self) -> Optional[int]:
-        """Находит микрофон по имени (использует self.audio)"""
-        if not self.device_name:
-            default_device = self.audio.get_default_input_device_info()
-            logger.info(f"Используется дефолтный микрофон: {default_device['name']}")
-            return None
-
-        for i in range(self.audio.get_device_count()):
-            info = self.audio.get_device_info_by_index(i)
-            if info["maxInputChannels"] > 0:
-                if self.device_name.lower() in info["name"].lower():
-                    logger.info(f"✅ Найден микрофон: {info['name']} (index={i})")
-                    return i
-
-        logger.warning(
-            f"⚠️ Микрофон '{self.device_name}' не найден, используется дефолтный"
-        )
-        return None
-
-    def _get_device_sample_rate(self) -> int:
-        """Получает частоту дискретизации микрофона"""
-        if self.device_index is not None:
-            info = self.audio.get_device_info_by_index(self.device_index)
-        else:
-            info = self.audio.get_default_input_device_info()
-
-        rate = int(info["defaultSampleRate"])
-        logger.info(f"📊 Частота микрофона: {rate}Hz, Whisper: {self.sample_rate}Hz")
-        return rate
-
-    def _get_device_channels(self) -> int:
-        """Определяет количество входных каналов микрофона (однократно)."""
-        if self.device_index is not None:
-            info = self.audio.get_device_info_by_index(self.device_index)
-        else:
-            info = self.audio.get_default_input_device_info()
-        channels = int(info.get("maxInputChannels", 1))
-        if channels > 2:
-            channels = 2
-        logger.info(f"🎤 Каналов микрофона (Whisper): {channels}")
-        return channels
-
-    def list_devices(self):
-        """Выводит список всех аудио устройств"""
-        print("\n=== АУДИО УСТРОЙСТВА ===")
-        for i in range(self.audio.get_device_count()):
-            info = self.audio.get_device_info_by_index(i)
-            if info["maxInputChannels"] > 0:
-                print(f"{i}: {info['name']}")
-                print(
-                    f"   Каналов: {info['maxInputChannels']}, "
-                    f"Частота: {int(info['defaultSampleRate'])}Hz"
-                )
-        print("=" * 40)
-
-    # ── Основной метод распознавания ─────────────────────────────────
-
     def recognize_from_mic(
         self,
         phrase_time_limit: int = 10,
@@ -179,7 +130,8 @@ class WhisperSTT:
 
         Args:
             phrase_time_limit: Макс. время ожидания речи (сек)
-            callback: Функция для partial-результатов (не поддерживается)
+            callback: Функция для partial-результатов (промежуточные
+                гипотезы раз в partial_interval_ms)
 
         Returns:
             Распознанный текст
@@ -207,11 +159,12 @@ class WhisperSTT:
 
         # Буфер для накопления аудио
         audio_buffer: List[np.ndarray] = []
+        last_partial_ts = 0.0
+        partial_interval_s = self.partial_interval_ms / 1000.0
 
         start_time = time.time()
         speech_detected = False
         silence_start = None
-        silence_threshold = 1.0
 
         try:
             while stream.is_active():
@@ -224,30 +177,15 @@ class WhisperSTT:
                 except queue.Empty:
                     continue
 
-                # ── Стерео → Моно (если 2 канала) ──
-                audio_int16 = np.frombuffer(data, dtype=np.int16)
-                if self.mic_channels > 1:
-                    audio_int16 = (
-                        audio_int16.reshape(-1, 2).mean(axis=1).astype(np.int16)
-                    )
-                data = audio_int16.tobytes()
-
-                # ── Ресемплинг 48→16kHz (anti-aliasing) ──
+                # ── Стерео → Моно + Ресемплинг + Нормализация ──
+                audio_int16 = self._stereo_to_mono(data, self.mic_channels)
                 if need_resample:
-                    data, _ = audioop.ratecv(
-                        data, 2, 1, self.mic_sample_rate, self.sample_rate, None
+                    audio_int16 = self._resample_pcm16(
+                        audio_int16.tobytes(),
+                        self.mic_sample_rate,
+                        self.sample_rate,
                     )
-                    audio_int16 = np.frombuffer(data, dtype=np.int16)
-
-                # ── Нормализация ──
-                audio_float32 = audio_int16.astype(np.float32) / 32768.0
-                peak = np.max(np.abs(audio_float32))
-                if peak > 0 and peak < 0.15:
-                    gain = min(0.7 / peak, 4.0)
-                    audio_float32 = audio_float32 * gain
-                    audio_int16 = np.clip(
-                        (audio_float32 * 32768.0).astype(np.int16), -32768, 32767
-                    )
+                _audio_int16, audio_float32 = self._normalize_volume(audio_int16)
 
                 # ── VAD ──
                 if self.use_vad and self.vad_iterator:
@@ -263,13 +201,26 @@ class WhisperSTT:
                         silence_start = time.time()
 
                     if speech_detected and silence_start:
-                        if time.time() - silence_start > silence_threshold:
+                        if time.time() - silence_start > self.silence_threshold:
                             logger.debug("✅ Фраза завершена (тишина)")
                             break
 
-                # Накопление аудио в буфер
+                # Накопление аудио в буфер + промежуточные гипотезы
                 if speech_detected:
                     audio_buffer.append(audio_float32)
+
+                    if (
+                        callback is not None
+                        and partial_interval_s > 0
+                        and time.time() - last_partial_ts >= partial_interval_s
+                    ):
+                        last_partial_ts = time.time()
+                        partial_text = self._transcribe_array(
+                            np.concatenate(audio_buffer), vad_filter=True
+                        )
+                        if partial_text:
+                            logger.debug(f"📝 Whisper partial: {partial_text}")
+                            callback(partial_text)
 
         finally:
             stream.stop_stream()
@@ -281,30 +232,27 @@ class WhisperSTT:
         if not audio_buffer:
             return ""
 
-        # Склеиваем буфер в один массив
-        audio_full = np.concatenate(audio_buffer)
+        # Транскрибируем весь буфер разом
+        text = self._transcribe_array(np.concatenate(audio_buffer))
 
-        # Транскрибируем через faster-whisper
+        if text:
+            logger.info(f"📝 Whisper: {text}")
+        else:
+            logger.debug("📝 Whisper: пусто")
+
+        return text
+
+    def _transcribe_array(self, audio: np.ndarray, vad_filter: bool = False) -> str:
+        """Транскрибирует float32-массив через faster-whisper."""
         try:
-            logger.debug("🧠 Транскрибация Whisper...")
-            segments, info = self.model.transcribe(
-                audio_full,
+            segments, _info = self.model.transcribe(
+                audio,
                 language="ru",
                 beam_size=3,
-                vad_filter=False,  # VAD уже есть свой
+                vad_filter=vad_filter,
                 condition_on_previous_text=False,
             )
-
-            text_parts = [seg.text.strip() for seg in segments]
-            text = " ".join(text_parts).strip()
-
-            if text:
-                logger.info(f"📝 Whisper: {text}")
-            else:
-                logger.debug("📝 Whisper: пусто")
-
-            return text
-
+            return " ".join(seg.text.strip() for seg in segments).strip()
         except Exception as e:
             logger.error(f"❌ Ошибка Whisper транскрибации: {e}")
             return ""

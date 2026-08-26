@@ -1,14 +1,4 @@
 import json
-
-import os
-
-import pytest
-
-
-@pytest.fixture(autouse=True)
-def _hermetic_config(monkeypatch):
-    """Bridge must never depend on a developer's personal config.yaml."""
-    monkeypatch.setenv("JARVIS_CONFIG_PATH", "config.test.yaml")
 import time
 from collections import OrderedDict
 from types import SimpleNamespace
@@ -19,6 +9,12 @@ import jarvis as jarvis_pkg
 import jarvis.modules.llm as llm_mod
 import jarvis.modules.reminder as reminder_mod
 from jarvis.ui_bridge import Bridge
+
+
+@pytest.fixture(autouse=True)
+def _hermetic_config(monkeypatch):
+    """Bridge must never depend on a developer's personal config.yaml."""
+    monkeypatch.setenv("JARVIS_CONFIG_PATH", "config.test.yaml")
 
 
 def test_bridge_status_and_unknown_command():
