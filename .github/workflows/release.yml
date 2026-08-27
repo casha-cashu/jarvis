@@ -54,18 +54,10 @@ jobs:
           npx tauri build --bundles deb,rpm,appimage
           ls -lh src-tauri/target/release/bundle/deb/*.deb src-tauri/target/release/bundle/rpm/*.rpm src-tauri/target/release/bundle/appimage/*.AppImage
 
-      - name: Build Arch pkg (repack deb)
+      - name: Build Arch pkg (repack deb) — skip on ubuntu
         run: |
-          sudo apt-get install -y bsdtar
-          cd dist/arch
-          ln -sf ../../jarvis-ui/src-tauri/target/release/bundle/deb/*.deb ./JARVIS_${{ github.ref_name || '0.2.1' }}_amd64.deb || true
-          # ensure PKGBUILD pkgver matches tag or use 0.2.1
-          makepkg --printsrcinfo > /tmp/srcinfo_check || true
-          # makepkg needs arch env — use docker archlinux for real pkg, here just repack via bsdtar for artifact
-          mkdir -p /tmp/arch-pkg/usr
-          bsdtar -xf jarvis-ui/src-tauri/target/release/bundle/deb/*.deb -C /tmp/arch-src 2>/dev/null || (mkdir -p /tmp/arch-src && bsdtar -xf jarvis-ui/src-tauri/target/release/bundle/deb/*.deb -C /tmp/arch-src)
-          # fallback: just keep deb as artifact, arch pkg built locally on arch host
-          echo "arch pkg repack skipped on ubuntu — use local dist/arch/jarvis-*.pkg.tar.zst"
+          echo "arch pkg repack skipped on ubuntu — use local dist/arch/jarvis-*.pkg.tar.zst (needs arch host / makepkg)"
+          ls -lh dist/arch/*.pkg.tar.zst 2>&1 | head || echo "no local pkg"
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v6
