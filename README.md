@@ -1,3 +1,5 @@
+![JARVIS banner](docs/logos/jarvis-banner.png)
+
 # JARVIS — голосовой ассистент
 
 Голосовой ИИ-ассистент для Linux и macOS. Распознаёт речь (Vosk / Whisper), выполняет системные команды, отвечает через LLM (локально или через API), синтезирует речь (Piper TTS). При подключённом локальном Ollama умеет автономно выполнять задачи через bash/read/write tools с approval gate.

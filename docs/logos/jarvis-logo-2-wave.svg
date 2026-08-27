@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" role="img">
+  <title>JARVIS — hex waveform (symmetric)</title>
+  <rect width="512" height="512" rx="96" fill="#f8fafc"/>
+  <!-- Hex — same as before -->
+  <path d="M 256 118 L 333.9 163 L 333.9 253 L 256 298 L 178.1 253 L 178.1 163 Z" fill="none" stroke="#0f172a" stroke-width="2.8" stroke-linejoin="round"/>
+  <path d="M 256 138 L 315.6 172.4 L 315.6 241.2 L 256 275.6 L 196.4 241.2 L 196.4 172.4 Z" fill="none" stroke="#0f172a" stroke-width="1" opacity="0.18"/>
+  <!-- Symmetric waveform — 3 waves, center accent -->
+  <g fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M 196 186 Q 224 166 256 186 T 316 186" stroke="#0f172a" stroke-width="5.5" opacity="0.95"/>
+    <path d="M 196 208 Q 224 188 256 208 T 316 208" stroke="#2dd4bf" stroke-width="6.5"/>
+    <path d="M 196 230 Q 224 210 256 230 T 316 230" stroke="#0f172a" stroke-width="5.5" opacity="0.95"/>
+  </g>
+  <!-- Wordmark -->
+  <text x="256" y="368" text-anchor="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="44" font-weight="750" letter-spacing="10" fill="#0f172a">JARVIS</text>
+</svg>

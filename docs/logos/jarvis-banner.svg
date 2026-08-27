@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="640" viewBox="0 0 1280 640" role="img">
+  <title>JARVIS — banner 1280×640</title>
+  <rect width="1280" height="640" rx="32" fill="#141417"/>
+  <!-- Left — logo mark scaled 1.45× -->
+  <g transform="translate(320,320) scale(1.45)">
+    <path d="M 0 -92 L 79.7 -46 L 79.7 46 L 0 92 L -79.7 46 L -79.7 -46 Z" fill="none" stroke="#e2e8f0" stroke-width="3.2" stroke-linejoin="round"/>
+    <path d="M 0 -70 L 61 -35 L 61 35 L 0 70 L -61 35 L -61 -35 Z" fill="none" stroke="#e2e8f0" stroke-width="1.2" opacity="0.22"/>
+    <g stroke-linecap="round" stroke-linejoin="round">
+      <rect x="-20" y="-44" width="40" height="62" rx="20" fill="none" stroke="#f8fafc" stroke-width="4.4"/>
+      <path d="M -28 -2 Q -28 30 0 30 Q 28 30 28 -2" fill="none" stroke="#94a3b8" stroke-width="3.4"/>
+      <line x1="0" y1="30" x2="0" y2="46" stroke="#94a3b8" stroke-width="3.4"/>
+      <line x1="-18" y1="46" x2="18" y2="46" stroke="#94a3b8" stroke-width="3.4"/>
+    </g>
+  </g>
+  <!-- Right — wordmark enlarged -->
+  <text x="620" y="308" font-family="Geist, Inter, Helvetica, Arial, sans-serif" font-size="102" font-weight="750" letter-spacing="14" fill="#f8fafc">JARVIS</text>
+  <text x="620" y="354" font-family="Geist, Inter, Helvetica, Arial, sans-serif" font-size="26" font-weight="500" letter-spacing="6" fill="#94a3b8">VOICE ASSISTANT</text>
+  <g transform="translate(620,376)">
+    <rect x="0" y="0" width="132" height="44" rx="22" fill="#1e293b"/>
+    <text x="66" y="28" text-anchor="middle" font-family="Geist, Inter, sans-serif" font-size="18" font-weight="700" letter-spacing="1" fill="#e2e8f0">Tauri 2</text>
+    <rect x="144" y="0" width="132" height="44" rx="22" fill="#1e293b"/>
+    <text x="210" y="28" text-anchor="middle" font-family="Geist, Inter, sans-serif" font-size="18" font-weight="700" letter-spacing="1" fill="#e2e8f0">React 19</text>
+    <rect x="288" y="0" width="132" height="44" rx="22" fill="#1e293b"/>
+    <text x="354" y="28" text-anchor="middle" font-family="Geist, Inter, sans-serif" font-size="18" font-weight="700" letter-spacing="1" fill="#e2e8f0">Python</text>
+  </g>
+  <text x="1260" y="622" text-anchor="end" font-family="Geist, Inter, sans-serif" font-size="16" font-weight="500" letter-spacing="2" fill="#94a3b8">github.com/casha-cashu/jarvis</text>
+</svg>

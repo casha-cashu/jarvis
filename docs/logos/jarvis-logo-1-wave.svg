@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" role="img">
+  <title>JARVIS — wave 1</title>
+  <!-- Background -->
+  <rect width="512" height="512" rx="96" fill="#0a0f1a"/>
+  <!-- Outer ring — hint of arc reactor -->
+  <circle cx="256" cy="220" r="96" fill="none" stroke="#1e3a5f" stroke-width="1.5" opacity="0.6"/>
+  <circle cx="256" cy="220" r="72" fill="none" stroke="#2dd4bf" stroke-width="1.2" opacity="0.9"/>
+  <!-- Center J — geometric, no serif -->
+  <path d="M 238 158 L 238 246 Q 238 270 220 270 Q 206 270 200 258 L 182 268 Q 192 285 220 285 Q 258 285 258 246 L 258 158 Z" fill="#f8fafc"/>
+  <!-- Voice bars — 5 bars, the middle is the J stem -->
+  <g fill="#2dd4bf" opacity="0.95">
+    <rect x="136" y="218" width="10" height="28" rx="5"/>
+    <rect x="162" y="204" width="10" height="56" rx="5"/>
+    <rect x="188" y="188" width="10" height="88" rx="5"/>
+    <!-- gap for J -->
+    <rect x="314" y="188" width="10" height="88" rx="5"/>
+    <rect x="340" y="204" width="10" height="56" rx="5"/>
+    <rect x="366" y="218" width="10" height="28" rx="5"/>
+  </g>
+  <!-- Wordmark -->
+  <text x="256" y="360" text-anchor="middle" font-family="Inter, ui-sans-serif, system-ui" font-size="42" font-weight="700" letter-spacing="8" fill="#f8fafc">JARVIS</text>
+  <text x="256" y="384" text-anchor="middle" font-family="Inter, ui-sans-serif" font-size="11" font-weight="500" letter-spacing="6" fill="#64748b">VOICE ASSISTANT</text>
+</svg>
