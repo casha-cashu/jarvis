@@ -18,18 +18,18 @@
 # Выбран вариант A.
 
 pkgname=jarvis
-pkgver=0.2.0
+pkgver=0.2.1
 pkgrel=1
 pkgdesc="JARVIS — голосовой ассистент для Linux/macOS (Tauri 2 + React 19 + Rust bridge)"
 arch=('x86_64')
 url="https://github.com/casha-cashu/jarvis"
 license=('MIT')
-depends=('webkit2gtk-4.1' 'gtk3')
+depends=('webkit2gtk-4.1' 'gtk3' 'gst-plugins-base-libs' 'gstreamer')
 optdepends=()
-# Локальная сборка: ожидается JARVIS_0.2.0_amd64.deb рядом с PKGBUILD (симлинк/копия из jarvis-ui/src-tauri/target/release/bundle/deb/)
+# Локальная сборка: ожидается JARVIS_0.2.1_amd64.deb рядом с PKGBUILD (симлинк/копия из jarvis-ui/src-tauri/target/release/bundle/deb/)
 # Для AUR заменить на:
 # source=("JARVIS_${pkgver}_amd64.deb::https://github.com/casha-cashu/jarvis/releases/download/v${pkgver}/JARVIS_${pkgver}_amd64.deb")
-source=("JARVIS_0.2.0_amd64.deb")
+source=("JARVIS_0.2.1_amd64.deb")
 sha256sums=('SKIP')
 # Для AUR с URL выше использовать реальный sha256 (обновить при бампе):
 # sha256sums=('33a6813d3b3e0beb7983e4cbe674e6e5a1806f39831ab09fe77f6d1cc54d40f2')
@@ -41,17 +41,20 @@ package() {
     # Такой двухступенчатый подход чище чем `bsdtar -Oxf deb data.tar.gz | bsdtar -xC $pkgdir`
     # и совместим со всеми версиями libarchive. Итоговый .pkg.tar.zst содержит только /usr/...,
     # сам .deb внутрь пакета не попадает (проверяется `tar -tf *.pkg.tar.zst | grep deb` → пусто).
-    bsdtar -xf "$srcdir/JARVIS_0.2.0_amd64.deb" -C "$srcdir"
+    bsdtar -xf "$srcdir/JARVIS_0.2.1_amd64.deb" -C "$srcdir"
     bsdtar -xf "$srcdir/data.tar.gz" -C "$pkgdir"
 
     # Права уже 755/644 из deb, но подстрахуемся (cargo-bundle выставляет 755 для ELF)
-    chmod 755 "$pkgdir/usr/bin/app" "$pkgdir/usr/bin/jarvis-bridge"
+    # бинарь после 0.2.1 — jarvis (ранее app)
+    if [[ -f "$pkgdir/usr/bin/jarvis" ]]; then chmod 755 "$pkgdir/usr/bin/jarvis"; fi
+    if [[ -f "$pkgdir/usr/bin/app" ]]; then chmod 755 "$pkgdir/usr/bin/app"; fi
+    chmod 755 "$pkgdir/usr/bin/jarvis-bridge"
 
     # Контент из deb (для справки, устанавливается автоматически из data.tar.gz):
-    #   /usr/bin/app                         — Tauri WebView (11M, ELF)
+    #   /usr/bin/jarvis                      — Tauri WebView (11M, ELF) с 0.2.1 (ранее app)
     #   /usr/bin/jarvis-bridge               — Python bridge (158M, ELF)
     #   /usr/lib/JARVIS/_up_/_up_/config.example.yaml
-    #   /usr/share/applications/JARVIS.desktop (Exec=app, Icon=app)
+    #   /usr/share/applications/JARVIS.desktop (Exec=jarvis)
     #   /usr/share/icons/hicolor/{32x32,128x128,256x256@2}/apps/app.png
 
     # Лицензия (чтобы закрыть namcap E: MIT requires license file)

@@ -1,0 +1,86 @@
+name: Release JARVIS
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version override (e.g. 0.2.1)"
+        required: false
+
+jobs:
+  build-portable:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install system deps (webkit, gtk, gst, rpm, fuse)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
+            librsvg2-dev patchelf \
+            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+            rpm fuse libfuse2 \
+            python3 python3-pip python3-venv
+
+      - name: Set up Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: jarvis-ui/package-lock.json
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Python deps + PyInstaller sidecar
+        run: |
+          python3 -m venv venv
+          venv/bin/pip install --upgrade pip
+          venv/bin/pip install pyinstaller
+          # slim sidecar (no torch) — same as local jarvis-bridge.spec
+          venv/bin/pyinstaller jarvis-bridge.spec --workpath /tmp/pyi-build --distpath /tmp/pyi-dist --noconfirm
+          mkdir -p jarvis-ui/src-tauri/binaries
+          cp /tmp/pyi-dist/jarvis-bridge jarvis-ui/src-tauri/binaries/jarvis-bridge-x86_64-unknown-linux-gnu
+          chmod +x jarvis-ui/src-tauri/binaries/jarvis-bridge-x86_64-unknown-linux-gnu
+          ls -lh jarvis-ui/src-tauri/binaries/
+
+      - name: Build frontend + Tauri bundles (deb, rpm, appimage)
+        working-directory: jarvis-ui
+        run: |
+          npm ci
+          npm run build
+          npx tauri build --bundles deb,rpm,appimage
+          ls -lh src-tauri/target/release/bundle/deb/*.deb src-tauri/target/release/bundle/rpm/*.rpm src-tauri/target/release/bundle/appimage/*.AppImage
+
+      - name: Build Arch pkg (repack deb)
+        run: |
+          sudo apt-get install -y bsdtar
+          cd dist/arch
+          ln -sf ../../jarvis-ui/src-tauri/target/release/bundle/deb/*.deb ./JARVIS_${{ github.ref_name || '0.2.1' }}_amd64.deb || true
+          # ensure PKGBUILD pkgver matches tag or use 0.2.1
+          makepkg --printsrcinfo > /tmp/srcinfo_check || true
+          # makepkg needs arch env — use docker archlinux for real pkg, here just repack via bsdtar for artifact
+          mkdir -p /tmp/arch-pkg/usr
+          bsdtar -xf jarvis-ui/src-tauri/target/release/bundle/deb/*.deb -C /tmp/arch-src 2>/dev/null || (mkdir -p /tmp/arch-src && bsdtar -xf jarvis-ui/src-tauri/target/release/bundle/deb/*.deb -C /tmp/arch-src)
+          # fallback: just keep deb as artifact, arch pkg built locally on arch host
+          echo "arch pkg repack skipped on ubuntu — use local dist/arch/jarvis-*.pkg.tar.zst"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v6
+        with:
+          name: jarvis-portable-${{ github.ref_name || '0.2.1' }}
+          path: |
+            jarvis-ui/src-tauri/target/release/bundle/deb/*.deb
+            jarvis-ui/src-tauri/target/release/bundle/rpm/*.rpm
+            jarvis-ui/src-tauri/target/release/bundle/appimage/*.AppImage
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Check glibc
+        run: |
+          echo "host glibc $(ldd --version | head -1)"
+          echo "app glibc needs $(strings jarvis-ui/src-tauri/target/release/jarvis | grep -m1 GLIBC_ | head) "
+          ldd jarvis-ui/src-tauri/target/release/jarvis | head -20

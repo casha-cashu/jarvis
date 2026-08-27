@@ -7,6 +7,7 @@ import {
   listApiModels,
   switchBackendSession,
   deleteBackendSession,
+  listMicrophones,
   type ModelGroup,
 } from "../api/backend";
 import {
@@ -522,13 +523,31 @@ export default function ChatTab() {
         {/* Input bar */}
         <div className="flex items-center gap-2 border-t border-border bg-surface/80 px-4 py-3">
           <button
-            onClick={() => setListening(!listening)}
+            onClick={async () => {
+              if (listening) {
+                setListening(false);
+                return;
+              }
+              try {
+                const mics = await listMicrophones();
+                if (mics.length === 0) {
+                  setError("Микрофоны не найдены — проверь pactl / PipeWire");
+                  return;
+                }
+                setError(null);
+                setListening(true);
+                // демо-таймаут 5c — реальный STT идёт через `jarvis run` в терминале
+                setTimeout(() => setListening(false), 5000);
+              } catch (e) {
+                setError(e instanceof Error ? e.message : String(e));
+              }
+            }}
             className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border transition-all ${
               listening
-                ? "border-accent bg-accent text-white shadow-sm shadow-accent/30"
+                ? "border-accent bg-accent text-white shadow-sm shadow-accent/30 animate-pulse"
                 : "border-border bg-surface-2 text-text-muted hover:border-accent/50 hover:text-text"
             }`}
-            title={listening ? "Остановить" : "Голосовой ввод"}
+            title={listening ? "Остановить (pactl OK)" : "Голосовой ввод — проверка pactl"}
           >
             <Mic size={16} />
           </button>
