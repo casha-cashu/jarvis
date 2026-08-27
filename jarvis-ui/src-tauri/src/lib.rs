@@ -17,6 +17,9 @@ struct BridgeProcess {
 struct AppState {
   bridge: Mutex<Option<BridgeProcess>>,
   started: AtomicBool,
+  /// Packaged builds only: user config seeded from bundled resources,
+  /// forwarded to the sidecar as JARVIS_CONFIG_PATH.
+  packaged_config: Mutex<Option<PathBuf>>,
 }
 
 #[derive(Serialize)]
@@ -57,24 +60,72 @@ fn bridge_root() -> PathBuf {
     .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."))
 }
 
+/// Sidecar backend shipped next to the main executable in release bundles
+/// (Tauri externalBin: binaries/jarvis-bridge[-<target triple>]).
+fn sidecar_path() -> Option<PathBuf> {
+  if cfg!(debug_assertions) {
+    return None;
+  }
+  let dir = std::env::current_exe().ok()?.parent()?.to_path_buf();
+  std::fs::read_dir(&dir)
+    .ok()?
+    .filter_map(Result::ok)
+    .map(|entry| entry.path())
+    .find(|path| {
+      path.is_file()
+        && path
+          .file_name()
+          .and_then(|name| name.to_str())
+          .is_some_and(|name| name.starts_with("jarvis-bridge"))
+    })
+}
+
+/// Prepares the bridge command for the current runtime mode: the bundled
+/// PyInstaller sidecar in packaged builds, venv-python + ui_bridge.py in dev.
+fn bridge_command(state: &AppState) -> Command {
+  match sidecar_path() {
+    Some(bin) => {
+      let mut command = Command::new(bin);
+      if let Ok(slot) = state.packaged_config.lock() {
+        if let Some(config) = slot.as_ref() {
+          command.env("JARVIS_CONFIG_PATH", config);
+        }
+      }
+      command
+    }
+    None => {
+      // Dev fallback: run ui_bridge.py from the repo via the shared venv.
+      // In release this means sidecar was not found — hint in error below.
+      let root = bridge_root();
+      let script = root.join("jarvis").join("ui_bridge.py");
+      let python = std::env::var_os("JARVIS_PYTHON")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| root.join("venv/bin/python"));
+      if cfg!(not(debug_assertions)) && !python.is_file() {
+        log::warn!("sidecar not found next to current_exe and venv python missing at {} — packaged build may be corrupted", python.display());
+      }
+      let mut command = Command::new(python);
+      command
+        .arg("-u")
+        .arg(&script)
+        .current_dir(&root)
+        .env("PYTHONPATH", &root);
+      command
+    }
+  }
+}
+
 fn ensure_bridge(state: &AppState) -> Result<(), String> {
   let mut guard = state.bridge.lock().map_err(|_| "Состояние bridge повреждено")?;
   if guard.is_some() {
     return Ok(());
   }
-  let root = bridge_root();
-  let script = root.join("jarvis").join("ui_bridge.py");
-  let python = std::env::var_os("JARVIS_PYTHON")
-    .map(PathBuf::from)
-    .unwrap_or_else(|| root.join("venv/bin/python"));
-  let mut child = Command::new(python)
-    .arg("-u")
-    .arg(&script)
-    .current_dir(&root)
-    .env("PYTHONPATH", &root)
+  let mut command = bridge_command(state);
+  command
     .stdin(Stdio::piped())
     .stdout(Stdio::piped())
-    .stderr(Stdio::inherit())
+    .stderr(Stdio::inherit());
+  let mut child = command
     .spawn()
     .map_err(|e| format!("Не удалось запустить Python bridge: {e}"))?;
   let stdin = child.stdin.take().ok_or("Не удалось открыть stdin bridge")?;
@@ -276,10 +327,59 @@ fn system_stats() -> Result<SystemStats, String> {
   Ok(SystemStats { uptime_seconds: uptime, memory_used_mb: total.saturating_sub(available), memory_total_mb: total, load_average: load, platform: std::env::consts::OS.to_string() })
 }
 
+/// Packaged builds ship config.example.yaml as a Tauri resource. On first
+/// launch copy it to ~/.config/jarvis/config.yaml and point the sidecar at it.
+fn seed_user_config(app: &tauri::AppHandle) -> Result<(), String> {
+  use tauri::Manager;
+  let resource_dir = app
+    .path()
+    .resource_dir()
+    .map_err(|e| format!("Не удалось определить каталог ресурсов: {e}"))?;
+  // Tauri preserves relative structure: "../../config.example.yaml" lands as
+  // /usr/lib/JARVIS/_up/_up/config.example.yaml — search recursively.
+  fn find_example(dir: &std::path::Path) -> Option<PathBuf> {
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(cur) = stack.pop() {
+      if let Ok(entries) = std::fs::read_dir(&cur) {
+        for e in entries.filter_map(Result::ok) {
+          let p = e.path();
+          if p.is_file() && p.file_name().and_then(|n| n.to_str()) == Some("config.example.yaml") {
+            return Some(p);
+          }
+          if p.is_dir() {
+            stack.push(p);
+          }
+        }
+      }
+    }
+    None
+  }
+  let example = find_example(&resource_dir)
+    .ok_or_else(|| format!("config.example.yaml не найден в {}", resource_dir.display()))?;
+  let home = std::env::var_os("HOME")
+    .map(PathBuf::from)
+    .ok_or("Переменная HOME не задана")?;
+  let config_dir = home.join(".config").join("jarvis");
+  let dest = config_dir.join("config.yaml");
+  if !dest.exists() {
+    std::fs::create_dir_all(&config_dir)
+      .map_err(|e| format!("Не удалось создать {}: {e}", config_dir.display()))?;
+    std::fs::copy(&example, &dest).map_err(|e| format!("Не удалось скопировать конфиг: {e}"))?;
+  }
+  if let Ok(mut slot) = app.state::<Arc<AppState>>().packaged_config.lock() {
+    *slot = Some(dest);
+  }
+  Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
   tauri::Builder::default()
-    .manage(Arc::new(AppState { bridge: Mutex::new(None), started: AtomicBool::new(false) }))
+    .manage(Arc::new(AppState {
+      bridge: Mutex::new(None),
+      started: AtomicBool::new(false),
+      packaged_config: Mutex::new(None),
+    }))
     .invoke_handler(tauri::generate_handler![backend_start, backend_stop, backend_status, backend_send_message, backend_configure, backend_list_models, backend_timers, backend_clear_history, backend_switch_session, backend_delete_session, list_microphones, set_default_microphone, system_stats])
     .setup(|app| {
       if cfg!(debug_assertions) {
@@ -288,6 +388,8 @@ pub fn run() {
             .level(log::LevelFilter::Info)
             .build(),
         )?;
+      } else if let Err(e) = seed_user_config(app.handle()) {
+        log::warn!("seed_user_config failed (non-fatal): {e}");
       }
       Ok(())
     })

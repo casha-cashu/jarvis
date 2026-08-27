@@ -11,7 +11,11 @@ __pycache__/
 venv/
 .env/
 *.egg-info/
-dist/
+dist/*
+!dist/arch
+!dist/arch/*
+!dist/arch/PKGBUILD
+!dist/arch/.SRCINFO
 build/
 *.so
 
@@ -59,8 +63,21 @@ audit-review/
 # ── jarvis-ui ──
 node_modules/
 src-tauri/target/
-dist/
+src-tauri/binaries/
+jarvis-ui/src-tauri/binaries/
+jarvis-ui/dist/*
+!jarvis-ui/dist/arch
+!jarvis-ui/dist/arch/*
+!jarvis-ui/dist/arch/PKGBUILD
+!jarvis-ui/dist/arch/.SRCINFO
 HANDOFF.md
 
 # ── local tooling ──
 opencode.jsonc
+
+# ── Arch packaging (dist/arch) — binaries ignored, PKGBUILD/.SRCINFO kept (see Python section) ──
+dist/arch/*.pkg.tar.*
+dist/arch/*.pkg.tar.zst
+dist/arch/*.deb
+dist/arch/src/
+dist/arch/pkg/

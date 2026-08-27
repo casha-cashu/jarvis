@@ -1,0 +1,62 @@
+# Maintainer: JARVIS Team <jarvis@example.com>
+# PKGBUILD for JARVIS 0.2.0 — Arch (pacman -U) from Tauri bundle
+# Расположение сборки: dist/arch/ (альтернатива: jarvis-ui/src-tauri/target/arch/)
+# Выбран dist/arch — канонично для релиз-артефактов, рядом с deb/rpm/appimage в src-tauri/target/release/bundle/.
+# Альтернативный путь src-tauri/target/arch/ тоже валиден, но он внутри gitignored target/.
+
+# === Выбор стратегии сборки ===
+# Вариант A (текущий, самый чистый): репак из .deb
+#   source=(JARVIS_0.2.0_amd64.deb) + package() { bsdtar -xf deb -> data.tar.gz -> $pkgdir }
+#   +: гарантирует 1:1 паритет с cargo-bundle/tauri (desktop, hicolor иконки, /usr/lib/JARVIS/...),
+#      не дублирует логику установки, не тащит сам .deb внутрь .pkg.tar.zst (распаковывается только data.tar.gz).
+#   AUR-совместимость: заменить source на URL релиза:
+#     source=("JARVIS_${pkgver}_amd64.deb::https://github.com/casha-cashu/jarvis/releases/download/v${pkgver}/JARVIS_${pkgver}_amd64.deb")
+# Вариант B (альтернатива, закомментирована): прямая установка локальных бинарей
+#   source=("app" "jarvis-bridge" "JARVIS.desktop" "32x32.png" "128x128.png" "256x256@2.png")
+#   package() { install -Dm755 "$srcdir/app" "$pkgdir/usr/bin/app"; install -Dm755 ...; install -Dm644 desktop/icons ... }
+#   Требует ручного перечисления каждого файла и повторения логики cargo-bundle — хрупко.
+# Выбран вариант A.
+
+pkgname=jarvis
+pkgver=0.2.0
+pkgrel=1
+pkgdesc="JARVIS — голосовой ассистент для Linux/macOS (Tauri 2 + React 19 + Rust bridge)"
+arch=('x86_64')
+url="https://github.com/casha-cashu/jarvis"
+license=('MIT')
+depends=('webkit2gtk-4.1' 'gtk3')
+optdepends=()
+# Локальная сборка: ожидается JARVIS_0.2.0_amd64.deb рядом с PKGBUILD (симлинк/копия из jarvis-ui/src-tauri/target/release/bundle/deb/)
+# Для AUR заменить на:
+# source=("JARVIS_${pkgver}_amd64.deb::https://github.com/casha-cashu/jarvis/releases/download/v${pkgver}/JARVIS_${pkgver}_amd64.deb")
+source=("JARVIS_0.2.0_amd64.deb")
+sha256sums=('SKIP')
+# Для AUR с URL выше использовать реальный sha256 (обновить при бампе):
+# sha256sums=('33a6813d3b3e0beb7983e4cbe674e6e5a1806f39831ab09fe77f6d1cc54d40f2')
+
+package() {
+    # .deb — ar-архив: debian-binary, control.tar.gz, data.tar.gz
+    # Распаковываем data.tar.gz из deb во временный srcdir, затем его содержимое в $pkgdir.
+    # bsdtar умеет читать ar (проверено: bsdtar -tf JARVIS_0.2.0_amd64.deb → debian-binary, control.tar.gz, data.tar.gz)
+    # Такой двухступенчатый подход чище чем `bsdtar -Oxf deb data.tar.gz | bsdtar -xC $pkgdir`
+    # и совместим со всеми версиями libarchive. Итоговый .pkg.tar.zst содержит только /usr/...,
+    # сам .deb внутрь пакета не попадает (проверяется `tar -tf *.pkg.tar.zst | grep deb` → пусто).
+    bsdtar -xf "$srcdir/JARVIS_0.2.0_amd64.deb" -C "$srcdir"
+    bsdtar -xf "$srcdir/data.tar.gz" -C "$pkgdir"
+
+    # Права уже 755/644 из deb, но подстрахуемся (cargo-bundle выставляет 755 для ELF)
+    chmod 755 "$pkgdir/usr/bin/app" "$pkgdir/usr/bin/jarvis-bridge"
+
+    # Контент из deb (для справки, устанавливается автоматически из data.tar.gz):
+    #   /usr/bin/app                         — Tauri WebView (11M, ELF)
+    #   /usr/bin/jarvis-bridge               — Python bridge (158M, ELF)
+    #   /usr/lib/JARVIS/_up_/_up_/config.example.yaml
+    #   /usr/share/applications/JARVIS.desktop (Exec=app, Icon=app)
+    #   /usr/share/icons/hicolor/{32x32,128x128,256x256@2}/apps/app.png
+
+    # Лицензия (чтобы закрыть namcap E: MIT requires license file)
+    # $startdir = dist/arch, LICENSE лежит в корне репо (../../LICENSE от $startdir)
+    if [[ -f "$startdir/../../LICENSE" ]]; then
+        install -Dm644 "$startdir/../../LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+    fi
+}

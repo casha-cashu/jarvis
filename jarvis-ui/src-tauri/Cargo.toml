@@ -1,10 +1,10 @@
 [package]
 name = "app"
-version = "0.1.0"
-description = "A Tauri App"
-authors = ["you"]
-license = ""
-repository = ""
+version = "0.2.0"
+description = "JARVIS — голосовой ассистент (Tauri UI + Python sidecar)"
+authors = ["casha-cashu"]
+license = "MIT"
+repository = "https://github.com/casha-cashu/jarvis"
 edition = "2021"
 rust-version = "1.77.2"
 
