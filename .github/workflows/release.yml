@@ -84,3 +84,52 @@ jobs:
           echo "host glibc $(ldd --version | head -1)"
           echo "app glibc needs $(strings jarvis-ui/src-tauri/target/release/jarvis | grep -m1 GLIBC_ | head) "
           ldd jarvis-ui/src-tauri/target/release/jarvis | head -20
+
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: jarvis-ui/package-lock.json
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install Python deps + PyInstaller sidecar (macOS)
+        run: |
+          python3 -m venv venv
+          venv/bin/pip install --upgrade pip
+          venv/bin/pip install pyinstaller
+          venv/bin/pyinstaller jarvis-bridge.spec --workpath /tmp/pyi-build --distpath /tmp/pyi-dist --noconfirm
+          mkdir -p jarvis-ui/src-tauri/binaries
+          cp /tmp/pyi-dist/jarvis-bridge jarvis-ui/src-tauri/binaries/jarvis-bridge-aarch64-apple-darwin || cp /tmp/pyi-dist/jarvis-bridge jarvis-ui/src-tauri/binaries/jarvis-bridge-x86_64-apple-darwin || cp /tmp/pyi-dist/jarvis-bridge jarvis-ui/src-tauri/binaries/jarvis-bridge
+          chmod +x jarvis-ui/src-tauri/binaries/jarvis-bridge*
+          ls -lh jarvis-ui/src-tauri/binaries/
+
+      - name: Build frontend + Tauri dmg
+        working-directory: jarvis-ui
+        run: |
+          npm ci
+          npm run build
+          npx tauri build --bundles dmg
+          ls -lh src-tauri/target/release/bundle/dmg/*.dmg src-tauri/target/release/bundle/macos/*.app 2>&1 | head -20
+
+      - name: Upload macOS artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: jarvis-macos-${{ github.ref_name || '0.2.1' }}
+          path: |
+            jarvis-ui/src-tauri/target/release/bundle/dmg/*.dmg
+            jarvis-ui/src-tauri/target/release/bundle/macos/*.app
+          if-no-files-found: warn
+          retention-days: 14
