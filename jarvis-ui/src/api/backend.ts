@@ -69,6 +69,18 @@ export async function deleteBackendSession(id: string): Promise<void> {
   await unwrap(response);
 }
 
+/** Deletes a chat's archive AND its live LLM context — «память модели». */
+export async function purgeBackendSession(id: string): Promise<void> {
+  const response = await invoke<{ ok: boolean; error?: string }>("backend_purge_session", { id });
+  await unwrap(response);
+}
+
+/** Deletes every archived chat + the live context. */
+export async function purgeAllBackendSessions(): Promise<void> {
+  const response = await invoke<{ ok: boolean; error?: string }>("backend_purge_all_sessions");
+  await unwrap(response);
+}
+
 export async function listMicrophones(): Promise<MicrophoneDevice[]> { return invoke("list_microphones"); }
 export async function setDefaultMicrophone(name: string): Promise<void> { await invoke("set_default_microphone", { name }); }
 export async function getSystemStats(): Promise<SystemStats> { return invoke("system_stats"); }

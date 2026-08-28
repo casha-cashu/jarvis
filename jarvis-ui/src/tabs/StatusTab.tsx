@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Activity, Mic, Cpu, Clock, AlertCircle } from "lucide-react";
 import {
   getBackendStatus,
@@ -49,12 +49,19 @@ export default function StatusTab() {
     });
   }
 
+  // Ref вместо захвата state в замыкании interval'а: deps [] фиксировали
+  // начальный {running:false} — секция таймеров никогда не грузилась.
+  const backendRef = useRef(backend);
+  useEffect(() => {
+    backendRef.current = backend;
+  }, [backend]);
+
   useEffect(() => {
     let active = true;
     const refresh = () => {
       getBackendStatus().then((status) => active && setBackend(status)).catch(() => undefined);
       getSystemStats().then((stats) => active && setSystem(stats)).catch(() => undefined);
-      if (backend.running || backend.connected) {
+      if (backendRef.current.running || backendRef.current.connected) {
         getBackendTimers()
           .then((t) => active && setTimers(t))
           .catch(() => active && setTimers([]));

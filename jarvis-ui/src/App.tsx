@@ -1,4 +1,3 @@
-import { useEffect } from "react";
 import TitleBar from "./components/TitleBar";
 import Sidebar from "./components/Sidebar";
 import ChatTab from "./tabs/ChatTab";
@@ -10,11 +9,10 @@ import { useTheme } from "./hooks/useTheme";
 
 export default function App() {
   const { tab, setTab } = useTab();
-  const { theme } = useTheme();
-
-  useEffect(() => {
-    document.documentElement.dataset.theme = theme;
-  }, [theme]);
+  // useTheme сам применяет resolved-тему (system -> light/dark) в своём
+  // эффекте; дублирующий effect здесь перетирал dataset.theme сырым
+  // "system", для которого нет CSS-правил — ломалась светлая тема.
+  useTheme();
 
   return (
     <div className="flex h-screen w-screen flex-col bg-bg text-text">

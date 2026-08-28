@@ -4,8 +4,9 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>JARVIS</title>
-    <link rel="preconnect" href="https://rsms.me/" />
-    <link rel="stylesheet" href="https://rsms.me/inter/inter.css" />
+    <!-- Inter с rsms.me убран: CSP (style-src 'self') блокировала этот
+         стиль в packaged-сборке, шрифт молча не грузился + сетевой запрос
+         на каждом офлайн-старте. Используется системный стек шрифтов. -->
   </head>
   <body>
     <div id="root"></div>

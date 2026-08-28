@@ -38,8 +38,16 @@ export default function SettingsTab() {
   const [formError, setFormError] = useState<string | null>(null);
   const [checking, setChecking] = useState(false);
   const [checkOk, setCheckOk] = useState<string | null>(null);
-  const [agentEnabled, setAgentEnabled] = useState(true);
-  const [approvalMode, setApprovalMode] = useState<"auto" | "strict" | "yolo">("auto");
+  // Флаги агента персистятся: changeModel в ChatTab читает их при
+  // configureBackend — иначе смена модели тихо возвращала agent=true/auto
+  // даже если пользователь выключил агента или выбрал strict.
+  const [agentEnabled, setAgentEnabled] = useState(
+    () => localStorage.getItem("jarvis.ui.agentEnabled") !== "0",
+  );
+  const [approvalMode, setApprovalMode] = useState<"auto" | "strict" | "yolo">(() => {
+    const stored = localStorage.getItem("jarvis.ui.approvalMode");
+    return stored === "strict" || stored === "yolo" ? stored : "auto";
+  });
   const [savedNote, setSavedNote] = useState<string | null>(null);
   const [microphones, setMicrophones] = useState<MicrophoneDevice[]>([]);
   const [selectedMic, setSelectedMic] = useState("");
@@ -51,6 +59,11 @@ export default function SettingsTab() {
       setSelectedMic(devices.find((device) => device.isDefault)?.name ?? devices[0]?.name ?? "");
     }).catch(() => undefined);
   }, []);
+
+  useEffect(() => {
+    localStorage.setItem("jarvis.ui.agentEnabled", agentEnabled ? "1" : "0");
+    localStorage.setItem("jarvis.ui.approvalMode", approvalMode);
+  }, [agentEnabled, approvalMode]);
 
   const openAdd = () => {
     setEditingId("new");
@@ -333,8 +346,16 @@ export default function SettingsTab() {
                 <select
                   value={selectedMic}
                   onChange={async (e) => {
-                    setSelectedMic(e.target.value);
-                    await setDefaultMicrophone(e.target.value);
+                    const previous = selectedMic;
+                    const next = e.target.value;
+                    setSelectedMic(next);
+                    // pactl может упасть — откатываем селект, чтобы он не
+                    // показывал неприменённое устройство.
+                    try {
+                      await setDefaultMicrophone(next);
+                    } catch {
+                      setSelectedMic(previous);
+                    }
                   }}
                   className="w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm text-text"
                 >
@@ -439,8 +460,12 @@ async function configureBackendIfPossible(
       approvalMode,
     });
     return `Применено: ${provider.name}/${active.model}`;
-  } catch {
-    return null;
+  } catch (err) {
+    // Ошибка применения должна быть видна в savedNote, а не глотаться:
+    // тихий null выглядел как успех при мёртвом bridge/неверном ключе.
+    return err instanceof Error
+      ? `Не применено: ${err.message}`
+      : "Не применено: неизвестная ошибка";
   }
 }
 

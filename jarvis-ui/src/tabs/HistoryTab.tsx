@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Search, Trash2, X, CheckSquare, Square } from "lucide-react";
-import { clearBackendHistory } from "../api/backend";
+import { purgeBackendSession, purgeAllBackendSessions } from "../api/backend";
 
 interface Message {
   id: string;
@@ -116,15 +116,26 @@ export default function HistoryTab() {
   const confirmDelete = async () => {
     if (skipConfirm) localStorage.setItem(SKIP_CONFIRM_KEY, "1");
     setConfirmOpen(false);
+    // Затронутые сессии: их бекенд-архивы purge'ются, иначе «удалённая
+    // память модели» воскресала при следующем switch_session (clear_history
+    // чистит только живой history.json, не архивы ui-history/<sid>.json).
+    const touched = new Set(
+      sessions
+        .filter((s) => s.messages.some((m) => selected.has(`${s.id}-${m.id}`)))
+        .map((s) => s.id),
+    );
     deleteSelected();
-    // Also drop the model's memory of deleted context.
-    await clearBackendHistory().catch(() => undefined);
+    for (const id of touched) {
+      await purgeBackendSession(id).catch(() => undefined);
+    }
   };
 
   const handleClearAll = async () => {
     setClearing(true);
     try {
-      await clearBackendHistory().catch(() => undefined);
+      // purge_all_sessions, а не clear_history: обещание «удалить память
+      // модели» должно включать архивы прошлых чатов.
+      await purgeAllBackendSessions().catch(() => undefined);
       localStorage.removeItem(CHAT_STORAGE_KEY);
       setSessions([]);
       setSelected(new Set());

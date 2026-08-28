@@ -264,6 +264,11 @@ export default function ChatTab() {
         endpoint: provider.endpoint,
         apiKey: provider.apiKey,
         model: modelId,
+        // Флаги агента хранятся в localStorage (Настройки → LLM). Без них
+        // serde-дефолты Rust (true/auto) тихо включали bash-агент при
+        // каждой смене модели — даже если пользователь его выключил.
+        agentEnabled: localStorage.getItem("jarvis.ui.agentEnabled") !== "0",
+        approvalMode: localStorage.getItem("jarvis.ui.approvalMode") ?? "auto",
       });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Не удалось сменить модель");
@@ -275,6 +280,14 @@ export default function ChatTab() {
   const handleSend = async () => {
     const text = input.trim();
     if (!text || sending) return;
+    // Без активной сессии сообщение уходило в backend, но не сохранялось
+    // никуда: ответ стримился и исчезал. Требуем чат и шлём в его id.
+    const targetSession = sessions.find((s) => s.id === activeSession) ?? sessions[0];
+    if (!targetSession) {
+      setError("Создайте чат кнопкой «+» в списке сессий");
+      return;
+    }
+    const sessionKey = targetSession.id;
     setSending(true);
     setError(null);
     setLiveSegments([]);
@@ -284,7 +297,7 @@ export default function ChatTab() {
       minute: "2-digit",
     });
     const userMessage: Message = { id: crypto.randomUUID(), role: "user", text, timestamp: now };
-    setSessions((previous) => previous.map((session) => session.id === activeSession ? {
+    setSessions((previous) => previous.map((session) => session.id === sessionKey ? {
       ...session,
       title: session.messages.length === 0 ? text.slice(0, 36) : session.title,
       lastMessage: text,
@@ -292,7 +305,7 @@ export default function ChatTab() {
       messages: [...session.messages, userMessage],
     } : session));
     try {
-      const response = await sendBackendMessage(text, activeSession);
+      const response = await sendBackendMessage(text, sessionKey);
       const steps = liveSegmentsRef.current
         .filter((s): s is { kind: "tool"; step: ToolStep } => s.kind === "tool")
         .map((s) => s.step);
@@ -307,7 +320,7 @@ export default function ChatTab() {
         timestamp: now,
         ...(steps.length > 0 ? { steps } : {}),
       };
-      setSessions((previous) => previous.map((session) => session.id === activeSession ? {
+      setSessions((previous) => previous.map((session) => session.id === sessionKey ? {
         ...session,
         lastMessage: assistantMessage.text,
         messages: [...session.messages, assistantMessage],

@@ -76,7 +76,11 @@ fn sidecar_path() -> Option<PathBuf> {
         && path
           .file_name()
           .and_then(|name| name.to_str())
-          .is_some_and(|name| name.starts_with("jarvis-bridge"))
+          .is_some_and(|name| {
+            // Точный матч: сторонний файл вида jarvis-bridge.txt не должен
+            // стать целью спавна.
+            name == "jarvis-bridge" || name.starts_with("jarvis-bridge-")
+          })
     })
 }
 
@@ -181,14 +185,28 @@ async fn backend_start(state: tauri::State<'_, Arc<AppState>>) -> Result<serde_j
 }
 
 #[tauri::command]
-fn backend_stop(state: tauri::State<'_, Arc<AppState>>) -> Result<String, String> {
-  let mut guard = state.bridge.lock().map_err(|_| "Состояние bridge повреждено")?;
-  state.started.store(false, Ordering::SeqCst);
-  if let Some(mut bridge) = guard.take() {
-    let _ = writeln!(bridge.stdin, "{{\"command\":\"stop\"}}");
-    let _ = bridge.child.kill();
-  }
-  Ok(r#"{"ok":true}"#.to_string())
+async fn backend_stop(state: tauri::State<'_, Arc<AppState>>) -> Result<String, String> {
+  // Async + spawn_blocking: sync-команды Tauri выполняются в main thread —
+  // блокировка на мьютексе bridge (который держит 180-секундный стриминг)
+  // замораживала всё окно. Здесь же shutdown ждёт в отдельном потоке.
+  let state: Arc<AppState> = state.inner().clone();
+  tauri::async_runtime::spawn_blocking(move || {
+    state.started.store(false, Ordering::SeqCst);
+    if let Ok(mut guard) = state.bridge.lock() {
+      if let Some(mut bridge) = guard.take() {
+        // EOF на stdin: python сам выходит из main() и корректно глушит
+        // response pipeline. Затем reap — без него оставался зомби.
+        let _ = writeln!(bridge.stdin, "{{\"command\":\"stop\"}}");
+        drop(bridge.stdin);
+        std::thread::sleep(Duration::from_millis(300));
+        let _ = bridge.child.kill();
+        let _ = bridge.child.wait();
+      }
+    }
+    Ok(r#"{"ok":true}"#.to_string())
+  })
+  .await
+  .map_err(|e| format!("Внутренняя ошибка: {e}"))?
 }
 
 #[tauri::command]
@@ -282,6 +300,20 @@ async fn backend_delete_session(id: String, state: tauri::State<'_, Arc<AppState
   run_bridge(state, payload).await
 }
 
+#[tauri::command]
+async fn backend_purge_session(id: String, state: tauri::State<'_, Arc<AppState>>) -> Result<serde_json::Value, String> {
+  // purge_session/delete-архива + очистка живого контекста, если чат активен.
+  let payload = serde_json::json!({"command": "purge_session", "id": id}).to_string();
+  run_bridge(state, payload).await
+}
+
+#[tauri::command]
+async fn backend_purge_all_sessions(state: tauri::State<'_, Arc<AppState>>) -> Result<serde_json::Value, String> {
+  // «Удалить всю память модели»: без purge архивы ui-history/<sid>.json
+  // воскресали удалённый контекст при следующем switch_session.
+  run_bridge(state, r#"{"command":"purge_all_sessions"}"#.to_string()).await
+}
+
 /// Runs a blocking bridge request off the async runtime so the UI never freezes.
 async fn run_bridge(
   state: tauri::State<'_, Arc<AppState>>,
@@ -294,7 +326,7 @@ async fn run_bridge(
 }
 
 #[tauri::command]
-fn list_microphones() -> Result<Vec<MicrophoneDevice>, String> {
+async fn list_microphones() -> Result<Vec<MicrophoneDevice>, String> {
   let output = Command::new("pactl").args(["list", "sources"]).output().map_err(|e| format!("pactl недоступен: {e}"))?;
   let text = String::from_utf8_lossy(&output.stdout);
   let default = Command::new("pactl").args(["get-default-source"]).output().ok().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default();
@@ -311,7 +343,7 @@ fn list_microphones() -> Result<Vec<MicrophoneDevice>, String> {
 }
 
 #[tauri::command]
-fn set_default_microphone(name: String) -> Result<(), String> {
+async fn set_default_microphone(name: String) -> Result<(), String> {
   let status = Command::new("pactl").args(["set-default-source", &name]).status().map_err(|e| format!("pactl недоступен: {e}"))?;
   if status.success() { Ok(()) } else { Err("Не удалось выбрать микрофон".into()) }
 }
@@ -380,16 +412,30 @@ pub fn run() {
       started: AtomicBool::new(false),
       packaged_config: Mutex::new(None),
     }))
-    .invoke_handler(tauri::generate_handler![backend_start, backend_stop, backend_status, backend_send_message, backend_configure, backend_list_models, backend_timers, backend_clear_history, backend_switch_session, backend_delete_session, list_microphones, set_default_microphone, system_stats])
+    .invoke_handler(tauri::generate_handler![backend_start, backend_stop, backend_status, backend_send_message, backend_configure, backend_list_models, backend_timers, backend_clear_history, backend_switch_session, backend_delete_session, backend_purge_session, backend_purge_all_sessions, list_microphones, set_default_microphone, system_stats])
     .setup(|app| {
-      if cfg!(debug_assertions) {
-        app.handle().plugin(
-          tauri_plugin_log::Builder::default()
-            .level(log::LevelFilter::Info)
-            .build(),
-        )?;
-      } else if let Err(e) = seed_user_config(app.handle()) {
-        log::warn!("seed_user_config failed (non-fatal): {e}");
+      // Лог и в release: без него warn! о несуществующем сайдкаре уходил
+      // в никуда, а пользователь получал «Не удалось запустить Python
+      // bridge» без диагностики.
+      app.handle().plugin(
+        tauri_plugin_log::Builder::default()
+          .level(if cfg!(debug_assertions) {
+            log::LevelFilter::Info
+          } else {
+            log::LevelFilter::Warn
+          })
+          .targets([
+            tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Stdout),
+            tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::LogDir {
+              file_name: Some("jarvis-ui".into()),
+            }),
+          ])
+          .build(),
+      )?;
+      if !cfg!(debug_assertions) {
+        if let Err(e) = seed_user_config(app.handle()) {
+          log::warn!("seed_user_config failed (non-fatal): {e}");
+        }
       }
       Ok(())
     })
