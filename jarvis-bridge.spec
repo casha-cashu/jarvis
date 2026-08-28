@@ -14,7 +14,13 @@ a = Analysis(
     [str(REPO_ROOT / "jarvis" / "ui_bridge.py")],
     pathex=[str(REPO_ROOT)],
     binaries=[],
-    datas=[],  # no models, no assets — text core only
+    # Словари команд/приложений нужны в packaged-режиме: без них в
+    # deb/AppImage не работают локальные команды, запуск приложений и NLU.
+    # Резолвятся в рантайме через jarvis.resources.resource_path (_MEIPASS).
+    datas=[
+        (str(REPO_ROOT / "data" / "commands.json"), "data"),
+        (str(REPO_ROOT / "data" / "apps.json"), "data"),
+    ],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},

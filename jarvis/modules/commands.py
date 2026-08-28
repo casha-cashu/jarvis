@@ -579,15 +579,28 @@ class CommandManager:
         commands_cfg = config.get("commands", {})
         self.platform = PlatformAdapter()
 
+        # Словари могут быть упакованы в PyInstaller-бинарь (_MEIPASS) —
+        # резолвим через resource_path, а не голый относительный путь.
+        from jarvis.resources import resource_path
+
+        dictionary_path = resource_path(
+            commands_cfg.get("dictionary_path", "data/commands.json")
+        )
+        apps_path = resource_path(
+            commands_cfg.get("apps_dictionary_path", "data/apps.json")
+        )
+
         # NLU: if caller provides a router ( tests, or wiring from outside ),
         # use it. Otherwise, default-enable NLU if not explicitly disabled
         # in config and training data files exist.
         if nlu_router is None:
-            nlu_router = self._maybe_init_nlu(config, commands_cfg)
+            nlu_router = self._maybe_init_nlu(
+                dictionary_path, apps_path, commands_cfg.get("nlu_enabled", True)
+            )
 
         self.executor = CommandExecutor(
-            commands_file=commands_cfg.get("dictionary_path", "data/commands.json"),
-            apps_file=commands_cfg.get("apps_dictionary_path", "data/apps.json"),
+            commands_file=dictionary_path,
+            apps_file=apps_path,
             fuzzy_threshold=commands_cfg.get("fuzzy_threshold", 0.8),
             platform_adapter=self.platform,
             execution_timeout=commands_cfg.get("execution_timeout", 30),
@@ -597,15 +610,15 @@ class CommandManager:
         logger.info("✅ CommandManager инициализирован")
 
     @staticmethod
-    def _maybe_init_nlu(config: dict, commands_cfg: dict) -> "Optional[object]":
+    def _maybe_init_nlu(
+        cmds_path: str, apps_path: str, nlu_enabled: bool = True
+    ) -> "Optional[object]":
         """Build an IntentRouter from data files unless explicitly disabled."""
-        if commands_cfg.get("nlu_enabled", True) is False:
+        if nlu_enabled is False:
             return None
         try:
             from jarvis.modules.nlu import IntentRouter
 
-            cmds_path = commands_cfg.get("dictionary_path", "data/commands.json")
-            apps_path = commands_cfg.get("apps_dictionary_path", "data/apps.json")
             return IntentRouter(
                 commands_file=cmds_path,
                 apps_file=apps_path,
