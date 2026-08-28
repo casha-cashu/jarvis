@@ -16,7 +16,7 @@ jarvis-py/                ← repo root (git remote → casha-cashu/jarvis)
 ├── data/ docker/ docs?   # assets & infra
 ├── jarvis-ui/            # GUI (Tauri 2 + React 19 + TS)
 │   └── src-tauri/        # Rust bridge (spawn ./venv/bin/python)
-├── venv/                 # shared venv (Python 3.14, relocated from jarvis-new)
+├── venv/                 # shared venv (Python 3.14)
 ├── config.yaml           # personal, gitignored (template: config.example.yaml)
 ├── .env                  # secrets, gitignored
 └── AGENTS.md HANDOFF.md  # agent instructions / state (HANDOFF gitignored)
@@ -30,7 +30,7 @@ jarvis-py/                ← repo root (git remote → casha-cashu/jarvis)
 - Old dirs `jarvis-claude/ jarvis-new/ jarvis-github/` are DELETED; history
   lives in this single .git.
 
-## Architecture (new / `jarvis-claude` & `jarvis-github`)
+## Architecture
 
 `Jarvis` (`jarvis/__init__.py`, ~374 lines) is a thin orchestrator. Real work
 lives in:
@@ -82,37 +82,34 @@ lives in:
 
 ## Commands
 
-All commands assume you are **inside** the package dir (`jarvis-claude/` for
-day-to-day work; `jarvis-github/` only for releases) — there is no top-level
-venv at the workspace root.
+All commands assume you are at the **repo root** (`jarvis-py/`) — it is the
+single working directory; the shared venv lives at `venv/` there.
 
-- Activate the shared venv first (one-time; it lives in `jarvis-new/`):
-  `source ../jarvis-new/venv/bin/activate`
-- Tests: `make test` (== `python -m pytest tests/ -v`). Needs full deps
-  installed in the venv — they are in `jarvis-new/venv` already.
+- Tests: `PYTHONPATH=. ./venv/bin/python -m pytest -m "not slow and not integration" -q`
+  (or `make test` — same thing).
 - Coverage: `make test-cov`.
-- Lint/format/types: `pre-commit run --all-files` — ruff + ruff-format +
-  mypy (mypy excludes `venv/`, `build/`, `tests/`; rules in
-  `.pre-commit-config.yaml`). NOTE: `pre-commit` / `ruff` / `mypy` are
-  **not** installed in the shared venv — `pip install pre-commit ruff mypy`
-  before first run, or run in Docker.
-- Single test: `python -m pytest tests/test_env.py -v`; single marker:
-  `python -m pytest -m "not slow and not integration"`.
+- Lint/format/types (the pre-commit gate): `./venv/bin/ruff check jarvis/ tests/ &&
+  ./venv/bin/ruff format --check jarvis/ tests/ && ./venv/bin/python -m mypy jarvis/ &&
+  cargo check --manifest-path jarvis-ui/src-tauri/Cargo.toml` (run python/mypy
+  with `env -u APPIMAGE -u ARGV0 -u APPDIR` when invoked from ZCode's shell).
 - **Don't run `pytest tests/` without markers** — `tests/integration/`
   opens real audio/display devices and will hang. Always combine with
-  `-m "not slow and not integration"` for unit suites.
+  `-m "not slow and not integration"` for unit suites (`make test` already
+  does; bare `pytest tests/` is the hang trap).
+- Single test: `./venv/bin/python -m pytest tests/test_env.py -v`.
 - Docker unit tests (CI uses these; install everything): `make docker-test-arch`
-  / `docker-test-debian` / `docker-test-fedora`.
+  / `docker-test-debian` / `docker-test-fedora`. NOTE: docker bridge network
+  has no internet on this machine — `docker run --network host`.
 - Integration: `make docker-integration-i3` / `docker-integration-sway` —
   Sway needs `--privileged`, i3 uses `--cap-add=SYS_PTRACE --security-opt
   seccomp=unconfined`.
-- Run app: `jarvis run` (after venv active). App run is meaningful anywhere
-  with the venv; the `.env` with real API keys now lives in `jarvis-claude/`
-  (copied from `jarvis-new/`). App model loads are skipped with `--dry-run`.
-- Dry run: `jarvis run --dry-run` — skips STT/TTS/VAD model loads.
-
-There is no `opencode.json` at the workspace root. Per-package OpenCode
-config lives in `jarvis-new/.opencode/` only (and points at the OLD tree).
+- Run app: `source venv/bin/activate && jarvis run`. Dry run:
+  `jarvis run --dry-run` — skips STT/TTS/VAD model loads.
+- GUI dev: `cd jarvis-ui && npm run tauri dev`; frontend gates:
+  `npm run build` (tsc+vite) and `npm run lint` (oxlint).
+- Packages: `npx tauri build --bundles deb,rpm,appimage` (from jarvis-ui,
+  needs ubuntu-22.04 for portable glibc — locally Arch glibc is newer),
+  Arch pkg: `cd dist/arch && makepkg -f` (repacks the deb).
 
 ## Python / test gotchas
 
@@ -120,13 +117,12 @@ config lives in `jarvis-new/.opencode/` only (and points at the OLD tree).
   needs `brew install portaudio` (macOS); `audioop` removed (`audioop-lts`
   shim in `requirements.txt` / `pyproject.toml`, gated on
   `python_version >= '3.13'`).
-  - **Exception**: the `jarvis-new/venv` was hand-built and does have working
-    `vosk 0.3.45` on Python 3.14. Tests pass there (verified 622 passed,
-    2 skipped). New venvs on 3.14 should not expect vosk to install from PyPI.
-- `jarvis/__init__.py` **eagerly imports STT/TTS/LLM at module load**, so a
-  bare interpreter missing those deps will fail to import. On the shared
-    `jarvis-new/venv` (where full deps are installed) this is not an issue.
-  Outside that venv, two ways past it:
+  - On Python 3.14 this repo's venv has a working `vosk 0.3.45`; new venvs
+    on 3.14 should not expect vosk to install from PyPI.
+- `jarvis` package import pulls heavy deps transitively (STT/TTS/sklearn
+  import lazily inside `start()`/factories, but `jarvis.modules.nlu` and
+  `jarvis.modules.llm` import `sklearn`/`anthropic` at module level), so a
+  bare interpreter missing them will fail. Two ways past it:
   1. Use Docker (`make docker-test-arch` etc.) — CI relies on these and they
      install everything.
   2. Stub heavy deps before import — pattern used in
@@ -175,35 +171,18 @@ config lives in `jarvis-new/.opencode/` only (and points at the OLD tree).
 - The `LLMClient` base class is now `ABC` — `chat()` is `@abstractmethod`.
   Subclasses must override it. Don't try to instantiate `LLMClient` raw.
 
-## Release / sync flow
+## Release / sync flow (single repo — no mirrors since v2.5.0)
 
-Mirror `jarvis-claude/` → `jarvis-github/` (excluding `venv`, `.env`,
-`SESSION.md`), bump version in `pyproject.toml`, then `git add/commit/push/tag`
-inside `jarvis-github/`. `jarvis-github/` is the only tree with a `.git` dir
-(`main` branch, remote `git@github.com:casha-cashu/jarvis.git`).
+1. Bump the version in **one place per side**: `pyproject.toml` +
+   `jarvis-ui/src-tauri/tauri.conf.json` (+ `Cargo.toml`/`package.json`)
+   + `dist/arch/PKGBUILD` — these must stay equal (as of v2.6.2 they are).
+2. Commit, tag `vX.Y.Z`, push: `git push origin main --tags` from the repo
+   root (HTTPS + `GITHUB_TOKEN` in `~/.zshenv`).
+3. `release.yml` (on `v*` tags) builds the PyInstaller sidecar + deb/rpm/
+   AppImage on ubuntu-22.04 and a dmg on macOS; artifacts are attached
+   manually to the GitHub Release (workflow only uploads run artifacts).
+4. Arch pkg is repacked locally: `cd dist/arch && makepkg -f`
+   (workflow skips it on ubuntu).
 
-⚠ **`rsync --delete` from `jarvis-claude/` to `jarvis-github/` destroys
-`.git`** — always exclude `.git` (e.g. `rsync -av --delete --exclude='.git'
---exclude='venv' --exclude='.env' --exclude='SESSION.md' jarvis-claude/
-jarvis-github/`) or re-init after sync.
-
-Push uses HTTPS + `GITHUB_TOKEN` (set in user's `~/.zshenv`), not SSH:
-
-```
-git -c credential.helper='!f() { echo "username=casha-cashu"; \
-  echo "password=$GITHUB_TOKEN"; }; f' push origin main --tags
-```
-
-GitHub Release (not just the tag) is created via the API:
-
-```
-curl -sS -X POST -H "Authorization: token $GITHUB_TOKEN" \
-  -H "Accept: application/vnd.github+json" \
-  https://api.github.com/repos/casha-cashu/jarvis/releases \
-  -d '{"tag_name":"vX.Y.Z","name":"vX.Y.Z","body":"...","draft":false,"prerelease":false}'
-```
-
-Releases so far: **v2.1.0** (config cleanup, execution_timeout, persist LLM
-history, ABC refactor), **v2.2.0** (NLU intent classifier + bash-agent with
-approval gate). Legacy `Claude-0001` branch was in the old lost repo; current
-repo starts fresh at v2.1.0.
+Releases so far: v2.1.0 → v2.6.2. Since v2.6.2 python/UI versions are a
+single scheme (2.6.2 everywhere).
