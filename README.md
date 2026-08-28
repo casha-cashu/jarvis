@@ -49,23 +49,23 @@ npm run tauri dev   # или npm run dev для браузерного режи�
 
 ## Быстрый старт
 
-### Пакеты (рекомендуется) — v2.6.1 / 0.2.1
+### Пакеты (рекомендуется) — v2.6.2
 
-Скачайте из [Releases](https://github.com/casha-cashu/jarvis/releases/tag/v2.6.1):
+Скачайте из [Releases](https://github.com/casha-cashu/jarvis/releases/tag/v2.6.2):
 
 ```bash
 # Debian/Ubuntu
-sudo apt install ./JARVIS_0.2.1_amd64.deb
+sudo apt install ./JARVIS_0.2.2_amd64.deb
 jarvis   # /usr/bin/jarvis + /usr/bin/jarvis-bridge
 
 # Fedora
-sudo dnf install ./JARVIS-0.2.1-1.x86_64.rpm
+sudo dnf install ./JARVIS-0.2.2-1.x86_64.rpm
 
 # Arch/CachyOS
-sudo pacman -U ./jarvis-0.2.1-1-x86_64.pkg.tar.zst
+sudo pacman -U ./jarvis-0.2.2-1-x86_64.pkg.tar.zst
 
 # Универсально (любой дистр)
-chmod +x JARVIS_0.2.1_amd64.AppImage && ./JARVIS_0.2.1_amd64.AppImage
+chmod +x JARVIS_0.2.2_amd64.AppImage && ./JARVIS_0.2.2_amd64.AppImage
 ```
 
 GUI — `jarvis` в меню, конфиг сидится в `~/.config/jarvis/config.yaml` (из `config.example.yaml`).
@@ -77,17 +77,17 @@ GUI — `jarvis` в меню, конфиг сидится в `~/.config/jarvis/c
 git clone https://github.com/casha-cashu/jarvis.git
 cd jarvis
 
-# Установка (автоопределит Arch/Debian/Fedora/macOS)
+# Установка: системные пакеты + venv + python-зависимости + config.yaml
+# (автоопределит Arch/Debian/Fedora/macOS)
 bash install.sh
 
-# Активация venv (если устанавливали с --venv)
-source venv/bin/activate
-
 # Запуск
+source venv/bin/activate
 jarvis run
 ```
 
-Скажите «джарвис» и дайте команду.
+Скажите «джарвис» и дайте команду. Модели (Vosk, Piper-голос) ставятся
+интерактивно через `jarvis setup`.
 
 ## Установка вручную
 

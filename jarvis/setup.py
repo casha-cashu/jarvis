@@ -49,6 +49,36 @@ def step_system_deps():
     return all_ok
 
 
+VOSK_MODEL_URL = (
+    "https://alphacephei.com/vosk/models/vosk-model-small-ru-0.22.zip"
+)
+
+
+def _download_vosk_model(dest_dir: Path) -> None:
+    """Скачивает и распаковывает vosk-model-small-ru в ~/models/vosk."""
+    import zipfile
+
+    import requests
+
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    zip_path = dest_dir / "vosk-model-small-ru.zip"
+    print(f"     ⏬ {VOSK_MODEL_URL}")
+    try:
+        with requests.get(VOSK_MODEL_URL, stream=True, timeout=60) as r:
+            r.raise_for_status()
+            with open(zip_path, "wb") as f:
+                for chunk in r.iter_content(chunk_size=1 << 16):
+                    f.write(chunk)
+        with zipfile.ZipFile(zip_path) as zf:
+            zf.extractall(dest_dir)
+    except Exception as e:
+        print(f"     ❌ Не удалось скачать Vosk модель: {e}")
+        return
+    finally:
+        zip_path.unlink(missing_ok=True)
+    print(f"     ✅ Vosk модель распакована в {dest_dir}")
+
+
 def step_models():
     """Проверка/установка моделей"""
     print("\n  ── Модели Vosk и Piper ──")
@@ -61,11 +91,7 @@ def step_models():
     else:
         print(f"     ⚠️  Vosk модель не найдена в {vosk_dir}")
         if _prompt_yes_no("Скачать Vosk модель (~45MB)?"):
-            subprocess.run(
-                [sys.executable, "setup.py", "download-models"],
-                cwd=Path(__file__).parent.parent,
-                env=sanitized_env(),
-            )
+            _download_vosk_model(vosk_dir)
 
     if piper_dir.exists() and list(piper_dir.iterdir()):
         print(f"     ✅ Piper: {piper_dir}")

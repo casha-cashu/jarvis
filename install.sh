@@ -1,7 +1,7 @@
 #!/bin/bash
 # JARVIS Universal Installer
 # Supports: Linux (Arch, Debian-based, Fedora), macOS
-# Usage: bash install.sh [--venv]
+# Usage: bash install.sh
 
 set -e
 
@@ -9,11 +9,6 @@ echo "==================================="
 echo "  JARVIS Universal Voice Assistant"
 echo "==================================="
 echo ""
-
-USE_VENV=false
-if [[ "$1" == "--venv" ]]; then
-    USE_VENV=true
-fi
 
 # Определяем ОС
 OS="unknown"
@@ -56,14 +51,15 @@ install_arch() {
 install_debian() {
     echo "📦 Установка зависимостей (Debian/Ubuntu)..."
     sudo apt update
-    sudo apt install -y python3 python3-pip portaudio19-dev python3-pyaudio \
-        libnotify-bin xdotool wtype espeak-ng || true
+    sudo apt install -y python3 python3-pip python3-venv python3-dev \
+        portaudio19-dev python3-pyaudio \
+        libnotify-bin xdotool wtype espeak-ng mpv || true
 }
 
 install_fedora() {
     echo "📦 Установка зависимостей (Fedora)..."
-    sudo dnf install -y python3 python3-pip portaudio-devel python3-pyaudio \
-        libnotify xdotool wtype espeak-ng || true
+    sudo dnf install -y python3 python3-pip gcc python3-devel portaudio-devel \
+        libnotify xdotool wtype espeak-ng mpv || true
 }
 
 install_macos() {
@@ -88,46 +84,52 @@ elif [[ "$OS" == "macos" ]]; then
 fi
 
 # ── Python окружение ──
-if $USE_VENV; then
+# PEP 668 (Debian 12+/Fedora/Arch): ставить в системный python нельзя,
+# поэтому venv создаётся всегда. Флаг --venv сохранён для совместимости.
+if [[ "$1" == "--venv" ]]; then
+    echo "ℹ️  Флаг --venv больше не нужен: venv создаётся всегда."
+fi
+if [[ ! -d venv ]]; then
     echo ""
     echo "🐍 Создание виртуального окружения..."
     python3 -m venv venv
-    source venv/bin/activate
-    PIP_CMD="venv/bin/pip"
-else
-    PIP_CMD="pip3"
 fi
+# shellcheck disable=SC1091
+source venv/bin/activate
 
 echo ""
 echo "🐍 Установка Python пакетов..."
-$PIP_CMD install --upgrade pip
-$PIP_CMD install pyyaml vosk pyaudio numpy torch faster-whisper silero-vad --index-url https://download.pytorch.org/whl/cpu
-$PIP_CMD install anthropic requests gtts
-$PIP_CMD install audioop-lts  # Python 3.14 compat
+pip install --upgrade pip
+# CPU-сборка torch (без этого PyPI тянет CUDA-зависимости ~2.5GB);
+# остальные зависимости ставятся из pyproject.toml одной командой ниже.
+if [[ "$OS" == "linux" ]]; then
+    pip install torch --index-url https://download.pytorch.org/whl/cpu
+fi
+# Сам пакет + все зависимости (pydantic, scikit-learn, rapidfuzz, openai, ...)
+# — в venv/bin появляется бинарь `jarvis`
+pip install -e .
 
 # ── Директории ──
 echo ""
 echo "📁 Создание директорий..."
 mkdir -p models logs data
 
+# ── Конфиг ──
+if [[ ! -f config.yaml && -f config.example.yaml ]]; then
+    cp config.example.yaml config.yaml
+    echo "⚙️  Создан config.yaml из config.example.yaml — заполни ключи LLM."
+fi
+
 # ── Модели ──
 echo ""
-echo "📥 Скачивание моделей (интерактивно)..."
-python3 setup.py download-models 2>/dev/null || echo "⚠️  setup.py не найден, модели скачайте вручную"
+echo "📥 Модели ставятся интерактивно: source venv/bin/activate && jarvis setup"
+echo "   (скачает Vosk модель и Piper-голос)"
 
 echo ""
 echo "✅ Установка завершена!"
 echo ""
-if $USE_VENV; then
-    echo "Для запуска:"
-    echo "  source venv/bin/activate"
-    echo "  python3 -m jarvis run"
-    echo ""
-    echo "Или установите пакет:"
-    echo "  source venv/bin/activate && pip install -e . && jarvis run"
-else
-    echo "Для запуска:"
-    echo "  python3 -m jarvis run"
-fi
+echo "Для запуска:"
+echo "  source venv/bin/activate"
+echo "  jarvis run"
 echo ""
 echo "Для настройки отредактируйте config.yaml"

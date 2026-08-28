@@ -139,36 +139,56 @@ def cmd_voice(args):
         print("📋 TTS голоса Piper (русские):")
         print("   • ru_RU-dmitri-medium  — Dmitri (50 MB, по умолч.)")
         print("   • ru_RU-irina-medium   — Irina (50 MB)")
-        print("   • ru_RU-natalia-medium  — Natalia (50 MB)")
-        print("   • ru_RU-ruslan-medium   — Ruslan (50 MB)")
+        print("   • ru_RU-ruslan-medium  — Ruslan (50 MB)")
+        print("   • ru_RU-denis-medium   — Denis (50 MB)")
         print("\nУстановка: jarvis voice download <имя>")
         return
 
     if args.action == "download":
+        import re
+
         import requests
 
         name = args.model
+        # HF layout: ru/ru_RU/<голос>/<качество>/ru_RU-<голос>-<качество>.onnx
+        m = re.fullmatch(r"ru_RU-([a-z]+)-(medium|low|high)", name)
+        if not m:
+            print(f"❌ Неверное имя голоса: {name}")
+            print("   Формат: ru_RU-<голос>-<качество>, напр. ru_RU-dmitri-medium")
+            print("   Список: jarvis voice list")
+            sys.exit(1)
+        speaker, quality = m.groups()
         voices_dir = Path.home() / ".local" / "share" / "piper" / "voices"
         voices_dir.mkdir(parents=True, exist_ok=True)
 
-        url = f"https://huggingface.co/rhasspy/piper-voices/resolve/main/ru/{name}/{name}.onnx"
-        json_url = url + ".json"
+        base = (
+            "https://huggingface.co/rhasspy/piper-voices/resolve/main"
+            f"/ru/ru_RU/{speaker}/{quality}/{name}"
+        )
 
         print(f"⏬ Скачиваю {name}...")
-        for u, ext in [(url, ".onnx"), (json_url, ".onnx.json")]:
+        failed = []
+        for ext in (".onnx", ".onnx.json"):
             dest = voices_dir / f"{name}{ext}"
             if dest.exists():
                 print(f"   ✅ {name}{ext} уже есть")
                 continue
-            print(f"   📥 {u.split('/')[-1]}...")
-            r = requests.get(u, stream=True, timeout=30)
-            if r.status_code == 200:
-                with open(dest, "wb") as f:
-                    for chunk in r.iter_content(chunk_size=8192):
-                        f.write(chunk)
-                print(f"   ✅ {name}{ext} скачан")
-            else:
-                print(f"   ⚠️  Не удалось скачать {name}{ext}")
+            print(f"   📥 {dest.name}...")
+            r = requests.get(base + ext, stream=True, timeout=60)
+            if r.status_code != 200:
+                print(f"   ⚠️  Не удалось скачать {name}{ext} (HTTP {r.status_code})")
+                failed.append(ext)
+                continue
+            tmp = Path(str(dest) + ".part")
+            with open(tmp, "wb") as f:
+                for chunk in r.iter_content(chunk_size=1 << 16):
+                    f.write(chunk)
+            tmp.replace(dest)
+            print(f"   ✅ {name}{ext} скачан")
+
+        if failed:
+            print(f"\n❌ Не скачались: {', '.join(failed)} — голос не установлен")
+            sys.exit(1)
 
         print(f"\n✅ Голос {name} установлен!")
         print(f"   Путь: {voices_dir}")
