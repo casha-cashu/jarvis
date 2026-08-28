@@ -1,15 +1,13 @@
 pkgbase = jarvis
 	pkgdesc = JARVIS — голосовой ассистент для Linux/macOS (Tauri 2 + React 19 + Rust bridge)
-	pkgver = 0.2.1
+	pkgver = 0.2.2
 	pkgrel = 1
 	url = https://github.com/casha-cashu/jarvis
 	arch = x86_64
 	license = MIT
 	depends = webkit2gtk-4.1
 	depends = gtk3
-	depends = gst-plugins-base-libs
-	depends = gstreamer
-	source = JARVIS_0.2.1_amd64.deb
+	source = JARVIS_0.2.2_amd64.deb
 	sha256sums = SKIP
 
 pkgname = jarvis

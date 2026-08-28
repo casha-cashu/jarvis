@@ -51,47 +51,14 @@ const CHAT_STORAGE_KEY = "jarvis.ui.chats";
 const MODELS_CACHE_KEY = "jarvis.ui.models-cache";
 const SKIP_CHAT_DELETE_CONFIRM_KEY = "jarvis.ui.skip-chat-delete-confirm";
 
-const mockSessions: Session[] = [
-  {
-    id: "1",
-    title: "Сеть и таймеры",
-    lastMessage: "Таймер запущен",
-    timestamp: "14:22",
-    messages: [
-      { id: "m1", role: "user", text: "какой пакет отвечает за сеть", timestamp: "14:20" },
-      { id: "m2", role: "assistant", text: "NetworkManager, через команду nmcli", timestamp: "14:20" },
-      { id: "m3", role: "user", text: "поставь таймер на 5 минут", timestamp: "14:22" },
-      { id: "m4", role: "assistant", text: "Таймер на 5 минут запущен", timestamp: "14:22" },
-    ],
-  },
-  {
-    id: "2",
-    title: "Погода",
-    lastMessage: "Днём +22, без осадков",
-    timestamp: "11:05",
-    messages: [
-      { id: "m5", role: "user", text: "какая погода сегодня", timestamp: "11:05" },
-      { id: "m6", role: "assistant", text: "Днём +22, без осадков. Ветер 3 м/с", timestamp: "11:05" },
-    ],
-  },
-  {
-    id: "3",
-    title: "Установка пакетов",
-    lastMessage: "yt-dlp установлен",
-    timestamp: "Вчера",
-    messages: [
-      { id: "m7", role: "user", text: "установи yt-dlp", timestamp: "18:30" },
-      { id: "m8", role: "assistant", text: "yt-dlp установлен через pip", timestamp: "18:31" },
-    ],
-  },
-];
+const mockSessions: Session[] = [];
 
 function loadSessions(): Session[] {
   try {
     const stored = localStorage.getItem(CHAT_STORAGE_KEY);
-    return stored ? JSON.parse(stored) as Session[] : mockSessions;
+    return stored ? JSON.parse(stored) as Session[] : [];
   } catch {
-    return mockSessions;
+    return [];
   }
 }
 
@@ -234,7 +201,7 @@ export default function ChatTab() {
     void doDeleteSession(pendingDelete);
   };
 
-  /** Fetch models for every provider (cached), grouped per provider. */
+  /** Fetch models for every provider (cached) — only on demand, not on every render. */
   const fetchModels = async () => {
     if (providers.length === 0) return;
     setLoadingModels(true);
@@ -243,6 +210,11 @@ export default function ChatTab() {
       const cached = loadModelsCache()[provider.id];
       if (cached && cached.length > 0) {
         results.push({ provider, groups: cached });
+        continue;
+      }
+      // Skip network if key missing (except ollama local)
+      if (provider.type !== "ollama" && !provider.apiKey) {
+        results.push({ provider, groups: [], error: "нет ключа" });
         continue;
       }
       try {
@@ -266,11 +238,16 @@ export default function ChatTab() {
     setLoadingModels(false);
   };
 
-  // Reload when the provider set changes (settings edits, first mount).
+  // Load cached only on mount — network fetch only on Save/Refresh button
   useEffect(() => {
-    void fetchModels();
+    const cached: ProviderModels[] = [];
+    for (const p of providers) {
+      const c = loadModelsCache()[p.id];
+      if (c) cached.push({ provider: p, groups: c });
+    }
+    if (cached.length > 0) setProviderModels(cached);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [providers.map((p) => p.id + p.endpoint).join(",")]);
+  }, []);
 
   const changeModel = async (compositeKey: string) => {
     const sep = compositeKey.indexOf("::");

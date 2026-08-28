@@ -65,14 +65,18 @@ class ConfigLoader:
             return obj
         return obj
 
-    @staticmethod
-    def _sub_var(match: re.Match) -> str:
+    _warned_vars: set[str] = set()
+
+    @classmethod
+    def _sub_var(cls, match: re.Match) -> str:
         var = match.group(1)
         val = os.environ.get(var)
         if val is None:
-            logger.warning(
-                "Environment variable %s is not set — substituting with empty string",
-                var,
-            )
+            if var not in cls._warned_vars:
+                cls._warned_vars.add(var)
+                logger.warning(
+                    "Environment variable %s is not set — substituting with empty string",
+                    var,
+                )
             return ""
         return val
