@@ -12,6 +12,7 @@ CLI для JARVIS — голосового ассистента
   jarvis run --dry-run                # проверка без микро
   jarvis setup                        # мастер настройки
   jarvis test                         # тест модулей
+  jarvis doctor                       # диагностика окружения
   jarvis presets                      # управление пресетами
   jarvis voice list                   # список TTS голосов
   jarvis voice download ru_RU-irina   # скачать голос
@@ -27,6 +28,15 @@ import subprocess
 from pathlib import Path
 
 from jarvis._env import sanitized_env
+
+
+def _version() -> str:
+    try:
+        from importlib.metadata import version
+
+        return f"JARVIS {version('jarvis-voice-assistant')}"
+    except Exception:
+        return "JARVIS (не установлен как пакет — версия недоступна)"
 
 
 def cmd_run(args):
@@ -65,6 +75,16 @@ def cmd_run(args):
     )
     jarvis.initialize()
     jarvis.run()
+
+
+def cmd_doctor(args):
+    """Диагностика окружения (конфиг, аудио, модели, LLM)."""
+    from jarvis.doctor import exit_code, print_report, run_checks
+
+    print("🩺 JARVIS doctor")
+    checks = run_checks(args.config)
+    print_report(checks)
+    sys.exit(exit_code(checks))
 
 
 def cmd_setup(args):
@@ -328,6 +348,12 @@ def main():
         action="store_true",
         help="Подробные логи (режим разработчика)",
     )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=_version(),
+        help="Показать версию и выйти",
+    )
 
     sub = parser.add_subparsers(dest="command", help="Команда")
 
@@ -396,6 +422,14 @@ def main():
         "--config", type=str, default="config.yaml", help="Путь к конфигу"
     )
 
+    # ── doctor ──
+    p_doc = sub.add_parser(
+        "doctor", help="Диагностика окружения (конфиг, аудио, модели, LLM)"
+    )
+    p_doc.add_argument(
+        "--config", type=str, default="config.yaml", help="Путь к конфигу"
+    )
+
     # ── service ──
     p_svc = sub.add_parser("service", help="Управление systemd-сервисом")
     p_svc.add_argument(
@@ -418,6 +452,7 @@ def main():
         "presets": cmd_presets,
         "voice": cmd_voice,
         "dictation": cmd_dictation,
+        "doctor": cmd_doctor,
         "service": cmd_service,
     }
 

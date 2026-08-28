@@ -180,6 +180,9 @@ jarvis presets
 # Тест модулей
 jarvis test
 
+# Диагностика окружения (конфиг, аудио, модели, LLM)
+jarvis doctor
+
 # Systemd автозапуск (только Linux)
 jarvis service install
 ```
