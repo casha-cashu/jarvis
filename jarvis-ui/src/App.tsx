@@ -20,7 +20,12 @@ export default function App() {
       <div className="flex flex-1 overflow-hidden">
         <Sidebar tab={tab} setTab={setTab} />
         <main className="flex-1 overflow-hidden">
-          {tab === "chat" && <ChatTab />}
+          {/* ChatTab живёт постоянно и прячется CSS'ом: unmount при смене
+              таба терял стримящийся ответ (setSessions на размонтированном
+              компоненте — no-op), чат расходился с памятью модели. */}
+          <div className={tab === "chat" ? "h-full" : "hidden"}>
+            <ChatTab />
+          </div>
           {tab === "settings" && <SettingsTab />}
           {tab === "status" && <StatusTab />}
           {tab === "history" && <HistoryTab />}
