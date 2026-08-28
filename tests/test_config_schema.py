@@ -160,13 +160,19 @@ class TestJarvisConfigFull:
         assert c.stt.sample_rate == 16000  # default
         assert c.tts.engine == "piper"  # default
 
-    def test_unknown_field_extra_allowed_by_default(self):
-        """Unknown keys MUST survive validation (review #7): a user setting
-        `nlu_enabled: false` in config.yaml silently disappearing was a
-        "setting doesn't work" bug class. extra="allow" keeps them."""
-        c = JarvisConfig(hyprland={"enabled": False, "socket": "/tmp/x"})
-        assert getattr(c, "hyprland", None) is not None
-        assert c.model_extra["hyprland"]["enabled"] is False
+    def test_unknown_top_level_field_rejected(self):
+        """extra="forbid" (решение 2026-08-28): опечатка в ключе конфига
+        должна падать валидацией с именем ключа, а не молча игнорироваться
+        (старый extra="allow" прятал «настройка не работает» баг-класс)."""
+        with pytest.raises(ValidationError) as exc:
+            JarvisConfig(hyprland={"enabled": False, "socket": "/tmp/x"})
+        assert "hyprland" in str(exc.value)
+
+    def test_typo_in_nested_key_rejected(self):
+        """Опечатка silense_threshold в stt → ValidationError с именем ключа."""
+        with pytest.raises(ValidationError) as exc:
+            JarvisConfig(stt={"silense_threshold": 2.0})
+        assert "silense_threshold" in str(exc.value)
 
     def test_logging_level_propagates_error(self):
         """Неправильный logging.level ломает JarvisConfig."""

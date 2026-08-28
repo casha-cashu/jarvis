@@ -5,8 +5,6 @@ audio:
   microphone:
     device_name: null
     sample_rate: 16000
-    channels: 1
-    chunk_size: 512
   output:
     device_name: null
     sample_rate: 48000
@@ -21,7 +19,6 @@ stt:
     - "жарвис"
     - "jarvis"
   phrase_time_limit: 10
-  pause_threshold: 1.2
   multi_turn_timeout: 10
 
 vad:

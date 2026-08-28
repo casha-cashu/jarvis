@@ -8,30 +8,30 @@ from pydantic import ConfigDict, BaseModel, Field, field_validator
 
 
 class AudioMicrophoneConfig(BaseModel):
-    model_config = ConfigDict(extra="allow")  # keep undocumented keys
+    model_config = ConfigDict(extra="forbid")  # опечатка в ключе = ошибка валидации
     device_name: Optional[str] = "default"
     sample_rate: int = 48000
 
 
 class AudioOutputConfig(BaseModel):
-    model_config = ConfigDict(extra="allow")  # keep undocumented keys
+    model_config = ConfigDict(extra="forbid")  # опечатка в ключе = ошибка валидации
     device_name: Optional[str] = None
     sample_rate: int = 48000
 
 
 class AudioConfig(BaseModel):
-    model_config = ConfigDict(extra="allow")  # keep undocumented keys
+    model_config = ConfigDict(extra="forbid")  # опечатка в ключе = ошибка валидации
     microphone: AudioMicrophoneConfig = Field(default_factory=AudioMicrophoneConfig)
     output: AudioOutputConfig = Field(default_factory=AudioOutputConfig)
 
 
 class VoskConfig(BaseModel):
-    model_config = ConfigDict(extra="allow")  # keep undocumented keys
+    model_config = ConfigDict(extra="forbid")  # опечатка в ключе = ошибка валидации
     model_path: str = "auto"
 
 
 class WhisperConfig(BaseModel):
-    model_config = ConfigDict(extra="allow")  # keep undocumented keys
+    model_config = ConfigDict(extra="forbid")  # опечатка в ключе = ошибка валидации
     model_path: Optional[str] = None
     model_size: str = "tiny"
     # Интервал промежуточных гипотез (мс); 0 = выключить
@@ -39,7 +39,7 @@ class WhisperConfig(BaseModel):
 
 
 class STTConfig(BaseModel):
-    model_config = ConfigDict(extra="allow")  # keep undocumented keys
+    model_config = ConfigDict(extra="forbid")  # опечатка в ключе = ошибка валидации
     engine: str = "vosk"
     sample_rate: int = 16000
     vosk: VoskConfig = Field(default_factory=VoskConfig)
@@ -78,20 +78,20 @@ class STTConfig(BaseModel):
 
 
 class SileroVADConfig(BaseModel):
-    model_config = ConfigDict(extra="allow")  # keep undocumented keys
+    model_config = ConfigDict(extra="forbid")  # опечатка в ключе = ошибка валидации
     model_path: str = "auto"
     threshold: float = 0.5
 
 
 class VADConfig(BaseModel):
-    model_config = ConfigDict(extra="allow")  # keep undocumented keys
+    model_config = ConfigDict(extra="forbid")  # опечатка в ключе = ошибка валидации
     enabled: bool = True
     engine: str = "silero"
     silero: SileroVADConfig = Field(default_factory=SileroVADConfig)
 
 
 class PiperConfig(BaseModel):
-    model_config = ConfigDict(extra="allow")  # keep undocumented keys
+    model_config = ConfigDict(extra="forbid")  # опечатка в ключе = ошибка валидации
     binary_path: Optional[str] = None
     model_path: Optional[str] = None
     config_path: Optional[str] = None
@@ -101,13 +101,13 @@ class PiperConfig(BaseModel):
 
 
 class GTTSConfig(BaseModel):
-    model_config = ConfigDict(extra="allow")  # keep undocumented keys
+    model_config = ConfigDict(extra="forbid")  # опечатка в ключе = ошибка валидации
     lang: str = "ru"
     slow: bool = False
 
 
 class SpeechT5Config(BaseModel):
-    model_config = ConfigDict(extra="allow")  # keep undocumented keys
+    model_config = ConfigDict(extra="forbid")  # опечатка в ключе = ошибка валидации
     model: Optional[str] = None
     vocoder_path: Optional[str] = None
     device: str = "cpu"
@@ -115,7 +115,7 @@ class SpeechT5Config(BaseModel):
 
 
 class TTSConfig(BaseModel):
-    model_config = ConfigDict(extra="allow")  # keep undocumented keys
+    model_config = ConfigDict(extra="forbid")  # опечатка в ключе = ошибка валидации
     engine: str = "piper"
     piper: PiperConfig = Field(default_factory=PiperConfig)
     gtts: GTTSConfig = Field(default_factory=GTTSConfig)
@@ -131,7 +131,7 @@ class TTSConfig(BaseModel):
 
 
 class OpenRouterConfig(BaseModel):
-    model_config = ConfigDict(extra="allow")  # keep undocumented keys
+    model_config = ConfigDict(extra="forbid")  # опечатка в ключе = ошибка валидации
     api_key: Optional[str] = None
     model: str = "anthropic/claude-3.5-sonnet"
     temperature: float = 0.7
@@ -139,14 +139,17 @@ class OpenRouterConfig(BaseModel):
 
 
 class OllamaConfig(BaseModel):
-    model_config = ConfigDict(extra="allow")  # keep undocumented keys
+    model_config = ConfigDict(extra="forbid")  # опечатка в ключе = ошибка валидации
     base_url: str = "http://localhost:11434"
     model: str = "qwen2.5:3b"
     temperature: float = 0.7
+    # 120с: локальная модель грузится с диска, не-стриминг /api/chat
+    # молчит до конца генерации
+    timeout: int = 120
 
 
 class OpenAIConfig(BaseModel):
-    model_config = ConfigDict(extra="allow")  # keep undocumented keys
+    model_config = ConfigDict(extra="forbid")  # опечатка в ключе = ошибка валидации
     api_key: Optional[str] = None
     base_url: Optional[str] = None  # None → api.openai.com
     model: str = "gpt-4o-mini"
@@ -156,8 +159,11 @@ class OpenAIConfig(BaseModel):
 
 
 class AnthropicConfig(BaseModel):
-    model_config = ConfigDict(extra="allow")  # keep undocumented keys
+    model_config = ConfigDict(
+        extra="forbid"
+    )  # опечатка в ключе должна падать валидацией, а не молча игнорироваться
     api_key: Optional[str] = None
+    base_url: Optional[str] = None  # None → api.anthropic.com
     model: str = "claude-3-5-sonnet-20241022"
     temperature: float = 0.7
     max_tokens: int = 1024
@@ -165,7 +171,7 @@ class AnthropicConfig(BaseModel):
 
 
 class LLMConfig(BaseModel):
-    model_config = ConfigDict(extra="allow")  # keep undocumented keys
+    model_config = ConfigDict(extra="forbid")  # опечатка в ключе = ошибка валидации
     provider: str = "ollama"
     ollama: OllamaConfig = Field(default_factory=OllamaConfig)
     openai: OpenAIConfig = Field(default_factory=OpenAIConfig)
@@ -175,6 +181,8 @@ class LLMConfig(BaseModel):
     agent_enabled: bool = False
     agent_max_iterations: int = 5
     agent_approval_mode: str = "auto"
+    # Prefix nudge for small Ollama models (see jarvis.prompt_builder)
+    agent_query_prefix_enabled: bool = False
     max_history: int = 20
     system_prompt: Optional[str] = None
 
@@ -196,15 +204,20 @@ class LLMConfig(BaseModel):
 
 
 class CommandsConfig(BaseModel):
-    model_config = ConfigDict(extra="allow")  # keep undocumented keys
+    model_config = ConfigDict(
+        extra="forbid"
+    )  # опечатка в ключе должна падать валидацией, а не молча игнорироваться
     dictionary_path: str = "data/commands.json"
     apps_dictionary_path: str = "data/apps.json"
     fuzzy_threshold: float = 0.8
     execution_timeout: int = 30
+    # NLU (jarvis.modules.nlu) — см. CommandManager._maybe_init_nlu
+    nlu_enabled: bool = True
+    nlu_confidence_threshold: float = 0.65
 
 
 class LoggingConfig(BaseModel):
-    model_config = ConfigDict(extra="allow")  # keep undocumented keys
+    model_config = ConfigDict(extra="forbid")  # опечатка в ключе = ошибка валидации
     level: str = "INFO"
     file: str = "logs/jarvis.log"
     max_size: int = 10485760
@@ -220,13 +233,14 @@ class LoggingConfig(BaseModel):
 
 
 class MiscConfig(BaseModel):
-    model_config = ConfigDict(extra="allow")  # keep undocumented keys
+    model_config = ConfigDict(extra="forbid")  # опечатка в ключе = ошибка валидации
     temp_dir: str = "/tmp/jarvis"
 
 
 class JarvisConfig(BaseModel):
-    model_config = ConfigDict(extra="allow")  # keep undocumented keys
     """Полная схема конфигурации JARVIS"""
+
+    model_config = ConfigDict(extra="forbid")  # опечатка в ключе = ошибка валидации
 
     audio: AudioConfig = Field(default_factory=AudioConfig)
     stt: STTConfig = Field(default_factory=STTConfig)
