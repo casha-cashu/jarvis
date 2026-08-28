@@ -406,12 +406,13 @@ class Bridge:
                 else ""
             )
             response = self._resolve_marker(response)
-            # Voice-ready text: strip markdown/emoji and scrub secrets before
-            # the answer lands in chat history or would ever be spoken.
+            # Только маскировка секретов: в текстовом чате показываем ПОЛНЫЙ
+            # ответ. Обрезка/markdown-чистка (sanitize_for_tts) — в
+            # ResponsePipeline.speak, т.е. только когда ответ идёт голосом.
             try:
-                from jarvis.prompt_builder import redact_secrets, sanitize_for_tts
+                from jarvis.prompt_builder import redact_secrets
 
-                response = redact_secrets(sanitize_for_tts(response))
+                response = redact_secrets(response)
             except Exception:
                 pass  # sanitisation must never break the reply path
             return {"ok": True, "text": response}

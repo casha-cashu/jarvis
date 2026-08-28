@@ -347,3 +347,52 @@ def test_purge_all_sessions_without_start(isolated_history):
     result = bridge.handle({"command": "purge_all_sessions"})
     assert result == {"ok": True, "removed": 1}
     assert bridge._current_session is None
+
+
+# ──────────────────────────────────────────────
+# Полный текст в чате: sanitize_for_tts — только в голосовом пути
+# ──────────────────────────────────────────────
+
+
+def test_chat_message_full_text_not_truncated(monkeypatch):
+    """Текстовый чат отдаёт ПОЛНЫЙ ответ LLM (без «Рассказать подробнее?»),
+    но секреты маскируются. Решение владельца 2026-08-28: обрезка — только
+    когда запрос шёл голосом (ResponsePipeline.speak)."""
+
+    def factory(**_kwargs):
+        def process_query(
+            text, stream_callback=None, tool_callback=None, tool_result_callback=None
+        ):
+            if stream_callback:
+                stream_callback("часть1 ")
+            return "часть1 " + "часть2 " * 200 + " sk-abcdef1234567890abcdef12"
+
+        response = SimpleNamespace(
+            start=lambda: None,
+            stop=lambda: None,
+            agent_enabled=True,
+            agent_approval_mode="auto",
+            tts=None,
+            llm=None,
+            commands=None,
+            platform=None,
+            process_query=process_query,
+        )
+        return SimpleNamespace(
+            config={"llm": {}},
+            response=response,
+            tts=None,
+            commands=None,
+            platform=None,
+            reminder_mgr=None,
+        )
+
+    monkeypatch.setattr(jarvis_pkg, "Jarvis", factory)
+    bridge = Bridge()
+    assert bridge.handle({"command": "configure", "config": dict(VALID_PRESET)})["ok"]
+    result = bridge.handle({"command": "message", "text": "расскажи подробно"})
+    assert result["ok"]
+    text = result["text"]
+    assert text.count("часть2") == 200
+    assert "Рассказать подробнее" not in text
+    assert "[REDACTED]" in text

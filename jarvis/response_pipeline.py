@@ -95,11 +95,20 @@ class ResponsePipeline:
         return s
 
     def speak(self, text: str) -> None:
-        print(f"\r🤖 {text}")
+        # Голосовой путь: перед озвучкой вычищаем markdown/эмодзи, режем
+        # длину (TTS-UX) и маскируем секреты. Текстовый чат (ui_bridge)
+        # показывает ПОЛНЫЙ ответ — санитайз живёт только здесь.
+        from jarvis.prompt_builder import redact_secrets, sanitize_for_tts
+
+        try:
+            spoken = redact_secrets(sanitize_for_tts(text))
+        except Exception:
+            spoken = text  # санитайз не должен рвать озвучку
+        print(f"\r🤖 {spoken}")
         if self.tts_worker is not None:
-            self.tts_worker.speak(text)
+            self.tts_worker.speak(spoken)
         elif self.tts is not None:
-            self.tts.speak(text)
+            self.tts.speak(spoken)
 
     def cancel_speech(self) -> None:
         """«Тихо»: глушит текущую озвучку и чистит очередь фраз."""

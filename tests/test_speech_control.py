@@ -256,6 +256,30 @@ class TestResponsePipelineSpeechControl:
         p.speak("тест")
         worker.speak.assert_called_once_with("тест")
 
+    def test_speak_sanitizes_markdown_and_truncates(self):
+        """Голосовой путь: markdown/эмодзи чистятся, длинный ответ режется
+        с предложением продолжить (TTS-UX)."""
+        p = self._pipeline()
+        worker = MagicMock()
+        p.tts_worker = worker
+        long = "Предложение первое. " * 30
+        p.speak(f"# Заголовок\n{long} 🙂")
+        spoken = worker.speak.call_args.args[0]
+        assert "#" not in spoken
+        assert "🙂" not in spoken
+        assert len(spoken) < len(long)
+        assert "Рассказать подробнее" in spoken
+
+    def test_speak_redacts_secrets(self):
+        """Секреты из вывода инструментов не уходят в озвучку."""
+        p = self._pipeline()
+        worker = MagicMock()
+        p.tts_worker = worker
+        p.speak("Ключ: sk-abcdef1234567890abcdef12")
+        spoken = worker.speak.call_args.args[0]
+        assert "sk-abcdef" not in spoken
+        assert "[REDACTED]" in spoken
+
     def test_speak_noop_without_tts(self, capsys):
         p = self._pipeline()
         p.speak("тишина")  # не должно падать
