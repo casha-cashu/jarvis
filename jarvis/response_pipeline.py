@@ -38,6 +38,9 @@ class ResponsePipeline:
         self.agent_approval_mode = config.get("llm", {}).get(
             "agent_approval_mode", "auto"
         )
+        # Определяется в start() из llm.agent_query_prefix_enabled;
+        # до start() префикс не применяется.
+        self._agent_query_prefix_enabled = False
 
     def start(self) -> None:
         if self._started:
@@ -64,17 +67,23 @@ class ResponsePipeline:
 
             self.platform = PlatformAdapter()
 
-        # LLM — фигачим platform info в system_prompt
+        # LLM — system prompt собирается в prompt_builder: {platform}
+        # подставляется здесь, {datetime} клиентом на каждый запрос
+        # (см. LLMClient._render_system_prompt). При agent_enabled секция
+        # про инструменты (llm.system_prompt_tools) дописывается к базе.
         from jarvis.modules.llm import LLMManager
+        from jarvis.prompt_builder import compose_system_prompt
 
         llm_cfg = dict(self.config.get("llm", {}))
-        platform_str = self._platform_string()
-        if "system_prompt" in llm_cfg and platform_str:
-            llm_cfg["system_prompt"] = llm_cfg["system_prompt"].replace(
-                "{platform}", platform_str
-            )
-        # {datetime} НЕ заменяем здесь — клиент подставляет свежую дату
-        # на каждый запрос (см. LLMClient._render_system_prompt).
+        self._agent_query_prefix_enabled = bool(
+            llm_cfg.get("agent_query_prefix_enabled", False)
+        )
+        llm_cfg["system_prompt"] = compose_system_prompt(
+            llm_cfg.get("system_prompt"),
+            self.agent_enabled,
+            tools_prompt=llm_cfg.get("system_prompt_tools"),
+            platform_str=self._platform_string(),
+        )
         self.llm = LLMManager(llm_cfg)
 
         # Commands
@@ -189,10 +198,19 @@ class ResponsePipeline:
         execution. Block → replaced with refusal message.
         """
         from jarvis.modules import bash_agent
+        from jarvis.prompt_builder import agent_query_prefix
 
         client = self.llm.primary
         if client is None:
             return None
+
+        # Опциональный пуш маленьких локальных моделей к прямому tool-call
+        # (qwen2.5:3b любит «Я сейчас проверю...» вместо вызова).
+        query = agent_query_prefix(
+            query,
+            provider=self.llm.provider,
+            enabled=self._agent_query_prefix_enabled,
+        )
 
         tools = bash_agent.get_tool_schemas()
 

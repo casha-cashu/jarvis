@@ -37,6 +37,11 @@ from .platform_adapter import PlatformAdapter
 
 logger = logging.getLogger(__name__)
 
+# Сентинел провала исполнения: None — «команда ничего не вывела» (легально),
+# _RUN_FAILED — «запуск не удался» (бинаря нет, таймаут, ошибка). Нужен,
+# чтобы TTS не объявлял успех упавшей команды.
+_RUN_FAILED = object()
+
 
 class CommandExecutor:
     """Выполняет системные команды (без LLM)"""
@@ -296,7 +301,25 @@ class CommandExecutor:
             logger.info(f"🎯 Exact match: '{q}'")
             entry = commands[q]
             out = self._run(entry["cmd"], capture=bool(entry.get("capture")))
+            if out is _RUN_FAILED:
+                return "Не получилось, сэр."
             return self._compose_say(entry, out)
+
+        # ── Шаг 1.2: Громкость с числом («громче на 20») ──
+        # Командная таблица замораживает volume_up(5) строкой; здесь
+        # количество из фразы доходит до адаптера.
+        vol_match = re.fullmatch(r"(громче|тише)\s+на\s+(\d+)\s*(?:%)?", q)
+        if vol_match:
+            direction, amount = vol_match.group(1), int(vol_match.group(2))
+            amount = max(0, min(amount, 100))
+            cmd = (
+                self.platform.volume_up(amount)
+                if direction == "громче"
+                else self.platform.volume_down(amount)
+            )
+            if cmd and self._run(cmd) is _RUN_FAILED:
+                return "Не получилось, сэр."
+            return f"Меняю громкость на {amount}"
 
         # ── Шаг 1.5: NLU (если подключён) ──
         if self.nlu is not None:
@@ -310,6 +333,8 @@ class CommandExecutor:
             key, data = match
             logger.info(f"🎯 Fuzzy match: '{q}' → '{key}'")
             out = self._run(data["cmd"], capture=bool(data.get("capture")))
+            if out is _RUN_FAILED:
+                return "Не получилось, сэр."
             return self._compose_say(data, out)
 
         # ── Шаг 3: Pattern match (открой/запусти {app}) ──
@@ -321,7 +346,8 @@ class CommandExecutor:
                     app_cmd = self._find_app_cmd(app_name)
                     if app_cmd:
                         logger.info(f"🎯 App match: '{prefix}{app_name}' → '{app_cmd}'")
-                        self._run(app_cmd)
+                        if self._run(app_cmd) is _RUN_FAILED:
+                            return f"Не удалось запустить {app_name}"
                         return f"Запускаю {app_name}"
                 break  # нашли префикс — не ищем другие
 
@@ -338,7 +364,8 @@ class CommandExecutor:
         app_cmd = self._find_app_cmd(q)
         if app_cmd:
             logger.info(f"🎯 App standalone: '{q}' → '{app_cmd}'")
-            self._run(app_cmd)
+            if self._run(app_cmd) is _RUN_FAILED:
+                return f"Не удалось запустить {q}"
             return f"Запускаю {q}"
 
         # ── Шаг 5: Voice commands (маркеры для main loop) ──
@@ -383,7 +410,8 @@ class CommandExecutor:
                 logger.info(
                     f"🎯 NLU open_app: '{app_name}' → '{app_cmd}' (conf={confidence:.2f})"
                 )
-                self._run(app_cmd)
+                if self._run(app_cmd) is _RUN_FAILED:
+                    return f"Не удалось запустить {app_name}"
                 return f"Запускаю {app_name}"
 
         # search + query slot → web search
@@ -464,7 +492,7 @@ class CommandExecutor:
             return None
         except Exception as e:
             logger.error(f"❌ Ошибка выполнения: {e}")
-            return None
+            return _RUN_FAILED
 
     @staticmethod
     def _compose_say(entry: dict, output) -> str:

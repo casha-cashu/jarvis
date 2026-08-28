@@ -402,3 +402,65 @@ class TestJarvisSpeechControlIntegration:
         j.audio.recognize = MagicMock(return_value="ok")
         assert j._recognize(5) == "ok"
         j.response.tts_worker.wait_idle.assert_called_once()
+
+
+class TestSystemPromptWiring:
+    """compose_system_prompt подключён в start(): секция инструментов
+    дописывается при agent_enabled, {platform} подставляется."""
+
+    def _pipeline(self, config):
+        from jarvis.response_pipeline import ResponsePipeline
+
+        return ResponsePipeline(config)
+
+    def test_tools_section_appended_when_agent_enabled(self):
+        with (
+            patch("jarvis.modules.tts.TTSManager"),
+            patch("jarvis.modules.llm.LLMManager") as mock_llm,
+            patch("jarvis.modules.commands.CommandManager"),
+            patch("jarvis.modules.platform_adapter.PlatformAdapter"),
+        ):
+            p = self._pipeline(
+                {
+                    "llm": {
+                        "system_prompt": "База {platform}",
+                        "system_prompt_tools": "Раздел инструментов",
+                        "agent_enabled": True,
+                        "agent_query_prefix_enabled": True,
+                    }
+                }
+            )
+            p.start()
+            try:
+                llm_cfg = mock_llm.call_args.args[0]
+                assert llm_cfg["system_prompt"].startswith("База ")
+                assert "Раздел инструментов" in llm_cfg["system_prompt"]
+                assert "{platform}" not in llm_cfg["system_prompt"]
+                # префикс-пуш включён из конфига
+                assert p._agent_query_prefix_enabled is True
+            finally:
+                p.stop()
+
+    def test_no_tools_section_without_agent(self):
+        """agent_enabled=False — промпт остаётся базовым, без секции."""
+        with (
+            patch("jarvis.modules.tts.TTSManager"),
+            patch("jarvis.modules.llm.LLMManager") as mock_llm,
+            patch("jarvis.modules.commands.CommandManager"),
+            patch("jarvis.modules.platform_adapter.PlatformAdapter"),
+        ):
+            p = self._pipeline(
+                {
+                    "llm": {
+                        "system_prompt": "База",
+                        "system_prompt_tools": "Раздел инструментов",
+                        "agent_enabled": False,
+                    }
+                }
+            )
+            p.start()
+            try:
+                llm_cfg = mock_llm.call_args.args[0]
+                assert llm_cfg["system_prompt"] == "База"
+            finally:
+                p.stop()

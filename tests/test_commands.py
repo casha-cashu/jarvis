@@ -308,3 +308,61 @@ class TestExecutionTimeout:
             ex._run(make_cmd)
             assert calls == ["called"]
             mock_popen.assert_called_once()
+
+
+class TestVolumeAmount:
+    """«Громче на 20» — количество из фразы доходит до адаптера
+    (раньше слот volume_amount извлекался, но игнорировался: таблица
+    замораживала volume_up(5))."""
+
+    def test_volume_up_with_amount(self, executor):
+        assert executor.execute("громче на 20") == "Меняю громкость на 20"
+
+    def test_volume_down_with_amount(self, executor):
+        assert executor.execute("тише на 30") == "Меняю громкость на 30"
+
+    def test_volume_amount_clamped(self, executor):
+        assert executor.execute("громче на 500") == "Меняю громкость на 100"
+
+    def test_volume_amount_reaches_adapter(self, executor, monkeypatch):
+        from jarvis.modules.commands import CommandExecutor
+
+        captured = {}
+
+        def fake_run(self, cmd, capture=False):
+            captured["cmd"] = cmd
+            return None
+
+        monkeypatch.setattr(CommandExecutor, "_run", fake_run)
+        executor.execute("громче на 15")
+        assert captured["cmd"] == "volume_up 15"
+
+    def test_bare_gromche_still_exact(self, executor):
+        """Голое «громче» идёт старым путём (таблица, фиксированные 5%)."""
+        assert executor.execute("громче") == "Громче"
+
+
+class TestRunFailureSurfacing:
+    """Провал исполнения больше не звучит как успех."""
+
+    def test_exact_run_failure(self, executor, monkeypatch):
+        from jarvis.modules import commands as commands_mod
+        from jarvis.modules.commands import CommandExecutor
+
+        monkeypatch.setattr(
+            CommandExecutor,
+            "_run",
+            lambda self, cmd, capture=False: commands_mod._RUN_FAILED,
+        )
+        assert executor.execute("тест") == "Не получилось, сэр."
+
+    def test_app_launch_failure(self, executor, monkeypatch):
+        from jarvis.modules import commands as commands_mod
+        from jarvis.modules.commands import CommandExecutor
+
+        monkeypatch.setattr(
+            CommandExecutor,
+            "_run",
+            lambda self, cmd, capture=False: commands_mod._RUN_FAILED,
+        )
+        assert executor.execute("открой testapp") == "Не удалось запустить testapp"
