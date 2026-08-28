@@ -636,6 +636,8 @@ def _t():
     )
 
     # ---- GNOME ----
+    # Eval закрыт с GNOME 41 (см. комментарий в gnome.py): окна/воркспейсы
+    # через EWMH/xdotool, скриншоты через незакрытый org.gnome.Shell.Screenshot.
     gnome = GNOMEAdapter
     cases.extend(
         [
@@ -643,8 +645,7 @@ def _t():
                 gnome,
                 "workspace_switch",
                 {"number": 1},
-                "gdbus call --session --dest org.gnome.Shell --object-path /org/gnome/Shell --method org.gnome.Shell.Eval "
-                "'Main.wm.actionMoveWorkspace(global.workspace_manager.get_workspace_by_index(0))'",
+                "wmctrl -s 0",
                 True,
                 id="gnome-workspace_switch_1",
             ),
@@ -652,8 +653,7 @@ def _t():
                 gnome,
                 "workspace_switch",
                 {"number": 3},
-                "gdbus call --session --dest org.gnome.Shell --object-path /org/gnome/Shell --method org.gnome.Shell.Eval "
-                "'Main.wm.actionMoveWorkspace(global.workspace_manager.get_workspace_by_index(2))'",
+                "wmctrl -s 2",
                 True,
                 id="gnome-workspace_switch_3",
             ),
@@ -661,8 +661,7 @@ def _t():
                 gnome,
                 "workspace_next",
                 {},
-                "gdbus call --session --dest org.gnome.Shell --object-path /org/gnome/Shell --method org.gnome.Shell.Eval "
-                "'Main.wm.actionMoveWorkspaceRight()'",
+                "xdotool key ctrl+alt+Right",
                 True,
                 id="gnome-workspace_next",
             ),
@@ -670,8 +669,7 @@ def _t():
                 gnome,
                 "workspace_prev",
                 {},
-                "gdbus call --session --dest org.gnome.Shell --object-path /org/gnome/Shell --method org.gnome.Shell.Eval "
-                "'Main.wm.actionMoveWorkspaceLeft()'",
+                "xdotool key ctrl+alt+Left",
                 True,
                 id="gnome-workspace_prev",
             ),
@@ -679,8 +677,7 @@ def _t():
                 gnome,
                 "window_close",
                 {},
-                "gdbus call --session --dest org.gnome.Shell --object-path /org/gnome/Shell --method org.gnome.Shell.Eval "
-                "'global.get_window_actors()[0].meta_window.delete(global.get_current_time())'",
+                "xdotool key alt+F4",
                 True,
                 id="gnome-window_close",
             ),
@@ -688,8 +685,7 @@ def _t():
                 gnome,
                 "window_fullscreen",
                 {},
-                "gdbus call --session --dest org.gnome.Shell --object-path /org/gnome/Shell --method org.gnome.Shell.Eval "
-                "'global.get_window_actors()[0].meta_window.make_fullscreen()'",
+                "xdotool key F11",
                 True,
                 id="gnome-window_fullscreen",
             ),
@@ -697,8 +693,7 @@ def _t():
                 gnome,
                 "window_minimize",
                 {},
-                "gdbus call --session --dest org.gnome.Shell --object-path /org/gnome/Shell --method org.gnome.Shell.Eval "
-                "'global.get_window_actors()[0].meta_window.minimize()'",
+                "xdotool key super+h",
                 True,
                 id="gnome-window_minimize",
             ),
@@ -706,8 +701,7 @@ def _t():
                 gnome,
                 "window_maximize",
                 {},
-                "gdbus call --session --dest org.gnome.Shell --object-path /org/gnome/Shell --method org.gnome.Shell.Eval "
-                "'global.get_window_actors()[0].meta_window.maximize(Meta.MaximizeFlags.BOTH)'",
+                "xdotool key alt+F10",
                 True,
                 id="gnome-window_maximize",
             ),
@@ -715,8 +709,7 @@ def _t():
                 gnome,
                 "window_floating",
                 {},
-                "gdbus call --session --dest org.gnome.Shell --object-path /org/gnome/Shell --method org.gnome.Shell.Eval "
-                "'global.get_window_actors()[0].meta_window.unmaximize(Meta.MaximizeFlags.BOTH)'",
+                "echo 'Floating windows not supported on GNOME'",
                 True,
                 id="gnome-window_floating",
             ),
@@ -724,8 +717,7 @@ def _t():
                 gnome,
                 "window_next",
                 {},
-                "gdbus call --session --dest org.gnome.Shell --object-path /org/gnome/Shell --method org.gnome.Shell.Eval "
-                "'Main.activateWindow(global.display.get_tab_list(Meta.TabList.NORMAL, null)[1])'",
+                "xdotool key alt+Escape",
                 True,
                 id="gnome-window_next",
             ),
@@ -733,8 +725,7 @@ def _t():
                 gnome,
                 "window_prev",
                 {},
-                "gdbus call --session --dest org.gnome.Shell --object-path /org/gnome/Shell --method org.gnome.Shell.Eval "
-                "'Main.activateWindow(global.display.get_tab_list(Meta.TabList.NORMAL, null).reverse()[1])'",
+                "xdotool key alt+shift+Escape",
                 True,
                 id="gnome-window_prev",
             ),
@@ -742,7 +733,9 @@ def _t():
                 gnome,
                 "screenshot_screen",
                 {},
-                "gnome-screenshot -f " + _SHOT_DIR,
+                "gdbus call --session --dest org.gnome.Shell.Screenshot "
+                "--object-path /org/gnome/Shell/Screenshot "
+                "--method org.gnome.Shell.Screenshot.Screenshot false false " + _SHOT_DIR,
                 False,
                 id="gnome-screenshot_screen",
             ),
@@ -750,15 +743,17 @@ def _t():
                 gnome,
                 "screenshot_area",
                 {},
-                "gnome-screenshot -a -f " + _SHOT_DIR,
-                False,
+                "xdotool key Print",
+                True,
                 id="gnome-screenshot_area",
             ),
             pytest.param(
                 gnome,
                 "screenshot_window",
                 {},
-                "gnome-screenshot -w -f " + _SHOT_DIR,
+                "gdbus call --session --dest org.gnome.Shell.Screenshot "
+                "--object-path /org/gnome/Shell/Screenshot "
+                "--method org.gnome.Shell.Screenshot.ScreenshotWindow false false " + _SHOT_DIR,
                 False,
                 id="gnome-screenshot_window",
             ),
@@ -798,7 +793,7 @@ def _t():
                 gnome,
                 "lock_screen",
                 {},
-                "gnome-screensaver-command -l",
+                "loginctl lock-session",
                 True,
                 id="gnome-lock_screen",
             ),
@@ -920,7 +915,7 @@ def _t():
                 kde,
                 "window_floating",
                 {},
-                "qdbus org.kde.kglobalaccel /component/kwin invokeShortcut 'Window Quick Tile Bottom'",
+                "echo 'Floating windows not supported on KDE'",
                 True,
                 id="kde-window_floating",
             ),
@@ -928,7 +923,7 @@ def _t():
                 kde,
                 "window_next",
                 {},
-                "qdbus org.kde.KWin /KWin nextWindow",
+                "qdbus org.kde.kglobalaccel /component/kwin invokeShortcut 'Walk Through Windows'",
                 True,
                 id="kde-window_next",
             ),
@@ -936,7 +931,7 @@ def _t():
                 kde,
                 "window_prev",
                 {},
-                "qdbus org.kde.KWin /KWin previousWindow",
+                "qdbus org.kde.kglobalaccel /component/kwin invokeShortcut 'Walk Through Windows (Reverse)'",
                 True,
                 id="kde-window_prev",
             ),
@@ -1036,7 +1031,7 @@ def _t():
                 kde,
                 "get_task_manager",
                 {},
-                "ksysguard",
+                "plasma-systemmonitor",
                 True,
                 id="kde-get_task_manager",
             ),
@@ -1195,7 +1190,7 @@ def _t():
                 macos,
                 "lock_screen",
                 {},
-                "pmset displaysleepnow",
+                "'/System/Library/CoreServices/Menu Extras/User.menu/Contents/Resources/CGSession' -suspend",
                 True,
                 id="macos-lock_screen",
             ),
@@ -1251,7 +1246,7 @@ def _t():
                 macos,
                 "get_file_manager",
                 {},
-                "open ~",
+                "open -a Finder",
                 True,
                 id="macos-get_file_manager",
             ),

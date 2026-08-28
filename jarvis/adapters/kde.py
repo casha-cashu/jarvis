@@ -37,13 +37,17 @@ class KDEAdapter(BaseAdapter):
         return "qdbus org.kde.kglobalaccel /component/kwin invokeShortcut 'Window Maximize'"
 
     def window_floating(self) -> str:
-        return "qdbus org.kde.kglobalaccel /component/kwin invokeShortcut 'Window Quick Tile Bottom'"
+        # В KWin нет шортката «untile/float»: Window Quick Tile Bottom
+        # только half-тайлит окно. Честно сообщаем о неподдержке.
+        return "echo 'Floating windows not supported on KDE'"
 
     def window_next(self) -> str:
-        return "qdbus org.kde.KWin /KWin nextWindow"
+        # org.kde.KWin /KWin nextWindow/previousWindow не существуют ни в
+        # одной версии Plasma — реальный свитчер живёт в kglobalaccel.
+        return "qdbus org.kde.kglobalaccel /component/kwin invokeShortcut 'Walk Through Windows'"
 
     def window_prev(self) -> str:
-        return "qdbus org.kde.KWin /KWin previousWindow"
+        return "qdbus org.kde.kglobalaccel /component/kwin invokeShortcut 'Walk Through Windows (Reverse)'"
 
     # Screenshots
     def screenshot_screen(self) -> str:
@@ -86,4 +90,5 @@ class KDEAdapter(BaseAdapter):
         return "dolphin"
 
     def get_task_manager(self) -> str:
-        return "ksysguard"
+        # ksysguard удалён из Plasma 5.21+ — заменён на plasma-systemmonitor.
+        return "plasma-systemmonitor"

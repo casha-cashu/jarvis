@@ -23,10 +23,16 @@ class MacOSAdapter(BaseAdapter):
         super().__init__()
         self.name = "macos"
 
+    # Keycodes цифр НЕ подряд: 18=1..21=4, 23=5, 22=6, 26=7, 28=8, 25=9,
+    # 29=0. Старая формула 17+n на 8/9/10 жала не те клавиши.
+    _DIGIT_KEY_CODES = {1: 18, 2: 19, 3: 20, 4: 21, 5: 23, 6: 22, 7: 26, 8: 28, 9: 25, 10: 29}
+
     # Workspace management (Mission Control)
     def workspace_switch(self, number: int) -> str:
         # Control + number switches desktops
-        key_code = 17 + number  # Key codes: 18=1, 19=2, etc.
+        key_code = self._DIGIT_KEY_CODES.get(number)
+        if key_code is None:
+            return "echo 'Workspace {n} not supported'".format(n=number)
         return f"osascript -e 'tell application \"System Events\" to key code {key_code} using control down'"
 
     def workspace_next(self) -> str:
@@ -85,7 +91,13 @@ class MacOSAdapter(BaseAdapter):
 
     # System
     def lock_screen(self) -> str:
-        return "pmset displaysleepnow"
+        # pmset displaysleepnow гасит экран без блокировки (без пароля при
+        # пробуждении, если не включено «сразу требовать пароль»).
+        # CGSession -suspend — настоящая блокировка сессии.
+        return (
+            "'/System/Library/CoreServices/Menu Extras/User.menu/Contents/"
+            "Resources/CGSession' -suspend"
+        )
 
     def system_reboot(self) -> str:
         return "osascript -e 'tell application \"System Events\" to restart'"
@@ -95,8 +107,14 @@ class MacOSAdapter(BaseAdapter):
 
     # Notifications (macOS native)
     def notify(self, title: str, message: str) -> str:
-        escaped_title = title.replace("'", "'\\''")
-        escaped_msg = message.replace("'", "'\\''")
+        # Два слоя экранирования: shell (одинарные кавычки) и AppleScript
+        # (двойные кавычки + бэкслеши) — иначе кавычка/бэкслеш в тексте
+        # напоминания ломала osascript и уведомление молча терялось.
+        def apple_script_escape(value: str) -> str:
+            return value.replace("\\", "\\\\").replace('"', '\\"')
+
+        escaped_title = apple_script_escape(title).replace("'", "'\\''")
+        escaped_msg = apple_script_escape(message).replace("'", "'\\''")
         return (
             f'osascript -e \'display notification "{escaped_msg}" '
             f'with title "{escaped_title}"\''
@@ -115,7 +133,9 @@ class MacOSAdapter(BaseAdapter):
         return "open -a Terminal"
 
     def get_file_manager(self) -> str:
-        return "open ~"
+        # 'open ~' не работал: без shell тильда не раскрывается — open
+        # получал литеральный '~'. Finder явным образом.
+        return "open -a Finder"
 
     def get_task_manager(self) -> str:
         return "open -a 'Activity Monitor'"
