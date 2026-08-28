@@ -32,7 +32,7 @@
   "bundle": {
     "active": true,
     "targets": "all",
-    "category": "AudioVideo",
+    "category": "Utility",
     "externalBin": [
       "binaries/jarvis-bridge"
     ],

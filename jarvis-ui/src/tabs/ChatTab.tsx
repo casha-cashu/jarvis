@@ -51,8 +51,6 @@ const CHAT_STORAGE_KEY = "jarvis.ui.chats";
 const MODELS_CACHE_KEY = "jarvis.ui.models-cache";
 const SKIP_CHAT_DELETE_CONFIRM_KEY = "jarvis.ui.skip-chat-delete-confirm";
 
-const mockSessions: Session[] = [];
-
 function loadSessions(): Session[] {
   try {
     const stored = localStorage.getItem(CHAT_STORAGE_KEY);
@@ -213,7 +211,7 @@ export default function ChatTab() {
         continue;
       }
       // Skip network if key missing (except ollama local)
-      if (provider.type !== "ollama" && !provider.apiKey) {
+      if ((provider.type as string) !== "ollama" && !provider.apiKey) {
         results.push({ provider, groups: [], error: "нет ключа" });
         continue;
       }
