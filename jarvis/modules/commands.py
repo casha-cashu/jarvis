@@ -535,11 +535,11 @@ class CommandExecutor:
         from .reminder import parse_time
 
         explicit_intent = bool(
-            re.match(r"^(напомни|напоминание|таймер|будильник|поставь таймер|через\s+\d)", q)
+            re.match(
+                r"^(напомни|напоминание|таймер|будильник|поставь таймер|через\s+\d)", q
+            )
         )
-        bare_duration = re.fullmatch(
-            r"(через\s+)?\d+\s*(секунд\w*|минут\w*|час\S*)", q
-        )
+        bare_duration = re.fullmatch(r"(через\s+)?\d+\s*(секунд\w*|минут\w*|час\S*)", q)
         parsed = parse_time(q) if (explicit_intent or bare_duration) else None
         if parsed:
             seconds, text = parsed

@@ -49,9 +49,7 @@ def step_system_deps():
     return all_ok
 
 
-VOSK_MODEL_URL = (
-    "https://alphacephei.com/vosk/models/vosk-model-small-ru-0.22.zip"
-)
+VOSK_MODEL_URL = "https://alphacephei.com/vosk/models/vosk-model-small-ru-0.22.zip"
 
 
 def _download_vosk_model(dest_dir: Path) -> None:

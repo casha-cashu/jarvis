@@ -28,9 +28,7 @@ def save_presets(presets: dict):
     """Сохраняет пресеты атомарно и с правами 600 — внутри API-ключи."""
     PRESETS_DIR.mkdir(parents=True, exist_ok=True)
     tmp = PRESETS_FILE.with_suffix(".tmp")
-    tmp.write_text(
-        json.dumps(presets, indent=2, ensure_ascii=False), encoding="utf-8"
-    )
+    tmp.write_text(json.dumps(presets, indent=2, ensure_ascii=False), encoding="utf-8")
     os.chmod(tmp, 0o600)
     os.replace(tmp, PRESETS_FILE)
 

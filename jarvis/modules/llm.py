@@ -132,8 +132,13 @@ class LLMClient(ABC):
         if "{datetime}" in sp:
             now = datetime.now()
             weekdays = (
-                "понедельник", "вторник", "среда", "четверг",
-                "пятница", "суббота", "воскресенье",
+                "понедельник",
+                "вторник",
+                "среда",
+                "четверг",
+                "пятница",
+                "суббота",
+                "воскресенье",
             )
             dt_str = f"{now.strftime('%d.%m.%Y %H:%M')}, {weekdays[now.weekday()]}"
             sp = sp.replace("{datetime}", dt_str)
@@ -225,7 +230,11 @@ class AnthropicClient(LLMClient):
 
             # Empty or tool_use/thinking-only responses have no text block.
             answer = next(
-                (b.text.strip() for b in response.content if getattr(b, "type", "") == "text"),
+                (
+                    b.text.strip()
+                    for b in response.content
+                    if getattr(b, "type", "") == "text"
+                ),
                 "",
             )
             if not answer:
@@ -377,7 +386,9 @@ class OpenRouterClient(LLMClient):
 
             messages = []
             if self.system_prompt:
-                messages.append({"role": "system", "content": self._render_system_prompt()})
+                messages.append(
+                    {"role": "system", "content": self._render_system_prompt()}
+                )
 
             messages.extend(self.history)
 
@@ -516,7 +527,9 @@ class OpenAIClient(LLMClient):
             for iteration in range(max_iterations):
                 # Last allowed iteration must not stream: we need the whole
                 # text even if the model keeps trying to call tools.
-                can_stream = stream_callback is not None and iteration < max_iterations - 1
+                can_stream = (
+                    stream_callback is not None and iteration < max_iterations - 1
+                )
                 content_parts: list[str] = []
 
                 if can_stream:
@@ -688,7 +701,9 @@ class OllamaClient(LLMClient):
 
             messages = []
             if self.system_prompt:
-                messages.append({"role": "system", "content": self._render_system_prompt()})
+                messages.append(
+                    {"role": "system", "content": self._render_system_prompt()}
+                )
 
             messages.extend(self.history)
 
@@ -755,9 +770,9 @@ class OllamaClient(LLMClient):
         message: str,
         tools: list,
         on_tool_call=None,
-            max_iterations: int = 5,
-            stream_callback=None,
-        ) -> str:
+        max_iterations: int = 5,
+        stream_callback=None,
+    ) -> str:
         """LLM ↔ tools conversation loop.
 
         Args:
@@ -780,13 +795,17 @@ class OllamaClient(LLMClient):
 
             base_messages = []
             if self.system_prompt:
-                base_messages.append({"role": "system", "content": self._render_system_prompt()})
+                base_messages.append(
+                    {"role": "system", "content": self._render_system_prompt()}
+                )
             base_messages.extend(self.history)
 
             for iteration in range(max_iterations):
                 # Last allowed iteration must not stream: we need the whole
                 # text even if the model keeps trying to call tools.
-                can_stream = stream_callback is not None and iteration < max_iterations - 1
+                can_stream = (
+                    stream_callback is not None and iteration < max_iterations - 1
+                )
                 parts: list[str] = []
                 data: dict | None = None
 
@@ -824,7 +843,12 @@ class OllamaClient(LLMClient):
                             if chunk.get("done"):
                                 break
                         if streamed_calls:
-                            data = {"message": {"content": "".join(parts), "tool_calls": streamed_calls}}
+                            data = {
+                                "message": {
+                                    "content": "".join(parts),
+                                    "tool_calls": streamed_calls,
+                                }
+                            }
                         else:
                             data = {"message": {"content": "".join(parts)}}
                 else:
@@ -979,8 +1003,11 @@ class LLMManager:
 
         # Streaming кэшу не подлежит — callback должен видеть токены.
         use_cache = cached and stream_callback is None
-        cache_key = (f"{len(self.primary.history)}:{message.strip().lower()}"
-                     if use_cache else None)
+        cache_key = (
+            f"{len(self.primary.history)}:{message.strip().lower()}"
+            if use_cache
+            else None
+        )
 
         if use_cache and cache_key in self._cache:
             # LRU touch

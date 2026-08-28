@@ -74,7 +74,7 @@ class TestParseTime:
 # ──────────────────────────────────────────────
 
 
-class TestReminderPersistence:
+class TestReminderFileLock:
     """Персистентность: атомарность записи и гонки RMW (filelock)."""
 
     @pytest.fixture

@@ -735,7 +735,8 @@ def _t():
                 {},
                 "gdbus call --session --dest org.gnome.Shell.Screenshot "
                 "--object-path /org/gnome/Shell/Screenshot "
-                "--method org.gnome.Shell.Screenshot.Screenshot false false " + _SHOT_DIR,
+                "--method org.gnome.Shell.Screenshot.Screenshot false false "
+                + _SHOT_DIR,
                 False,
                 id="gnome-screenshot_screen",
             ),
@@ -753,7 +754,8 @@ def _t():
                 {},
                 "gdbus call --session --dest org.gnome.Shell.Screenshot "
                 "--object-path /org/gnome/Shell/Screenshot "
-                "--method org.gnome.Shell.Screenshot.ScreenshotWindow false false " + _SHOT_DIR,
+                "--method org.gnome.Shell.Screenshot.ScreenshotWindow false false "
+                + _SHOT_DIR,
                 False,
                 id="gnome-screenshot_window",
             ),

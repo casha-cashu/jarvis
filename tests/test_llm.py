@@ -683,9 +683,7 @@ class TestHistoryConcurrencyAndOrphans:
         from jarvis.modules.llm import OllamaClient, _load_history
 
         c = OllamaClient(self._config())
-        with patch.object(
-            c, "_post_chat", return_value={"message": {"content": ""}}
-        ):
+        with patch.object(c, "_post_chat", return_value={"message": {"content": ""}}):
             assert c.chat("привет") == ""
         assert _load_history() == []
 
@@ -698,9 +696,7 @@ class TestHistoryConcurrencyAndOrphans:
             return_value={
                 "message": {
                     "content": "",
-                    "tool_calls": [
-                        {"function": {"name": "bash", "arguments": "{}"}}
-                    ],
+                    "tool_calls": [{"function": {"name": "bash", "arguments": "{}"}}],
                 }
             }
         )

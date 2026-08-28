@@ -25,7 +25,18 @@ class MacOSAdapter(BaseAdapter):
 
     # Keycodes цифр НЕ подряд: 18=1..21=4, 23=5, 22=6, 26=7, 28=8, 25=9,
     # 29=0. Старая формула 17+n на 8/9/10 жала не те клавиши.
-    _DIGIT_KEY_CODES = {1: 18, 2: 19, 3: 20, 4: 21, 5: 23, 6: 22, 7: 26, 8: 28, 9: 25, 10: 29}
+    _DIGIT_KEY_CODES = {
+        1: 18,
+        2: 19,
+        3: 20,
+        4: 21,
+        5: 23,
+        6: 22,
+        7: 26,
+        8: 28,
+        9: 25,
+        10: 29,
+    }
 
     # Workspace management (Mission Control)
     def workspace_switch(self, number: int) -> str:

@@ -157,9 +157,7 @@ def test_reconfigure_shuts_down_previous_reminder_manager(monkeypatch):
 
 
 def test_reconfigure_keeps_single_live_timer_per_reminder(monkeypatch, tmp_path):
-    monkeypatch.setattr(
-        reminder_mod, "REMINDERS_FILE", tmp_path / "reminders.json"
-    )
+    monkeypatch.setattr(reminder_mod, "REMINDERS_FILE", tmp_path / "reminders.json")
     reminder_mod._save_reminders(
         [
             {
@@ -234,7 +232,9 @@ def test_delete_active_session_clears_llm_cache(isolated_history):
     bridge.jarvis.llm._cache["0:q"] = "a"
     bridge._current_session = "aaaaaaaa"
 
-    assert bridge.handle({"command": "delete_session", "id": "aaaaaaaa"}) == {"ok": True}
+    assert bridge.handle({"command": "delete_session", "id": "aaaaaaaa"}) == {
+        "ok": True
+    }
     assert not bridge.jarvis.llm._cache
     assert client.history == []
 
@@ -263,11 +263,14 @@ def test_first_switch_archives_legacy_history(isolated_history):
     follow_up = [{"role": "user", "content": "aaa chat"}]
     isolated_history.write_text(json.dumps(follow_up), encoding="utf-8")
     assert bridge.handle({"command": "switch_session", "id": "bbbbbbbb"})["ok"]
-    assert json.loads(
-        (isolated_history.parent / "ui-history" / "aaaaaaaa.json").read_text(
-            encoding="utf-8"
+    assert (
+        json.loads(
+            (isolated_history.parent / "ui-history" / "aaaaaaaa.json").read_text(
+                encoding="utf-8"
+            )
         )
-    ) == follow_up
+        == follow_up
+    )
     assert json.loads(archived.read_text(encoding="utf-8")) == legacy
 
 
@@ -277,8 +280,12 @@ def test_first_switch_archives_legacy_history(isolated_history):
 
 
 def test_purge_session_deletes_only_own_archive(isolated_history):
-    keep = _write_archive(isolated_history, "aaaaaaaa", [{"role": "user", "content": "a"}])
-    gone = _write_archive(isolated_history, "bbbbbbbb", [{"role": "user", "content": "b"}])
+    keep = _write_archive(
+        isolated_history, "aaaaaaaa", [{"role": "user", "content": "a"}]
+    )
+    gone = _write_archive(
+        isolated_history, "bbbbbbbb", [{"role": "user", "content": "b"}]
+    )
 
     bridge = Bridge()
     assert bridge.handle({"command": "purge_session", "id": "bbbbbbbb"}) == {"ok": True}
@@ -288,7 +295,9 @@ def test_purge_session_deletes_only_own_archive(isolated_history):
 
 def test_purge_session_on_active_wipes_context_and_cache(isolated_history):
     _write_archive(isolated_history, "aaaaaaaa", [{"role": "user", "content": "a"}])
-    isolated_history.write_text(json.dumps([{"role": "user", "content": "live"}]), encoding="utf-8")
+    isolated_history.write_text(
+        json.dumps([{"role": "user", "content": "live"}]), encoding="utf-8"
+    )
 
     bridge = Bridge()
     client = _attach_llm(bridge)
@@ -297,9 +306,7 @@ def test_purge_session_on_active_wipes_context_and_cache(isolated_history):
     bridge._current_session = "aaaaaaaa"
 
     assert bridge.handle({"command": "purge_session", "id": "aaaaaaaa"}) == {"ok": True}
-    assert not (
-        isolated_history.parent / "ui-history" / "aaaaaaaa.json"
-    ).exists()
+    assert not (isolated_history.parent / "ui-history" / "aaaaaaaa.json").exists()
     assert json.loads(isolated_history.read_text(encoding="utf-8")) == []
     assert client.history == []
     assert not bridge.jarvis.llm._cache
@@ -320,8 +327,12 @@ def test_purge_session_rejects_invalid_id(isolated_history):
 def test_purge_all_sessions_wipes_everything(isolated_history):
     _write_archive(isolated_history, "aaaaaaaa", [{"role": "user", "content": "a"}])
     _write_archive(isolated_history, "bbbbbbbb", [{"role": "user", "content": "b"}])
-    _write_archive(isolated_history, "_legacy-cli", [{"role": "user", "content": "old"}])
-    isolated_history.write_text(json.dumps([{"role": "user", "content": "live"}]), encoding="utf-8")
+    _write_archive(
+        isolated_history, "_legacy-cli", [{"role": "user", "content": "old"}]
+    )
+    isolated_history.write_text(
+        json.dumps([{"role": "user", "content": "live"}]), encoding="utf-8"
+    )
 
     bridge = Bridge()
     client = _attach_llm(bridge)
