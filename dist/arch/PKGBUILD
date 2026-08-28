@@ -18,7 +18,7 @@
 # Выбран вариант A.
 
 pkgname=jarvis
-pkgver=0.2.2
+pkgver=2.6.2
 pkgrel=1
 pkgdesc="JARVIS — голосовой ассистент для Linux/macOS (Tauri 2 + React 19 + Rust bridge)"
 arch=('x86_64')
@@ -26,10 +26,10 @@ url="https://github.com/casha-cashu/jarvis"
 license=('MIT')
 depends=('webkit2gtk-4.1' 'gtk3')
 optdepends=()
-# Локальная сборка: ожидается JARVIS_0.2.2_amd64.deb рядом с PKGBUILD (симлинк/копия из jarvis-ui/src-tauri/target/release/bundle/deb/)
+# Локальная сборка: ожидается JARVIS_${pkgver}_amd64.deb рядом с PKGBUILD (симлинк/копия из jarvis-ui/src-tauri/target/release/bundle/deb/)
 # Для AUR заменить на:
 # source=("JARVIS_${pkgver}_amd64.deb::https://github.com/casha-cashu/jarvis/releases/download/v${pkgver}/JARVIS_${pkgver}_amd64.deb")
-source=("JARVIS_0.2.2_amd64.deb")
+source=("JARVIS_${pkgver}_amd64.deb")
 sha256sums=('SKIP')
 # Для AUR с URL выше использовать реальный sha256 (обновить при бампе):
 # sha256sums=('33a6813d3b3e0beb7983e4cbe674e6e5a1806f39831ab09fe77f6d1cc54d40f2')
@@ -41,7 +41,7 @@ package() {
     # Такой двухступенчатый подход чище чем `bsdtar -Oxf deb data.tar.gz | bsdtar -xC $pkgdir`
     # и совместим со всеми версиями libarchive. Итоговый .pkg.tar.zst содержит только /usr/...,
     # сам .deb внутрь пакета не попадает (проверяется `tar -tf *.pkg.tar.zst | grep deb` → пусто).
-    bsdtar -xf "$srcdir/JARVIS_0.2.2_amd64.deb" -C "$srcdir"
+    bsdtar -xf "$srcdir/JARVIS_${pkgver}_amd64.deb" -C "$srcdir"
     bsdtar -xf "$srcdir/data.tar.gz" -C "$pkgdir"
 
     # Права уже 755/644 из deb, но подстрахуемся (cargo-bundle выставляет 755 для ELF)

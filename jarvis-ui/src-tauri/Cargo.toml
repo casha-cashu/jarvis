@@ -1,6 +1,6 @@
 [package]
 name = "jarvis"
-version = "0.2.2"
+version = "2.6.2"
 description = "JARVIS — голосовой ассистент (Tauri UI + Python sidecar)"
 authors = ["casha-cashu"]
 license = "MIT"

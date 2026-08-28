@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Version override (e.g. 0.2.1)"
+        description: "Version override (e.g. 2.6.2)"
         required: false
 
 jobs:
@@ -62,7 +62,7 @@ jobs:
       - name: Upload artifacts
         uses: actions/upload-artifact@v6
         with:
-          name: jarvis-portable-${{ github.ref_name || '0.2.1' }}
+          name: jarvis-portable-${{ github.ref_name }}
           path: |
             jarvis-ui/src-tauri/target/release/bundle/deb/*.deb
             jarvis-ui/src-tauri/target/release/bundle/rpm/*.rpm
@@ -118,7 +118,7 @@ jobs:
       - name: Upload macOS artifact
         uses: actions/upload-artifact@v6
         with:
-          name: jarvis-macos-${{ github.ref_name || '0.2.1' }}
+          name: jarvis-macos-${{ github.ref_name }}
           path: |
             jarvis-ui/src-tauri/target/release/bundle/dmg/*.dmg
             jarvis-ui/src-tauri/target/release/bundle/macos/*.app
