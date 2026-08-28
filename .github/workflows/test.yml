@@ -75,4 +75,7 @@ jobs:
       - name: Run tests
         run: |
           source venv/bin/activate
+          # pipefail обязателен: без него код возврата pytest съедает tail
+          # и джоба зелёная при любых падениях тестов.
+          set -o pipefail
           python -m pytest tests/ -v -x --tb=long -m "not slow" 2>&1 | tail -100

@@ -1,11 +1,17 @@
-.PHONY: test test-cov docker-test-arch docker-test-debian docker-test-fedora \
+.PHONY: test test-cov test-integration docker-test-arch docker-test-debian docker-test-fedora \
         docker-integration-i3 docker-integration-sway clean
 
+# Интеграционные тесты требуют реального DE/аудио — без маркеров они
+# вешают прогон (открывают микрофон/дисплей). Юниты: `make test`.
 test:
-	python -m pytest tests/ -v
+	PYTHONPATH=. python3 -m pytest tests/ -v -m "not slow and not integration"
 
 test-cov:
-	python -m pytest tests/ -v --cov=jarvis --cov-report=term-missing --cov-report=html
+	PYTHONPATH=. python3 -m pytest tests/ -v -m "not slow and not integration" --cov=jarvis --cov-report=term-missing --cov-report=html
+
+# Осмысленно только в Docker/i3-Sway-окружении (см. docker-integration-*)
+test-integration:
+	PYTHONPATH=. python3 -m pytest tests/integration/ -v
 
 docker-test-arch:
 	docker build -t jarvis-test:arch -f docker/Dockerfile.arch .
