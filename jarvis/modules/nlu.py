@@ -28,11 +28,14 @@ import numpy as np
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.linear_model import LogisticRegression
 
+_RAW_CACHE_ENV = os.environ.get("JARVIS_NLU_CACHE")
+# Пустая строка ЯВНО выключает кэш. Раньше Path("") резолвился в CWD и
+# classifier_*.joblib сыпался в текущую директорию (в корень репо).
+_NLU_CACHE_DISABLED = _RAW_CACHE_ENV == ""
 CACHE_DIR = Path(
-    os.environ.get(
-        "JARVIS_NLU_CACHE",
-        os.path.expanduser("~/.local/share/jarvis/nlu"),
-    )
+    _RAW_CACHE_ENV
+    if _RAW_CACHE_ENV
+    else os.path.expanduser("~/.local/share/jarvis/nlu"),
 )
 
 logger = logging.getLogger(__name__)
@@ -343,14 +346,14 @@ class IntentRouter:
         # is set to empty string.
         cache_key = self._cache_key()
         cache_path = CACHE_DIR / f"classifier_{cache_key}.joblib"
-        if cache_key and cache_path.exists():
+        if cache_key and not _NLU_CACHE_DISABLED and cache_path.exists():
             loaded = IntentClassifier.load(cache_path)
             if loaded is not None:
                 self._classifier = loaded
                 return
 
         clf = IntentClassifier(examples)
-        if cache_key:
+        if cache_key and not _NLU_CACHE_DISABLED:
             clf.save(cache_path)
         self._classifier = clf
 
