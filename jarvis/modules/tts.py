@@ -218,6 +218,7 @@ class PiperTTS:
         # P13: lib_path может быть не задан или указывать на несуществующий
         # путь (как старый Steam Proton в дефолтном config.yaml). Пробуем
         # авто-детект перед тем как сдаваться.
+        self.lib_path: Optional[str]
         if lib_path and Path(lib_path).is_dir():
             self.lib_path = lib_path
         else:
@@ -237,10 +238,13 @@ class PiperTTS:
         if not self.model_path.exists():
             raise FileNotFoundError(f"Модель Piper не найдена: {model_path}")
 
-        # Ищем конфиг
-        if config_path:
-            self.config_path = Path(config_path)
-        else:
+        # Ищем конфиг: null/"auto" -> .onnx.json рядом с моделью
+        # (раньше строка "auto" из config.example.yaml трактовалась как
+        # буквальный путь и молча отключала автопоиск с ложным warning'ом).
+        self.config_path: Optional[Path] = (
+            Path(config_path) if config_path and config_path != "auto" else None
+        )
+        if self.config_path is None:
             self.config_path = self.model_path.with_suffix(".onnx.json")
 
         if not self.config_path.exists():
@@ -323,7 +327,7 @@ class PiperTTS:
                 str(self.length_scale),
             ]
 
-            if self.config_path and self.config_path != "auto":
+            if self.config_path:
                 cmd.extend(["--config", str(self.config_path)])
 
             if self.speaker_id >= 0:
@@ -499,8 +503,10 @@ class SpeechT5TTS:
             return False
 
         # Lazy loading
-        if self._model is None:
+        if self._model is None or self._processor is None or self._vocoder is None:
             self._load_models()
+        assert self._model is not None
+        assert self._processor is not None and self._vocoder is not None
 
         try:
             import torch
@@ -544,8 +550,8 @@ class TTSManager:
             config: Словарь с настройками из config.yaml['tts']
         """
         self.engine = config.get("engine", "piper")
-        self.primary = None
-        self.fallback = None
+        self.primary: PiperTTS | SpeechT5TTS | None = None
+        self.fallback: GTTSFallback | None = None
 
         # Инициализируем основной движок
         if self.engine == "piper":

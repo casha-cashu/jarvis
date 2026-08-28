@@ -7,10 +7,12 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Any, Optional, cast
 
 if TYPE_CHECKING:
-    from jarvis.modules.tts import TTSWorker
+    from jarvis.modules.commands import CommandManager
+    from jarvis.modules.llm import LLMManager
+    from jarvis.modules.tts import TTSManager, TTSWorker
 
 logger = logging.getLogger(__name__)
 
@@ -18,17 +20,22 @@ logger = logging.getLogger(__name__)
 class ResponsePipeline:
     """Owns TTS, LLM, CommandManager — routes user text to one of them."""
 
-    def __init__(self, config: dict, platform=None, tts_worker: "TTSWorker" = None):
+    def __init__(
+        self,
+        config: dict,
+        platform=None,
+        tts_worker: "Optional[TTSWorker]" = None,
+    ):
         self.config = config
         self.platform = platform
-        self.tts = None
+        self.tts: "Optional[TTSManager]" = None
         # Фоновая очередь озвучки. Может быть внедрена снаружи (тесты/UI);
         # иначе создаётся в start() вокруг TTSManager. Внедрённый worker
         # при start() НЕ подменяется.
         self.tts_worker = tts_worker
         self._internal_worker = False
-        self.llm = None
-        self.commands = None
+        self.llm: "Optional[LLMManager]" = None
+        self.commands: "Optional[CommandManager]" = None
         self._started = False
         # Agent loop config — read from llm section
         self.agent_enabled = bool(config.get("llm", {}).get("agent_enabled", False))
@@ -200,7 +207,10 @@ class ResponsePipeline:
         from jarvis.modules import bash_agent
         from jarvis.prompt_builder import agent_query_prefix
 
-        client = self.llm.primary
+        mgr = self.llm
+        if mgr is None:
+            return None
+        client = mgr.primary
         if client is None:
             return None
 
@@ -208,7 +218,7 @@ class ResponsePipeline:
         # (qwen2.5:3b любит «Я сейчас проверю...» вместо вызова).
         query = agent_query_prefix(
             query,
-            provider=self.llm.provider,
+            provider=mgr.provider,
             enabled=self._agent_query_prefix_enabled,
         )
 
@@ -249,7 +259,9 @@ class ResponsePipeline:
         }
         if stream_callback is not None:
             kwargs["stream_callback"] = stream_callback
-        return client.chat_with_tools(query, **kwargs)
+        # Контракт chat_with_tools есть только у agent-способных клиентов;
+        # _can_use_agent() уже отфильтровал, cast снимает union ABC.
+        return cast("Any", client).chat_with_tools(query, **kwargs)
 
     def stop(self) -> None:
         # TTS worker: даём уже поставленным фразам доиграть и глушим поток.

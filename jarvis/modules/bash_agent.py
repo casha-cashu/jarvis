@@ -182,8 +182,8 @@ def _is_hardline_blocked(cmd: str) -> Optional[str]:
             "base64-decoded shell",
         ),
     ]
-    for pat, desc in regex_patterns:
-        hit = _blocked(pat.pattern, desc)
+    for rx, desc in regex_patterns:
+        hit = _blocked(rx.pattern, desc)
         if hit:
             return hit
     return None

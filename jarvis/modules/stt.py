@@ -119,7 +119,7 @@ class VoskSTT(BaseSTT):
         Returns:
             Распознанный текст
         """
-        audio_queue = queue.Queue()
+        audio_queue: "queue.Queue[bytes]" = queue.Queue()
 
         def audio_callback(in_data, frame_count, time_info, status):
             if status and status != 2:  # Игнорируем input overflow (2)

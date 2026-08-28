@@ -66,5 +66,14 @@ markers = [
     "llm: tests that exercise real LLM providers",
 ]
 
+[tool.mypy]
+# Соответствует pre-commit (mirrors-mypy с --ignore-missing-imports).
+# Сторонние библиотеки без py.typed (vosk, sklearn, joblib, gtts,
+# faster-whisper, silero-vad, pyaudio, soundfile) не анализируются.
+ignore_missing_imports = true
+# Бинарники-бинари проверяем с дефолтной строгостью; исключения —
+# чужой для проверки код не включаем (venv/tests проверяются вручную).
+files = ["jarvis"]
+
 [tool.setuptools.package-data]
 jarvis = ["modules/**/*", "adapters/**/*"]

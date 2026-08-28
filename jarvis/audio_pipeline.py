@@ -9,7 +9,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -20,7 +20,9 @@ class AudioPipeline:
     def __init__(self, config: dict, dry_run: bool = False):
         self.config = config
         self.dry_run = dry_run
-        self.stt = None
+        # VoskSTT | WhisperSTT; типы импортируются лениво в start(),
+        # поэтому Any вместо union.
+        self.stt: Any = None
         self._started = False
 
     def start(self) -> None:

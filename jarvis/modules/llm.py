@@ -19,7 +19,7 @@ from abc import ABC, abstractmethod
 from datetime import datetime
 from collections import OrderedDict
 from pathlib import Path
-from typing import List, Dict
+from typing import Any, List, Dict
 
 from filelock import FileLock
 
@@ -31,7 +31,7 @@ try:
     # user actually picks provider="openai".
     import openai as _openai_mod
 except ImportError:
-    _openai_mod = None
+    _openai_mod = None  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
 
@@ -199,10 +199,11 @@ class AnthropicClient(LLMClient):
         if not api_key:
             raise ValueError("ANTHROPIC_API_KEY не установлен")
 
-        client_kwargs = {"api_key": api_key}
-        if anthropic_config.get("base_url"):
-            client_kwargs["base_url"] = anthropic_config["base_url"]
-        self.client = anthropic.Anthropic(**client_kwargs)
+        base_url = anthropic_config.get("base_url")
+        if base_url:
+            self.client = anthropic.Anthropic(api_key=api_key, base_url=base_url)
+        else:
+            self.client = anthropic.Anthropic(api_key=api_key)
         self.model = anthropic_config.get("model", "claude-sonnet-4-20250514")
         self.temperature = anthropic_config.get("temperature", 0.7)
         self.max_tokens = anthropic_config.get("max_tokens", 1024)
@@ -224,14 +225,14 @@ class AnthropicClient(LLMClient):
                 max_tokens=self.max_tokens,
                 temperature=self.temperature,
                 system=self._render_system_prompt(),
-                messages=self.history,
+                messages=self.history,  # type: ignore[arg-type]
                 timeout=self.timeout,
             )
 
             # Empty or tool_use/thinking-only responses have no text block.
             answer = next(
                 (
-                    b.text.strip()
+                    str(getattr(b, "text", "")).strip()
                     for b in response.content
                     if getattr(b, "type", "") == "text"
                 ),
@@ -282,7 +283,7 @@ class AnthropicClient(LLMClient):
                     }
                 )
 
-            base_messages = list(self.history)
+            base_messages: list[dict[str, Any]] = list(self.history)
 
             for iteration in range(max_iterations):
                 response = self.client.messages.create(
@@ -290,16 +291,20 @@ class AnthropicClient(LLMClient):
                     max_tokens=self.max_tokens,
                     temperature=self.temperature,
                     system=self._render_system_prompt(),
-                    messages=base_messages,
-                    tools=anthropic_tools,
+                    messages=base_messages,  # type: ignore[arg-type]
+                    tools=anthropic_tools,  # type: ignore[arg-type]
                     timeout=self.timeout,
                 )
 
                 # Anthropic returns content as a list of blocks
                 # (TextBlock | ToolUseBlock)
                 tool_use_blocks = [b for b in response.content if b.type == "tool_use"]
-                text_blocks = [b for b in response.content if b.type == "text"]
-                final_text = "".join(b.text for b in text_blocks).strip()
+                text_blocks = [
+                    b for b in response.content if getattr(b, "type", "") == "text"
+                ]
+                final_text = "".join(
+                    str(getattr(b, "text", "")) for b in text_blocks
+                ).strip()
 
                 if not tool_use_blocks:
                     if final_text:
@@ -455,7 +460,7 @@ class OpenAIClient(LLMClient):
 
         logger.info(f"✅ OpenAI клиент: {self.model}")
 
-    def _build_messages(self) -> list:
+    def _build_messages(self) -> list[dict[str, Any]]:
         msgs = []
         if self.system_prompt:
             msgs.append({"role": "system", "content": self._render_system_prompt()})
@@ -467,9 +472,9 @@ class OpenAIClient(LLMClient):
             self.add_to_history("user", message)
 
             if stream_callback is not None:
-                stream = self.client.chat.completions.create(
+                stream: Any = self.client.chat.completions.create(
                     model=self.model,
-                    messages=self._build_messages(),
+                    messages=self._build_messages(),  # type: ignore[arg-type]
                     temperature=self.temperature,
                     max_tokens=self.max_tokens,
                     stream=True,
@@ -486,9 +491,9 @@ class OpenAIClient(LLMClient):
                 self.add_to_history("assistant", answer)
                 return answer
 
-            response = self.client.chat.completions.create(
+            response = self.client.chat.completions.create(  # type: ignore[call-overload]
                 model=self.model,
-                messages=self._build_messages(),
+                messages=self._build_messages(),  # type: ignore[arg-type]
                 temperature=self.temperature,
                 max_tokens=self.max_tokens,
             )
@@ -525,6 +530,7 @@ class OpenAIClient(LLMClient):
             base_messages = self._build_messages()
 
             for iteration in range(max_iterations):
+                tool_calls: list[dict[str, Any]] = []
                 # Last allowed iteration must not stream: we need the whole
                 # text even if the model keeps trying to call tools.
                 can_stream = (
@@ -533,10 +539,10 @@ class OpenAIClient(LLMClient):
                 content_parts: list[str] = []
 
                 if can_stream:
-                    stream = self.client.chat.completions.create(
+                    stream = self.client.chat.completions.create(  # type: ignore[call-overload]
                         model=self.model,
-                        messages=base_messages,
-                        tools=tools,
+                        messages=base_messages,  # type: ignore[arg-type]
+                        tools=tools,  # type: ignore[arg-type]
                         tool_choice="auto",
                         temperature=self.temperature,
                         max_tokens=self.max_tokens,
@@ -572,10 +578,10 @@ class OpenAIClient(LLMClient):
                         for index, slot in sorted(tc_map.items())
                     ]
                 else:
-                    response = self.client.chat.completions.create(
+                    response = self.client.chat.completions.create(  # type: ignore[call-overload]
                         model=self.model,
-                        messages=base_messages,
-                        tools=tools,
+                        messages=base_messages,  # type: ignore[arg-type]
+                        tools=tools,  # type: ignore[arg-type]
                         tool_choice="auto",
                         temperature=self.temperature,
                         max_tokens=self.max_tokens,
@@ -793,7 +799,7 @@ class OllamaClient(LLMClient):
         try:
             self.add_to_history("user", message)
 
-            base_messages = []
+            base_messages: list[dict[str, Any]] = []
             if self.system_prompt:
                 base_messages.append(
                     {"role": "system", "content": self._render_system_prompt()}
@@ -932,7 +938,7 @@ class LLMManager:
         """
         self.config = config
         self.provider = config.get("provider", "ollama")
-        self.clients = {}
+        self.clients: dict[str, LLMClient] = {}
         self._cache: "OrderedDict[str, str]" = OrderedDict()
 
         # Инициализируем клиенты
@@ -1003,17 +1009,14 @@ class LLMManager:
 
         # Streaming кэшу не подлежит — callback должен видеть токены.
         use_cache = cached and stream_callback is None
-        cache_key = (
-            f"{len(self.primary.history)}:{message.strip().lower()}"
-            if use_cache
-            else None
-        )
-
-        if use_cache and cache_key in self._cache:
-            # LRU touch
-            self._cache.move_to_end(cache_key)
-            logger.debug(f"💾 LLM cache hit: {cache_key[:40]}")
-            return self._cache[cache_key]
+        cache_key: str | None = None
+        if use_cache:
+            cache_key = f"{len(self.primary.history)}:{message.strip().lower()}"
+            if cache_key in self._cache:
+                # LRU touch
+                self._cache.move_to_end(cache_key)
+                logger.debug(f"💾 LLM cache hit: {cache_key[:40]}")
+                return self._cache[cache_key]
 
         try:
             kwargs = {}
@@ -1040,11 +1043,11 @@ class LLMManager:
             if response is None:
                 return "Извините, сэр, все ИИ системы недоступны."
 
-        if use_cache and response:
+        if use_cache and response and cache_key is not None:
             self._cache[cache_key] = response
             while len(self._cache) > self._CACHE_MAXSIZE:
                 self._cache.popitem(last=False)
-        return response
+        return response or ""
 
     def clear_history(self):
         """Очищает историю всех клиентов и ответный кэш."""

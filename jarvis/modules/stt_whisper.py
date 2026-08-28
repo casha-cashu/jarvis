@@ -136,7 +136,7 @@ class WhisperSTT(BaseSTT):
         Returns:
             Распознанный текст
         """
-        audio_queue = queue.Queue()
+        audio_queue: "queue.Queue[bytes]" = queue.Queue()
 
         def audio_callback(in_data, frame_count, time_info, status):
             audio_queue.put(in_data)

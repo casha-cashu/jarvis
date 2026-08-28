@@ -107,7 +107,7 @@ def dictation_loop(
     current_segment = []
     need_resample = mic_rate != 16000
     speech_detected = False
-    silence_timer = 0
+    silence_timer = 0.0
     start_time = time.time()
 
     try:

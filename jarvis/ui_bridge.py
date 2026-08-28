@@ -114,10 +114,13 @@ class Bridge:
         Jarvis without touching its reminder timers; skipping this lets
         every restart fire each reminder N times — once per leaked manager.
         """
-        mgr = getattr(self.jarvis, "reminder_mgr", None)
+        jarvis = self.jarvis
+        if jarvis is None:
+            return
+        mgr = jarvis.reminder_mgr
         if mgr is not None:
             self._quiet_call(mgr.shutdown)
-            self.jarvis.reminder_mgr = None
+            jarvis.reminder_mgr = None
 
     def _start(self) -> dict[str, Any]:
         if self.started:

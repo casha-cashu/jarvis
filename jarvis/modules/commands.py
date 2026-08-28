@@ -17,7 +17,7 @@ import shlex
 import subprocess
 import logging
 import urllib.parse
-from typing import Optional, Tuple
+from typing import Optional, Protocol, Tuple
 
 # P12: rapidfuzz — C-extension, ~10-100x быстрее SequenceMatcher
 # на типичных размерах словарей команд. Используем fuzz.ratio (0-100)
@@ -43,6 +43,12 @@ logger = logging.getLogger(__name__)
 _RUN_FAILED = object()
 
 
+class _NluRouter(Protocol):
+    """Структурный тип IntentRouter (избегает циклического импорта)."""
+
+    def parse(self, query: str) -> dict: ...
+
+
 class CommandExecutor:
     """Выполняет системные команды (без LLM)"""
 
@@ -53,7 +59,7 @@ class CommandExecutor:
         fuzzy_threshold: float = 0.8,
         platform_adapter: Optional[PlatformAdapter] = None,
         execution_timeout: int = 30,
-        nlu_router: "Optional[object]" = None,
+        nlu_router: "Optional[_NluRouter]" = None,
         nlu_confidence_threshold: float = 0.65,
     ):
         self.fuzzy_threshold = fuzzy_threshold
@@ -67,7 +73,7 @@ class CommandExecutor:
         # NLU front-end — optional. When provided, executes before fuzzy
         # matching. If NLU returns confident intent + slots, dispatches
         # directly; otherwise falls through to existing pipeline.
-        self.nlu = nlu_router
+        self.nlu: "Optional[_NluRouter]" = nlu_router
         self.nlu_confidence_threshold = nlu_confidence_threshold
 
         # Загружаем словари
@@ -234,7 +240,9 @@ class CommandExecutor:
     ]
 
     def _best_fuzzy(self, query: str, candidates: dict) -> Optional[Tuple[str, dict]]:
-        best_key, best_data, best_score = None, None, 0.0
+        best_key: Optional[str] = None
+        best_data: Optional[dict] = None
+        best_score = 0.0
         for key, data in candidates.items():
             score = self._fuzzy_score(query, key)
             if score > best_score:
@@ -248,7 +256,8 @@ class CommandExecutor:
                         query,
                     )
                     return None
-            return best_key, best_data
+            if best_key is not None and best_data is not None:
+                return best_key, best_data
         return None
 
     def _find_app_cmd(self, name: str) -> Optional[str]:
@@ -475,7 +484,7 @@ class CommandExecutor:
                     env=sanitized_env(),
                 )
                 return (proc.stdout or "").strip()
-            proc = subprocess.Popen(
+            launcher = subprocess.Popen(
                 shlex.split(cmd),
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
@@ -486,7 +495,7 @@ class CommandExecutor:
             # deliberately DETACHED after 2s — waiting the full timeout used
             # to SIGTERM every GUI app 30s after opening it.
             try:
-                proc.wait(timeout=2)
+                launcher.wait(timeout=2)
             except subprocess.TimeoutExpired:
                 logger.debug(f"🚀 Detached long-running process: {cmd}")
             return None
@@ -603,7 +612,7 @@ class CommandExecutor:
 class CommandManager:
     """Главный менеджер команд — владеет CommandExecutor."""
 
-    def __init__(self, config: dict, nlu_router: "Optional[object]" = None):
+    def __init__(self, config: dict, nlu_router: "Optional[_NluRouter]" = None):
         commands_cfg = config.get("commands", {})
         self.platform = PlatformAdapter()
 
@@ -640,7 +649,7 @@ class CommandManager:
     @staticmethod
     def _maybe_init_nlu(
         cmds_path: str, apps_path: str, nlu_enabled: bool = True
-    ) -> "Optional[object]":
+    ) -> "Optional[_NluRouter]":
         """Build an IntentRouter from data files unless explicitly disabled."""
         if nlu_enabled is False:
             return None
