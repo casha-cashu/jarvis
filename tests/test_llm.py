@@ -647,3 +647,69 @@ class TestHistoryPersistence:
         loaded = _load_history()
         assert len(loaded) == 2
         assert "шутку" in loaded[0]["content"]
+
+
+class TestHistoryConcurrencyAndOrphans:
+    """Межпроцессный лок истории и осиротевшие user-сообщения."""
+
+    def _config(self):
+        return {"ollama": {}}
+
+    def test_concurrent_clients_no_lost_turns(self):
+        """Пять клиентов пишут одновременно — ни один ход не теряется
+        (старый код: каждый перезаписывал файл своей копией)."""
+        import threading
+
+        from jarvis.modules.llm import OllamaClient, _load_history
+
+        clients = [OllamaClient(self._config()) for _ in range(5)]
+
+        def add_on(i):
+            clients[i].add_to_history("user", f"сообщение {i}")
+
+        threads = [threading.Thread(target=add_on, args=(i,)) for i in range(5)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        hist = _load_history()
+        contents = {m["content"] for m in hist}
+        assert contents == {f"сообщение {i}" for i in range(5)}
+
+    def test_empty_answer_discards_pending_user(self):
+        """Пустой ответ не сохраняется assistant'ом и снимает осиротевший
+        user — иначе Anthropic отвергает все последующие запросы."""
+        from jarvis.modules.llm import OllamaClient, _load_history
+
+        c = OllamaClient(self._config())
+        with patch.object(
+            c, "_post_chat", return_value={"message": {"content": ""}}
+        ):
+            assert c.chat("привет") == ""
+        assert _load_history() == []
+
+    def test_max_iterations_discards_pending_user(self):
+        """Выход tool-loop'а по лимиту итераций не оставляет осиротевший user."""
+        from jarvis.modules.llm import OllamaClient, _load_history
+
+        c = OllamaClient(self._config())
+        always_tools = MagicMock(
+            return_value={
+                "message": {
+                    "content": "",
+                    "tool_calls": [
+                        {"function": {"name": "bash", "arguments": "{}"}}
+                    ],
+                }
+            }
+        )
+        with patch.object(c, "_post_chat", always_tools):
+            result = c.chat_with_tools(
+                "сделай",
+                tools=[],
+                on_tool_call=lambda n, a: "ок",
+                max_iterations=2,
+            )
+        assert "слишком много шагов" in result
+        assert _load_history() == []

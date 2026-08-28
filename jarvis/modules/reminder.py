@@ -7,12 +7,16 @@
 
 import re
 import json
+import os
 import time
 import logging
 import threading
 import subprocess
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Optional, Callable
+from typing import Iterator, Optional, Callable
+
+from filelock import FileLock
 
 from jarvis._env import sanitized_env
 
@@ -20,24 +24,27 @@ logger = logging.getLogger(__name__)
 
 REMINDERS_FILE = Path.home() / ".local" / "share" / "jarvis" / "reminders.json"
 
-# Serialises every read-modify-write cycle on REMINDERS_FILE. The instance
-# _lock only guards the in-memory timer list — without this module lock,
-# add() racing a timer-thread prune() could drop a reminder.
-_file_lock = threading.Lock()
+# Сериализует каждый цикл read-modify-write над REMINDERS_FILE — и внутри
+# процесса (add() гонкой с timer-потоком _prune() терял напоминания), и
+# между процессами (jarvis run + ui-bridge пишут один файл). FileLock
+# реентерабелен на инстанс, поэтому инстансы кэшируются по пути: путь
+# патчится в тестах, а повторный вход из того же потока не дедлочится.
+_locks: dict = {}
+_locks_guard = threading.Lock()
 
 
-def _load_reminders() -> list:
-    with _file_lock:
-        return _load_reminders_locked()
+def _file_lock() -> FileLock:
+    path = str(REMINDERS_FILE) + ".lock"
+    with _locks_guard:
+        lock = _locks.get(path)
+        if lock is None:
+            lock = FileLock(path)
+            _locks[path] = lock
+        return lock
 
 
-def _save_reminders_locked(reminders: list):
-    with _file_lock:
-        _save_reminders_locked(reminders)
-
-
-def _load_reminders_locked() -> list:
-    """Загружает активные напоминания"""
+def _load_reminders_raw() -> list:
+    """Загружает активные напоминания. Вызывать только под _file_lock()."""
     if REMINDERS_FILE.exists():
         try:
             return json.loads(REMINDERS_FILE.read_text(encoding="utf-8"))
@@ -46,12 +53,38 @@ def _load_reminders_locked() -> list:
     return []
 
 
-def _save_reminders(reminders: list):
-    """Сохраняет напоминания"""
+def _save_reminders_raw(reminders: list) -> None:
+    """Атомарно сохраняет напоминания. Вызывать только под _file_lock().
+
+    tmp-файл уникален для процесса + os.replace: порвать файл при
+    конкурентной записи нельзя, а crash посреди записи оставляет старый.
+    """
     REMINDERS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    REMINDERS_FILE.write_text(
+    tmp = REMINDERS_FILE.with_name(f"{REMINDERS_FILE.name}.{os.getpid()}.tmp")
+    tmp.write_text(
         json.dumps(reminders, indent=2, ensure_ascii=False), encoding="utf-8"
     )
+    os.replace(tmp, REMINDERS_FILE)
+
+
+def _load_reminders() -> list:
+    with _file_lock():
+        return _load_reminders_raw()
+
+
+def _save_reminders(reminders: list):
+    with _file_lock():
+        _save_reminders_raw(reminders)
+
+
+@contextmanager
+def _modify_reminders() -> Iterator[list]:
+    """Атомарный read-modify-write: мутуй список внутри with — на выходе
+    он сохраняется под тем же локом, чужие дописывания не теряются."""
+    with _file_lock():
+        reminders = _load_reminders_raw()
+        yield reminders
+        _save_reminders_raw(reminders)
 
 
 def parse_time(text: str) -> Optional[tuple]:
@@ -187,8 +220,8 @@ class ReminderManager:
 
     def _prune(self):
         now = time.time()
-        reminders = [r for r in _load_reminders() if r["time"] > now]
-        _save_reminders(reminders)
+        with _modify_reminders() as reminders:
+            reminders[:] = [r for r in reminders if r["time"] > now]
 
     def _cleanup_fired_timers(self):
         """Удаляет сработавшие и отменённые таймеры из списка"""
@@ -213,9 +246,8 @@ class ReminderManager:
 
         reminder = {"text": text, "time": time.time() + seconds, "created": time.time()}
 
-        reminders = _load_reminders()
-        reminders.append(reminder)
-        _save_reminders(reminders)
+        with _modify_reminders() as reminders:
+            reminders.append(reminder)
 
         t = threading.Timer(seconds, self._fire, args=[reminder])
         t.daemon = True
@@ -271,9 +303,10 @@ class ReminderManager:
             self.timers.clear()
 
         now = time.time()
-        reminders = [r for r in _load_reminders() if r["time"] > now]
-        _save_reminders(reminders)
+        with _modify_reminders() as reminders:
+            reminders[:] = [r for r in reminders if r["time"] > now]
+        saved = len(reminders)
 
         logger.info(
-            f"⏰ ReminderManager shutdown: отменено {cancelled} таймеров, сохранено {len(reminders)} напоминаний"
+            f"⏰ ReminderManager shutdown: отменено {cancelled} таймеров, сохранено {saved} напоминаний"
         )

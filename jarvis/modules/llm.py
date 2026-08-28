@@ -14,11 +14,15 @@ Kiro was removed — it requires Omniroute which isn't publicly available.
 import json
 import os
 import logging
+import threading
 from abc import ABC, abstractmethod
 from datetime import datetime
 from collections import OrderedDict
 from pathlib import Path
 from typing import List, Dict
+
+from filelock import FileLock
+
 import anthropic
 import requests
 
@@ -43,9 +47,25 @@ HISTORY_FILE = Path(
     or os.path.expanduser("~/.local/share/jarvis/history.json")
 )
 
+# Межпроцессный лок: jarvis run и ui-bridge пишут один history.json.
+# FileLock реентерабелен на инстанс — кэшируем по пути (путь зависит от
+# JARVIS_HISTORY_FILE, который тесты патчат с перезагрузкой модуля).
+_history_locks: dict = {}
+_history_locks_guard = threading.Lock()
 
-def _load_history() -> List[Dict[str, str]]:
-    """Загружает историю диалога с диска. Пустой список при отсутствии/ошибке."""
+
+def _history_lock() -> FileLock:
+    path = str(HISTORY_FILE) + ".lock"
+    with _history_locks_guard:
+        lock = _history_locks.get(path)
+        if lock is None:
+            lock = FileLock(path)
+            _history_locks[path] = lock
+        return lock
+
+
+def _load_history_raw() -> List[Dict[str, str]]:
+    """Читает файл истории. Без лока — вызывать под _history_lock()."""
     try:
         if not HISTORY_FILE.exists():
             return []
@@ -64,16 +84,29 @@ def _load_history() -> List[Dict[str, str]]:
         return []
 
 
-def _save_history(history: List[Dict[str, str]]) -> None:
-    """Атомарно сохраняет историю на диск."""
+def _save_history_raw(history: List[Dict[str, str]]) -> None:
+    """Атомарная запись (tmp уникален для процесса + os.replace).
+    Без лока — вызывать под _history_lock()."""
     try:
         HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
-        tmp = HISTORY_FILE.with_suffix(".tmp")
+        tmp = HISTORY_FILE.with_name(f"{HISTORY_FILE.name}.{os.getpid()}.tmp")
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(history, f, ensure_ascii=False, indent=2)
         os.replace(tmp, HISTORY_FILE)
     except Exception as e:
         logger.warning(f"⚠️ Не удалось сохранить историю диалога: {e}")
+
+
+def _load_history() -> List[Dict[str, str]]:
+    """Загружает историю диалога с диска. Пустой список при отсутствии/ошибке."""
+    with _history_lock():
+        return _load_history_raw()
+
+
+def _save_history(history: List[Dict[str, str]]) -> None:
+    """Атомарно сохраняет историю на диск (под межпроцессным локом)."""
+    with _history_lock():
+        _save_history_raw(history)
 
 
 class LLMError(RuntimeError):
@@ -107,14 +140,24 @@ class LLMClient(ABC):
         return sp
 
     def add_to_history(self, role: str, content: str):
-        """Добавляет сообщение в историю и персистит на диск."""
-        self.history.append({"role": role, "content": content})
+        """Добавляет сообщение в историю и персистит на диск.
 
-        # Обрезаем историю если слишком длинная
-        if len(self.history) > self.max_history:
-            self.history = self.history[-self.max_history :]
+        Под локом история перечитывается с диска: если параллельный
+        процесс (CLI + bridge) успел дописать свои ходы, они не
+        затираются нашей копией. Обратная сторона: при по-настоящему
+        одновременных диалогах чужой ход может вклиниться между нашими
+        user/assistant — полная изоляция сессий обеспечивается архивами
+        ui-history в ui_bridge; лок здесь только против потери/порчи.
+        """
+        with _history_lock():
+            self.history = _load_history_raw()
+            self.history.append({"role": role, "content": content})
 
-        _save_history(self.history)
+            # Обрезаем историю если слишком длинная
+            if len(self.history) > self.max_history:
+                self.history = self.history[-self.max_history :]
+
+            _save_history_raw(self.history)
 
     def _discard_pending_user(self):
         """Drop trailing user message left unanswered by a failed call.
@@ -123,14 +166,16 @@ class LLMClient(ABC):
         Anthropic/OpenAI then reject every following request with
         "consecutive user messages" forever.
         """
-        if self.history and self.history[-1].get("role") == "user":
-            self.history = self.history[:-1]
-            _save_history(self.history)
+        with _history_lock():
+            if self.history and self.history[-1].get("role") == "user":
+                self.history = self.history[:-1]
+                _save_history_raw(self.history)
 
     def clear_history(self):
         """Очищает историю (в памяти и на диске)"""
-        self.history = []
-        _save_history(self.history)
+        with _history_lock():
+            self.history = []
+            _save_history_raw(self.history)
 
     @abstractmethod
     def chat(self, message: str) -> str:
@@ -160,8 +205,12 @@ class AnthropicClient(LLMClient):
 
         logger.info(f"✅ Anthropic клиент: {self.model}")
 
-    def chat(self, message: str) -> str:
+    def chat(self, message: str, stream_callback=None) -> str:
         """Отправляет сообщение в Anthropic API"""
+        if stream_callback is not None:
+            # Anthropic-клиент пока не стримит: параметр принимается, чтобы
+            # LLMManager звал всех клиентов единообразно (иначе — TypeError).
+            logger.debug("Anthropic client does not support streaming — ignoring")
         try:
             self.add_to_history("user", message)
 
@@ -179,6 +228,11 @@ class AnthropicClient(LLMClient):
                 (b.text.strip() for b in response.content if getattr(b, "type", "") == "text"),
                 "",
             )
+            if not answer:
+                # Пустой assistant-контент Anthropic отвергает на следующем
+                # запросе — не отравляем историю, снимаем осиротевший user.
+                self._discard_pending_user()
+                return ""
             self.add_to_history("assistant", answer)
 
             return answer
@@ -242,6 +296,7 @@ class AnthropicClient(LLMClient):
                     if final_text:
                         self.add_to_history("assistant", final_text)
                         return final_text
+                    self._discard_pending_user()
                     return ""
 
                 # Append the assistant message verbatim (content blocks as-is)
@@ -275,6 +330,7 @@ class AnthropicClient(LLMClient):
             logger.warning(
                 "Anthropic tool loop exceeded max_iterations=%d", max_iterations
             )
+            self._discard_pending_user()
             return (
                 final_text
                 if final_text
@@ -306,8 +362,10 @@ class OpenRouterClient(LLMClient):
 
         logger.info(f"✅ OpenRouter клиент: {self.model}")
 
-    def chat(self, message: str) -> str:
+    def chat(self, message: str, stream_callback=None) -> str:
         """Отправляет сообщение в OpenRouter"""
+        if stream_callback is not None:
+            logger.debug("OpenRouter client does not support streaming — ignoring")
         try:
             self.add_to_history("user", message)
 
@@ -340,6 +398,9 @@ class OpenRouterClient(LLMClient):
             data = response.json()
 
             answer = data["choices"][0]["message"]["content"].strip()
+            if not answer:
+                self._discard_pending_user()
+                return ""
             self.add_to_history("assistant", answer)
 
             return answer
@@ -421,6 +482,9 @@ class OpenAIClient(LLMClient):
                 max_tokens=self.max_tokens,
             )
             answer = (response.choices[0].message.content or "").strip()
+            if not answer:
+                self._discard_pending_user()
+                return ""
             self.add_to_history("assistant", answer)
             return answer
         except Exception as e:
@@ -521,6 +585,7 @@ class OpenAIClient(LLMClient):
                     if content:
                         self.add_to_history("assistant", content)
                         return content
+                    self._discard_pending_user()
                     return ""
 
                 # Append the assistant message with tool_calls to the running
@@ -576,6 +641,7 @@ class OpenAIClient(LLMClient):
             logger.warning(
                 "OpenAI tool loop exceeded max_iterations=%d", max_iterations
             )
+            self._discard_pending_user()
             return (
                 content
                 if content
@@ -598,7 +664,10 @@ class OllamaClient(LLMClient):
         self.base_url = ollama_config.get("base_url", "http://localhost:11434")
         self.model = ollama_config.get("model", "qwen2.5:3b")
         self.temperature = ollama_config.get("temperature", 0.7)
-        self.timeout = ollama_config.get("timeout", 30)
+        # 120с: локальная модель может грузиться с диска десятки секунд, а
+        # не-стриминг /api/chat молчит до конца генерации — 30с убивали
+        # первый запрос после холодного старта Ollama.
+        self.timeout = ollama_config.get("timeout", 120)
 
         logger.info(f"✅ Ollama клиент: {self.model}")
 
@@ -638,6 +707,9 @@ class OllamaClient(LLMClient):
             data = self._post_chat(payload)
 
             answer = data["message"]["content"].strip()
+            if not answer:
+                self._discard_pending_user()
+                return ""
             self.add_to_history("assistant", answer)
 
             return answer
@@ -767,6 +839,7 @@ class OllamaClient(LLMClient):
                     if content:
                         self.add_to_history("assistant", content)
                         return content
+                    self._discard_pending_user()
                     return ""
 
                 # Append the assistant's tool-call message to the running
@@ -805,6 +878,7 @@ class OllamaClient(LLMClient):
             logger.warning(
                 "Ollama tool loop exceeded max_iterations=%d", max_iterations
             )
+            self._discard_pending_user()
             return (
                 content
                 if content

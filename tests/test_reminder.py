@@ -74,6 +74,62 @@ class TestParseTime:
 # ──────────────────────────────────────────────
 
 
+class TestReminderPersistence:
+    """Персистентность: атомарность записи и гонки RMW (filelock)."""
+
+    @pytest.fixture
+    def mock_reminders_file(self, tmp_path):
+        reminders_file = tmp_path / "reminders.json"
+        with patch("jarvis.modules.reminder.REMINDERS_FILE", new=reminders_file):
+            yield reminders_file
+
+    def test_concurrent_add_no_lost_updates(self, mock_reminders_file):
+        """add() из десяти потоков не теряет напоминания — RMW под локом."""
+        import threading
+
+        mgr = ReminderManager(on_trigger=lambda text: None)
+
+        def do_add(i):
+            mgr.add(f"напоминание {i}", 9999)
+
+        threads = [threading.Thread(target=do_add, args=(i,)) for i in range(10)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        data = json.loads(mock_reminders_file.read_text(encoding="utf-8"))
+        assert len(data) == 10
+
+    def test_save_leaves_no_tmp_files(self, mock_reminders_file):
+        """Атомарная запись (tmp+replace) не оставляет .tmp-мусор."""
+        _save_reminders(
+            [{"text": "x", "time": time.time() + 60, "created": time.time()}]
+        )
+        leftovers = list(mock_reminders_file.parent.glob("*.tmp"))
+        assert leftovers == []
+
+    def test_modify_reminders_saves_on_exit(self, mock_reminders_file):
+        """_modify_reminders пишет список на диск при выходе из with."""
+        from jarvis.modules.reminder import _modify_reminders
+
+        with _modify_reminders() as reminders:
+            reminders.append(
+                {"text": "новое", "time": time.time() + 60, "created": time.time()}
+            )
+        data = json.loads(mock_reminders_file.read_text(encoding="utf-8"))
+        assert [d["text"] for d in data] == ["новое"]
+
+    def test_nested_lock_same_thread_no_deadlock(self, mock_reminders_file):
+        """Регрессия: старая _save_reminders_locked дедлочила сама на себя —
+        FileLock должен быть реентерабельным в том же потоке."""
+        from jarvis.modules.reminder import _file_lock
+
+        with _file_lock():
+            with _file_lock():
+                _save_reminders([])
+
+
 class TestReminderManager:
     @pytest.fixture
     def mock_reminders_file(self, tmp_path):
