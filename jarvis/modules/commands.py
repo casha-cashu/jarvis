@@ -317,7 +317,7 @@ class CommandExecutor:
         # ── Шаг 1.2: Громкость с числом («громче на 20») ──
         # Командная таблица замораживает volume_up(5) строкой; здесь
         # количество из фразы доходит до адаптера.
-        vol_match = re.fullmatch(r"(громче|тише)\s+на\s+(\d+)\s*(?:%)?", q)
+        vol_match = re.fullmatch(r"(громче|тише)\s+на\s+(\d+)\s*(?:%|процен\w*)?", q)
         if vol_match:
             direction, amount = vol_match.group(1), int(vol_match.group(2))
             amount = max(0, min(amount, 100))
@@ -326,7 +326,7 @@ class CommandExecutor:
                 if direction == "громче"
                 else self.platform.volume_down(amount)
             )
-            if cmd and self._run(cmd) is _RUN_FAILED:
+            if not cmd or self._run(cmd) is _RUN_FAILED:
                 return "Не получилось, сэр."
             return f"Меняю громкость на {amount}"
 
@@ -441,7 +441,8 @@ class CommandExecutor:
                 cmd = self.platform.workspace_switch(ws_num)
                 if cmd:
                     logger.info(f"🎯 NLU workspace: {ws_num} (conf={confidence:.2f})")
-                    self._run(cmd)
+                    if self._run(cmd) is _RUN_FAILED:
+                        return "Не получилось, сэр."
                     return f"Воркспейс {ws_num}"
 
         return None

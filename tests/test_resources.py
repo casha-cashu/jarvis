@@ -31,14 +31,14 @@ class TestResourcePath:
         monkeypatch.delattr(sys, "_MEIPASS", raising=False)
         assert resource_path("data/nope.json") == "data/nope.json"
 
-    def test_real_repo_data_resolves(self):
-        """Санити: в репозитории словари резолвятся из CWD=корень."""
-        import os
-        from pathlib import Path
-
-        if (Path.cwd() / "data" / "commands.json").exists():
+    def test_real_repo_data_resolves(self, tmp_path, monkeypatch):
+        """Реальные словари репо резолвятся, когда они есть; когда их нет
+        (CWD вне корня) — возвращается исходный относительный путь."""
+        repo_data = Path(__file__).parent.parent / "data" / "commands.json"
+        if repo_data.exists():
+            monkeypatch.chdir(repo_data.parent)
             assert resource_path("data/commands.json").endswith("commands.json")
         else:
-            # тест запущен не из корня — просто не должен упасть
-            assert isinstance(resource_path("data/commands.json"), str)
-            os.path.exists("data/commands.json")
+            monkeypatch.chdir(tmp_path)
+            monkeypatch.delattr(sys, "_MEIPASS", raising=False)
+            assert resource_path("data/commands.json") == "data/commands.json"

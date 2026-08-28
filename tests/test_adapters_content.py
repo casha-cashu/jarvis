@@ -733,11 +733,8 @@ def _t():
                 gnome,
                 "screenshot_screen",
                 {},
-                "gdbus call --session --dest org.gnome.Shell.Screenshot "
-                "--object-path /org/gnome/Shell/Screenshot "
-                "--method org.gnome.Shell.Screenshot.Screenshot false false "
-                + _SHOT_DIR,
-                False,
+                "xdotool key Print",
+                True,
                 id="gnome-screenshot_screen",
             ),
             pytest.param(
@@ -752,11 +749,8 @@ def _t():
                 gnome,
                 "screenshot_window",
                 {},
-                "gdbus call --session --dest org.gnome.Shell.Screenshot "
-                "--object-path /org/gnome/Shell/Screenshot "
-                "--method org.gnome.Shell.Screenshot.ScreenshotWindow false false "
-                + _SHOT_DIR,
-                False,
+                "xdotool key Print",
+                True,
                 id="gnome-screenshot_window",
             ),
             pytest.param(
@@ -1415,12 +1409,9 @@ def test_adapter_command(adapter_cls, method, kwargs, expected, exact, monkeypat
     impl = getattr(adapter, method)
     result = impl(**kwargs)
 
-    # Defensive: if for some reason the mockless path was taken and returned
-    # "" (compositor missing), skip rather than fail.
-    if not result:
-        pytest.skip(
-            f"{adapter.name}.{method} returned empty (interactive helper unavailable)"
-        )
+    # Пустая строка — это регрессия (упавший/замолчавший адаптер),
+    # а не повод молча пропустить тест.
+    assert result, f"{adapter.name}.{method} вернул пустую команду"
 
     if exact:
         assert _normalize(result) == _normalize(expected), (

@@ -119,9 +119,7 @@ class TestWriteToolGuard:
         assert "[BLOCKED]" in _tool_write("/home/x/.ssh/authorized_keys", "key")
 
     def test_autostart_blocked(self):
-        assert "[BLOCKED]" in _tool_write(
-            "/home/x/.config/autostart/evil.desktop", "e"
-        )
+        assert "[BLOCKED]" in _tool_write("/home/x/.config/autostart/evil.desktop", "e")
 
     def test_normal_write_ok(self, tmp_path):
         target = tmp_path / "note.txt"

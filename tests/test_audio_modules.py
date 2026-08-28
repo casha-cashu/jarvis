@@ -153,12 +153,20 @@ class TestVoskSTT:
             w.setframerate(44100)
             w.writeframes(b"\x00" * 100)
 
-        # Снимаем soft limit на FDs до 256 — на macOS дефолт может быть выше
-        # и тест не покажет разницу. Если 100 вызовов утекут, упрёмся в лимит.
-        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        import os
+
+        def _fd_count() -> int:
+            try:
+                return len(os.listdir("/proc/self/fd"))
+            except OSError:  # не-Linux
+                return resource.getrlimit(resource.RLIMIT_NOFILE)[0]
+
+        before = _fd_count()
         for _ in range(100):
             stt.recognize_from_file(str(bad))
-        # Если контекст-менеджер работает, мы здесь без OSError.
+        # Контекст-менеджер: 100 вызовов не должны оставить ни одного
+        # лишнего FD (допуск +2 на транзиентные).
+        assert _fd_count() <= before + 2
 
     def test_stt_has_close_method(self):
         stt = self._make_stt()
@@ -217,11 +225,12 @@ class TestPiperLibAutoDetect:
         # Никаких реальных бинарей
         monkeypatch.setattr(tts.shutil, "which", lambda x: None)
         monkeypatch.setattr(tts, "subprocess", MagicMock())
-        # Steam path не существует на macOS — тест надёжен
-        result = tts._auto_detect_piper_lib_path()
-        # macOS: нет Steam, нет ldconfig, нет /opt/piper — должно вернуть None
-        if sys.platform == "darwin":
-            assert result is None
+        # Steam-fallback (существует на CachyOS) уводим в tmp — иначе
+        # тест зависим от машины
+        monkeypatch.setattr(tts, "_STEAM_PIPER_PATH", Path("/nonexistent-steam"))
+        # Пустой список кандидатов: искать негде, ldconfig/which отключены
+        result = tts._auto_detect_piper_lib_path(candidates=[])
+        assert result is None
 
     def test_falls_back_through_chain(self, monkeypatch, tmp_path):
         from jarvis.modules import tts
@@ -231,14 +240,15 @@ class TestPiperLibAutoDetect:
         # 3. piper-бинарь не найден
         # 4. Steam path тоже отсутствует
         monkeypatch.setattr(tts.shutil, "which", lambda x: None)
-        # Подсовываем фейковую libpiper в кастомный путь
-        fake_lib = tmp_path / "libpiper.so"
-        fake_lib.write_text("fake")
-        # Меняем candidates неявно — здесь просто убеждаемся что
-        # без подмены _auto_detect_piper_lib_path не падает
-        result = tts._auto_detect_piper_lib_path()
-        # Либо None, либо некий валидный путь — но не raise.
-        assert result is None or isinstance(result, str)
+        monkeypatch.setattr(tts, "subprocess", MagicMock())
+        # Подсовываем фейковую libpiper в кастомный путь — единственный
+        # кандидат; детект обязан найти именно его (реальные /usr/lib
+        # не участвуют, тест детерминирован).
+        fake_dir = tmp_path / "custom-lib"
+        fake_dir.mkdir()
+        (fake_dir / "libpiper.so").write_text("fake")
+        result = tts._auto_detect_piper_lib_path(candidates=[fake_dir])
+        assert result == str(fake_dir)
 
 
 class TestGTTSTempFile:

@@ -41,6 +41,9 @@ jobs:
           # Рантайм-зависимости sidecar: без них PyInstaller только
           # предупредит о пропущенных импортах, а бинарь упадёт на
           # первом import requests/anthropic/pydantic.
+          # CPU-torch: иначе PyPI тянет CUDA-бандл (~3-5GB), который
+          # spec всё равно исключает из sidecar
+          venv/bin/pip install torch --index-url https://download.pytorch.org/whl/cpu
           venv/bin/pip install -e .
           venv/bin/pip install pyinstaller
           # slim sidecar (no torch) — same as local jarvis-bridge.spec
@@ -105,6 +108,7 @@ jobs:
           python3 -m venv venv
           venv/bin/pip install --upgrade pip
           # Рантайм-зависимости sidecar — см. комментарий в build-portable
+          venv/bin/pip install torch --index-url https://download.pytorch.org/whl/cpu
           venv/bin/pip install -e .
           venv/bin/pip install pyinstaller
           venv/bin/pyinstaller jarvis-bridge.spec --workpath /tmp/pyi-build --distpath /tmp/pyi-dist --noconfirm

@@ -75,12 +75,15 @@ def beep() -> None:
     if sound and Path(sound).exists():
         import subprocess
 
-        subprocess.Popen(
-            ["paplay", sound],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            env=sanitized_env(),
-        )
+        try:
+            subprocess.Popen(
+                ["paplay", sound],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                env=sanitized_env(),
+            )
+        except OSError:
+            pass  # плеера нет — тихий beep уже прозвучал через \a
 
 
 class Jarvis:

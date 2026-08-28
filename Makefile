@@ -31,11 +31,11 @@ docker-integration-i3:
 
 docker-integration-sway:
 	docker build --target integration -t jarvis-integration:sway -f docker/Dockerfile.sway .
-	docker run --rm --cap-add=SYS_PTRACE --security-opt seccomp=unconfined jarvis-integration:sway
+	docker run --rm --privileged jarvis-integration:sway
 
 clean:
 	rm -rf .pytest_cache/ __pycache__/
 	rm -rf htmlcov/ .coverage
-	rm -rf *.egg-info/ dist/ build/
+	rm -rf *.egg-info/ build/
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
 	find . -type f -name '*.pyc' -delete

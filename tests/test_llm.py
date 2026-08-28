@@ -2,7 +2,6 @@
 Тесты для LLM модуля (jarvis/modules/llm.py) и ConfigLoader._expand.
 """
 
-import os
 import pytest
 from unittest.mock import patch, MagicMock
 
@@ -46,16 +45,15 @@ class TestExpandEnvVars:
     def loader(self):
         return ConfigLoader("/nonexistent/config.yaml")
 
-    def test_simple_string(self, loader):
+    def test_simple_string(self, loader, monkeypatch):
         """${VAR} подставляется из окружения."""
-        os.environ["_TEST_JARVIS_VAR_"] = "hello"
+        monkeypatch.setenv("_TEST_JARVIS_VAR_", "hello")
         result = loader._expand("prefix_${_TEST_JARVIS_VAR_}_suffix")
         assert result == "prefix_hello_suffix"
-        del os.environ["_TEST_JARVIS_VAR_"]
 
-    def test_dict_recursive(self, loader):
+    def test_dict_recursive(self, loader, monkeypatch):
         """Рекурсивная подстановка в dict."""
-        os.environ["_TEST_JARVIS_VAR_"] = "world"
+        monkeypatch.setenv("_TEST_JARVIS_VAR_", "world")
         d = {
             "key": "hello_${_TEST_JARVIS_VAR_}",
             "nested": {"inner": "${_TEST_JARVIS_VAR_}_end"},
@@ -63,16 +61,14 @@ class TestExpandEnvVars:
         result = loader._expand(d)
         assert result["key"] == "hello_world"
         assert result["nested"]["inner"] == "world_end"
-        del os.environ["_TEST_JARVIS_VAR_"]
 
-    def test_list_recursive(self, loader):
+    def test_list_recursive(self, loader, monkeypatch):
         """Рекурсивная подстановка в list."""
-        os.environ["_TEST_JARVIS_VAR_"] = "42"
+        monkeypatch.setenv("_TEST_JARVIS_VAR_", "42")
         lst = ["item_${_TEST_JARVIS_VAR_}", ["deep_${_TEST_JARVIS_VAR_}"]]
         result = loader._expand(lst)
         assert result[0] == "item_42"
         assert result[1][0] == "deep_42"
-        del os.environ["_TEST_JARVIS_VAR_"]
 
     def test_home_variable(self, loader):
         """$HOME заменяется на домашнюю директорию."""

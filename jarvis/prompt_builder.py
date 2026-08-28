@@ -79,6 +79,8 @@ def compose_system_prompt(
     if agent_enabled and tools_prompt:
         tp = tools_prompt.strip()
         if tp:
+            if platform_str:
+                tp = tp.replace("{platform}", platform_str)
             parts.append(tp)
 
     return "\n\n".join(parts)

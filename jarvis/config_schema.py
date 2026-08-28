@@ -183,6 +183,9 @@ class LLMConfig(BaseModel):
     agent_approval_mode: str = "auto"
     # Prefix nudge for small Ollama models (see jarvis.prompt_builder)
     agent_query_prefix_enabled: bool = False
+    # Секция про инструменты, дописывается к system_prompt при agent_enabled
+    # (compose_system_prompt в ResponsePipeline.start)
+    system_prompt_tools: Optional[str] = None
     max_history: int = 20
     system_prompt: Optional[str] = None
 

@@ -89,6 +89,12 @@ fi
 if [[ "$1" == "--venv" ]]; then
     echo "ℹ️  Флаг --venv больше не нужен: venv создаётся всегда."
 fi
+# vosk не имеет wheels для Python 3.13+ — предупреждаем ДО установки
+PY_MINOR=$(python3 -c 'import sys; print(sys.version_info[1])' 2>/dev/null || echo 0)
+if [[ "$PY_MINOR" -ge 13 ]]; then
+    echo "⚠️  Python 3.$PY_MINOR: у vosk нет wheels для 3.13+. Установка может упасть на vosk."
+    echo "    Выход: python3.10–3.12 для venv, или stt.engine: whisper (vosk не нужен)."
+fi
 if [[ ! -d venv ]]; then
     echo ""
     echo "🐍 Создание виртуального окружения..."

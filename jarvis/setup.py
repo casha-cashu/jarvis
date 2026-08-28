@@ -68,7 +68,8 @@ def _download_vosk_model(dest_dir: Path) -> None:
                 for chunk in r.iter_content(chunk_size=1 << 16):
                     f.write(chunk)
         with zipfile.ZipFile(zip_path) as zf:
-            zf.extractall(dest_dir)
+            # filter="data" отбрасывает ../-пути и абсолютные цели из архива
+            zf.extractall(dest_dir, filter="data")  # type: ignore[call-arg]  # есть с 3.12, стабы mypy старше
     except Exception as e:
         print(f"     ❌ Не удалось скачать Vosk модель: {e}")
         return

@@ -29,7 +29,14 @@ done
 
 # Run integration tests
 cd /app
-JARVIS_TEST_DE=i3 venv/bin/python -m pytest tests/integration/ -v --timeout=30 || true
+JARVIS_TEST_DE=i3 venv/bin/python -m pytest tests/integration/ -v --timeout=30
+RC=$?
 
 # Cleanup
+if [ "${RC:-0}" -ne 0 ]; then
+    echo "FAIL: integration tests exited $RC"
+fi
 kill $I3_PID 2>/dev/null || true
+if [ "${RC:-0}" -ne 0 ]; then
+    exit $RC
+fi

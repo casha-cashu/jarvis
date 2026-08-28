@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -10,12 +10,16 @@ use tauri::Emitter;
 
 struct BridgeProcess {
   child: Child,
-  stdin: ChildStdin,
   responses: Receiver<String>,
 }
 
 struct AppState {
   bridge: Mutex<Option<BridgeProcess>>,
+  /// Отдельно от bridge: backend_stop закрывает stdin, НЕ дожидаясь
+  /// мьютекса, который держит 180-секундный стриминг (иначе «Стоп»
+  /// срабатывал только после конца генерации).
+  stdin: Mutex<Option<ChildStdin>>,
+  child_pid: AtomicU32,
   started: AtomicBool,
   /// Packaged builds only: user config seeded from bundled resources,
   /// forwarded to the sidecar as JARVIS_CONFIG_PATH.
@@ -140,7 +144,11 @@ fn ensure_bridge(state: &AppState) -> Result<(), String> {
       let _ = tx.send(line);
     }
   });
-  *guard = Some(BridgeProcess { child, stdin, responses: rx });
+  state.child_pid.store(child.id(), Ordering::SeqCst);
+  if let Ok(mut stdin_slot) = state.stdin.lock() {
+    *stdin_slot = Some(stdin);
+  }
+  *guard = Some(BridgeProcess { child, responses: rx });
   state.started.store(true, Ordering::SeqCst);
   Ok(())
 }
@@ -148,6 +156,10 @@ fn ensure_bridge(state: &AppState) -> Result<(), String> {
 /// Kills a dead/stuck bridge so the next request spawns a fresh one.
 fn shutdown_bridge(state: &AppState) {
   state.started.store(false, Ordering::SeqCst);
+  state.child_pid.store(0, Ordering::SeqCst);
+  if let Ok(mut stdin_slot) = state.stdin.lock() {
+    *stdin_slot = None; // EOF на случай ещё живого python
+  }
   if let Ok(mut guard) = state.bridge.lock() {
     if let Some(mut bridge) = guard.take() {
       let _ = bridge.child.kill();
@@ -170,13 +182,21 @@ fn request(state: &AppState, payload: &str) -> Result<serde_json::Value, String>
 
 fn request_inner(state: &AppState, payload: &str) -> Result<serde_json::Value, String> {
   ensure_bridge(state)?;
+  write_request(state, payload)?;
   let mut guard = state.bridge.lock().map_err(|_| "Состояние bridge повреждено")?;
   let bridge = guard.as_mut().ok_or("Bridge не запущен")?;
-  writeln!(bridge.stdin, "{payload}").map_err(|e| format!("Ошибка IPC: {e}"))?;
-  bridge.stdin.flush().map_err(|e| format!("Ошибка IPC: {e}"))?;
   let response = bridge.responses.recv_timeout(Duration::from_secs(60))
     .map_err(|e| format!("Python не ответил: {e}"))?;
   serde_json::from_str(&response).map_err(|e| format!("Некорректный ответ Python: {e}"))
+}
+
+/// Пишет строку запроса в stdin моста. Отдельная функция + отдельный
+/// мьютекс: backend_stop не должен ждать bridge-мьютекс, чтобы закрыть stdin.
+fn write_request(state: &AppState, payload: &str) -> Result<(), String> {
+  let mut stdin_guard = state.stdin.lock().map_err(|_| "Состояние bridge повреждено")?;
+  let stdin = stdin_guard.as_mut().ok_or("Bridge не запущен")?;
+  writeln!(stdin, "{payload}").map_err(|e| format!("Ошибка IPC: {e}"))?;
+  stdin.flush().map_err(|e| format!("Ошибка IPC: {e}"))
 }
 
 #[tauri::command]
@@ -186,23 +206,33 @@ async fn backend_start(state: tauri::State<'_, Arc<AppState>>) -> Result<serde_j
 
 #[tauri::command]
 async fn backend_stop(state: tauri::State<'_, Arc<AppState>>) -> Result<String, String> {
-  // Async + spawn_blocking: sync-команды Tauri выполняются в main thread —
-  // блокировка на мьютексе bridge (который держит 180-секундный стриминг)
-  // замораживала всё окно. Здесь же shutdown ждёт в отдельном потоке.
+  // Async + spawn_blocking: sync-команды Tauri выполняются в main thread.
+  // Отмена реальная, а не отложенная: stdin закрывается БЕЗ ожидания
+  // bridge-мьютекса (который держит 180-секундный стриминг), затем SIGTERM
+  // по pid — раньше «Стоп» во время генерации не делал ничего до её конца.
   let state: Arc<AppState> = state.inner().clone();
   tauri::async_runtime::spawn_blocking(move || {
     state.started.store(false, Ordering::SeqCst);
+    let pid = state.child_pid.load(Ordering::SeqCst);
+    // EOF на stdin: python завершится после текущего запроса и корректно
+    // погасит response pipeline.
+    if let Ok(mut stdin_slot) = state.stdin.lock() {
+      if let Some(mut stdin) = stdin_slot.take() {
+        let _ = writeln!(stdin, "{{\"command\":\"stop\"}}");
+      }
+    }
+    std::thread::sleep(Duration::from_millis(500));
+    if pid != 0 {
+      let _ = Command::new("kill").args(["-TERM", &pid.to_string()]).status();
+    }
+    // Reap: kill по уже мёртвому pid безвреден, wait убирает зомби.
     if let Ok(mut guard) = state.bridge.lock() {
       if let Some(mut bridge) = guard.take() {
-        // EOF на stdin: python сам выходит из main() и корректно глушит
-        // response pipeline. Затем reap — без него оставался зомби.
-        let _ = writeln!(bridge.stdin, "{{\"command\":\"stop\"}}");
-        drop(bridge.stdin);
-        std::thread::sleep(Duration::from_millis(300));
         let _ = bridge.child.kill();
         let _ = bridge.child.wait();
       }
     }
+    state.child_pid.store(0, Ordering::SeqCst);
     Ok(r#"{"ok":true}"#.to_string())
   })
   .await
@@ -229,10 +259,9 @@ fn stream_request(app: &tauri::AppHandle, state: &AppState, payload: &str) -> Re
 
 fn stream_request_inner(app: &tauri::AppHandle, state: &AppState, payload: &str) -> Result<serde_json::Value, String> {
   ensure_bridge(state)?;
+  write_request(state, payload)?;
   let mut guard = state.bridge.lock().map_err(|_| "Состояние bridge повреждено")?;
   let bridge = guard.as_mut().ok_or("Bridge не запущен")?;
-  writeln!(bridge.stdin, "{payload}").map_err(|e| format!("Ошибка IPC: {e}"))?;
-  bridge.stdin.flush().map_err(|e| format!("Ошибка IPC: {e}"))?;
   loop {
     let line = bridge.responses.recv_timeout(Duration::from_secs(180))
       .map_err(|e| format!("Python не ответил: {e}"))?;
@@ -409,6 +438,8 @@ pub fn run() {
   tauri::Builder::default()
     .manage(Arc::new(AppState {
       bridge: Mutex::new(None),
+      stdin: Mutex::new(None),
+      child_pid: AtomicU32::new(0),
       started: AtomicBool::new(false),
       packaged_config: Mutex::new(None),
     }))

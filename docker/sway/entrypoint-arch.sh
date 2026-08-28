@@ -35,7 +35,14 @@ done
 
 # Run integration tests
 cd /app
-JARVIS_TEST_DE=sway venv/bin/python -m pytest tests/integration/ -v --timeout=30 || true
+JARVIS_TEST_DE=sway venv/bin/python -m pytest tests/integration/ -v --timeout=30
+RC=$?
 
+if [ "${RC:-0}" -ne 0 ]; then
+    echo "FAIL: integration tests exited $RC"
+fi
 kill $SWAY_PID 2>/dev/null || true
 echo "=== Done ==="
+if [ "${RC:-0}" -ne 0 ]; then
+    exit $RC
+fi

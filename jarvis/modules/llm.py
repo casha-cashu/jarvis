@@ -155,6 +155,10 @@ class LLMClient(ABC):
         ui-history в ui_bridge; лок здесь только против потери/порчи.
         """
         with _history_lock():
+            # Перезагружаем всегда: соседние same-role ходы (наш user +
+            # чужой user при реальной одновременной беседе) провайдеры
+            # склеивают в один ход — Anthropic это документированное
+            # поведение, потерь ходов быть не должно.
             self.history = _load_history_raw()
             self.history.append({"role": role, "content": content})
 
@@ -172,9 +176,20 @@ class LLMClient(ABC):
         "consecutive user messages" forever.
         """
         with _history_lock():
-            if self.history and self.history[-1].get("role") == "user":
-                self.history = self.history[:-1]
+            # Перечитываем диск и снимаем ТОЛЬКО наш осиротевший user
+            # (матч по содержимому): параллельный процесс мог дописать
+            # свои ходы после нашей неудачи — их затирать нельзя.
+            pending = (
+                self.history[-1]
+                if self.history and self.history[-1].get("role") == "user"
+                else None
+            )
+            fresh = _load_history_raw()
+            if pending and fresh and fresh[-1] == pending:
+                self.history = fresh[:-1]
                 _save_history_raw(self.history)
+            elif fresh:
+                self.history = fresh
 
     def clear_history(self):
         """Очищает историю (в памяти и на диске)"""

@@ -19,4 +19,4 @@ RUN python -m venv venv && \
     venv/bin/pip install --upgrade pip setuptools wheel && \
     venv/bin/pip install --retries 5 --timeout 120 -e ".[dev]"
 
-CMD ["venv/bin/python", "-m", "pytest", "tests/", "-v", "-m", "not slow"]
+CMD ["venv/bin/python", "-m", "pytest", "tests/", "-v", "-m", "not slow and not integration"]

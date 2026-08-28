@@ -283,3 +283,24 @@ class TestContractUndocumentedKeys:
         assert dumped["commands"]["nlu_enabled"] is False
         assert dumped["commands"]["nlu_confidence_threshold"] == 0.9
         assert dumped["llm"]["agent_query_prefix_enabled"] is True
+
+
+class TestConfigFixturesAgainstSchema:
+    """Фикстуры/файлы, мимо которых валидация обычно проходит, должны
+    проходить её явно — с extra="forbid" любое расхождение со схемой
+    иначе обнаружится только в рантайме у пользователя."""
+
+    def test_conftest_sample_config_passes_validation(self, sample_config):
+        from jarvis.config_schema import validate_config
+
+        validate_config(sample_config)
+
+    def test_config_test_yaml_passes_validation(self):
+        from pathlib import Path
+
+        import yaml
+
+        from jarvis.config_schema import validate_config
+
+        p = Path(__file__).parent.parent / "config.test.yaml"
+        validate_config(yaml.safe_load(p.read_text(encoding="utf-8")))

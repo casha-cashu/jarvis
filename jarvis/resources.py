@@ -20,9 +20,12 @@ def resource_path(relative: str) -> str:
     Порядок: CWD (dev) → sys._MEIPASS (onefile) → каталог бинаря (onedir).
     """
     meipass = getattr(sys, "_MEIPASS", None)
-    candidates = [Path(relative).resolve()]
+    candidates = []
     if meipass:
+        # Packaged: ресурсы из _MEIPASS приоритетнее случайного data/ в
+        # текущей директории (например, если AppImage запущен из репо)
         candidates.append(Path(meipass) / relative)
+    candidates.append(Path(relative).resolve())
     candidates.append(Path(sys.executable).resolve().parent / relative)
     for cand in candidates:
         if cand.exists():

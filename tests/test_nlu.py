@@ -327,3 +327,16 @@ class TestNluCache:
         )
         # Default CACHE_DIR untouched — no file written there for this key
         importlib.reload(nlu_mod)
+
+
+@pytest.fixture(autouse=True)
+def _isolated_nlu_cache(tmp_path, monkeypatch):
+    """NLU-кэш в tmp на каждый тест: иначе IntentRouter пишет в реальный
+    ~/.local/share/jarvis/nlu, а после первого прогона тренировка всегда
+    идёт по cache-hit и путь _train не тестируется вовсе.
+    Патчим атрибуты модуля (reload не перебивает pre-bound класс)."""
+    import jarvis.modules.nlu as nlu_mod
+
+    monkeypatch.setattr(nlu_mod, "CACHE_DIR", tmp_path / "nlu-cache")
+    monkeypatch.setattr(nlu_mod, "_NLU_CACHE_DISABLED", False)
+    yield

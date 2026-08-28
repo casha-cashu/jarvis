@@ -275,12 +275,18 @@ class TestExecutionTimeout:
             proc.kill.assert_not_called()
 
     def test_execution_timeout_clamped_to_min_1(self, monkeypatch):
-        """execution_timeout=0 или отрицательный → 1 секунда."""
-        # Проверяем max(1, ...) логику, которая в CommandExecutor.__init__.
-        # int(...) + max(1, ...) — гарантия что timeout >= 1.
-        assert max(1, int(0)) == 1
-        assert max(1, int(-5)) == 1
-        assert max(1, int(30)) == 30
+        """execution_timeout=0 или отрицательный → 1 секунда
+        (реальный __init__ CommandExecutor, а не builtin max)."""
+        from jarvis.modules.commands import CommandExecutor
+
+        for raw in (0, -5):
+            ex = CommandExecutor(
+                commands_file=str(fake_commands_file),
+                apps_file=str(fake_apps_file),
+                platform_adapter=FakeAdapter(),
+                execution_timeout=raw,
+            )
+            assert ex.execution_timeout == 1
 
     def test_empty_cmd_skips_subprocess(self, monkeypatch):
         """Пустая команда (после callable) не должна запускать subprocess."""

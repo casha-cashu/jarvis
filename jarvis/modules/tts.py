@@ -121,7 +121,9 @@ def _play_audio_file(audio_file, timeout: float = 30.0) -> bool:
     return False
 
 
-def _auto_detect_piper_lib_path() -> Optional[str]:
+def _auto_detect_piper_lib_path(
+    candidates: Optional[list] = None,
+) -> Optional[str]:
     """Пробует найти libpiper.so / libonnxruntime.so без hardcoded Steam-пути.
 
     Порядок проверки:
@@ -155,14 +157,15 @@ def _auto_detect_piper_lib_path() -> Optional[str]:
         except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
             pass
 
-    # 2. Стандартные пути
-    candidates = [
-        Path("/usr/lib"),
-        Path("/usr/local/lib"),
-        Path("/usr/lib/x86_64-linux-gnu"),
-        Path("/usr/local/lib/x86_64-linux-gnu"),
-        Path("/opt/piper/lib"),
-    ]
+    # 2. Стандартные пути (переопределяются параметром для тестов)
+    if candidates is None:
+        candidates = [
+            Path("/usr/lib"),
+            Path("/usr/local/lib"),
+            Path("/usr/lib/x86_64-linux-gnu"),
+            Path("/usr/local/lib/x86_64-linux-gnu"),
+            Path("/opt/piper/lib"),
+        ]
     # 3. Папка piper-бинаря
     piper_bin = shutil.which("piper")
     if piper_bin:
@@ -179,14 +182,18 @@ def _auto_detect_piper_lib_path() -> Optional[str]:
             return str(d)
 
     # 4. Steam Proton — историческая совместимость
-    steam = Path(
-        "/usr/share/steam/compatibilitytools.d/proton-ge-custom/files/lib/x86_64-linux-gnu"
-    )
+    steam = _STEAM_PIPER_PATH
     if steam.is_dir():
         logger.info(f"🔍 piper lib falling back to Steam path: {steam}")
         return str(steam)
 
     return None
+
+
+# Hardcoded Steam Proton fallback — историческая совместимость (Arch/CachyOS)
+_STEAM_PIPER_PATH = Path(
+    "/usr/share/steam/compatibilitytools.d/proton-ge-custom/files/lib/x86_64-linux-gnu"
+)
 
 
 class PiperTTS:

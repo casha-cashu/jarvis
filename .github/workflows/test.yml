@@ -13,6 +13,7 @@ jobs:
       matrix:
         distro: [arch, debian, fedora]
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v6
       - name: Build and test on ${{ matrix.distro }}
@@ -23,6 +24,7 @@ jobs:
               -f docker/Dockerfile.${{ matrix.distro }} \
               . && break; \
             echo "Build attempt $i failed, retrying in $((i * 5))s..."; \
+            [ "$i" = 3 ] && exit 1; \
             sleep $((i * 5)); \
           done
           docker run --rm jarvis-test:${{ matrix.distro }}
@@ -33,6 +35,7 @@ jobs:
       matrix:
         de: [i3, sway]
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v6
       - name: Build and test on ${{ matrix.de }}
@@ -44,6 +47,7 @@ jobs:
               -f docker/Dockerfile.${{ matrix.de }} \
               . && break; \
             echo "Build attempt $i failed, retrying in $((i * 5))s..."; \
+            [ "$i" = 3 ] && exit 1; \
             sleep $((i * 5)); \
           done
           docker run --rm \
@@ -52,6 +56,7 @@ jobs:
 
   macos:
     runs-on: macos-latest
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v6
       - name: Set up Python
@@ -78,4 +83,4 @@ jobs:
           # pipefail обязателен: без него код возврата pytest съедает tail
           # и джоба зелёная при любых падениях тестов.
           set -o pipefail
-          python -m pytest tests/ -v -x --tb=long -m "not slow" 2>&1 | tail -100
+          python -m pytest tests/ -v -x --tb=long -m "not slow and not integration" 2>&1 | tail -100

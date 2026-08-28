@@ -7,7 +7,6 @@
 Все ``_run`` мокируются — реальных subprocess-вызовов нет.
 """
 
-
 import json
 from unittest.mock import MagicMock
 
@@ -212,7 +211,9 @@ class TestNluWiring:
 
     def test_nlu_disabled_via_config(self, data_files, monkeypatch):
         """If config says nlu_enabled=False, CommandManager skips NLU."""
-        monkeypatch.setattr(CommandExecutor, "_run", lambda self, cmd, capture=False: None)
+        monkeypatch.setattr(
+            CommandExecutor, "_run", lambda self, cmd, capture=False: None
+        )
         cfg = {
             "commands": {
                 "dictionary_path": data_files["cmds"],
@@ -227,7 +228,9 @@ class TestNluWiring:
 class TestCommandManagerNluAutoInit:
     def test_commandmanager_auto_inits_nlu(self, data_files, monkeypatch):
         """Without explicit nlu_router, CommandManager builds one from data."""
-        monkeypatch.setattr(CommandExecutor, "_run", lambda self, cmd, capture=False: None)
+        monkeypatch.setattr(
+            CommandExecutor, "_run", lambda self, cmd, capture=False: None
+        )
         cfg = {
             "commands": {
                 "dictionary_path": data_files["cmds"],
@@ -240,7 +243,9 @@ class TestCommandManagerNluAutoInit:
     def test_commandmanager_accepts_external_nlu(
         self, data_files, nlu_router, monkeypatch
     ):
-        monkeypatch.setattr(CommandExecutor, "_run", lambda self, cmd, capture=False: None)
+        monkeypatch.setattr(
+            CommandExecutor, "_run", lambda self, cmd, capture=False: None
+        )
         cfg = {
             "commands": {
                 "dictionary_path": data_files["cmds"],
@@ -249,3 +254,13 @@ class TestCommandManagerNluAutoInit:
         }
         mgr = CommandManager(cfg, nlu_router=nlu_router)
         assert mgr.executor.nlu is nlu_router
+
+
+@pytest.fixture(autouse=True)
+def _isolated_nlu_cache(tmp_path, monkeypatch):
+    """См. test_nlu.py — кэш NLU только в tmp."""
+    import jarvis.modules.nlu as nlu_mod
+
+    monkeypatch.setattr(nlu_mod, "CACHE_DIR", tmp_path / "nlu-cache")
+    monkeypatch.setattr(nlu_mod, "_NLU_CACHE_DISABLED", False)
+    yield

@@ -6,33 +6,18 @@ org.gnome.Shell.Eval закрыт с GNOME 41 ("unsafe mode"), поэтому в
 команды через Eval не работали на любом современном GNOME. Здесь:
 
 - окна/воркспейсы — через EWMH/xdotool (X11; на Wayland xdotool не
-  работает, там остаются pactl/notify-send/loginctl/скриншоты);
-- скриншоты — через org.gnome.Shell.Screenshot (D-Bus API не закрыт,
-  в отличие от Eval; gnome-screenshot выпален из GNOME 42+).
+  работает, там остаются pactl/notify-send/loginctl);
+- скриншоты — НЕ-интерактивного пути на GNOME 41+ нет: org.gnome.Shell
+  .Screenshot закрыт тем же MR !1970, что и Eval (gnome-screenshot
+  выпален из GNOME 42+), а portal требует диалога согласия. Print
+  открывает UI скриншотов Shell — работает и на X11, и на Wayland.
 
 Активное окно: комбинации клавиш действуют на сфокусированное окно —
 это чинит баг старого кода, таргетировавшего actors[0] (произвольное
 окно из стека).
 """
 
-import os
-import shlex
-from datetime import datetime
-from pathlib import Path
-
 from .base import BaseAdapter
-
-
-def _screenshot_path() -> str:
-    return os.path.expanduser(
-        f"~/Pictures/screenshot-{datetime.now():%Y%m%d-%H%M%S}.png"
-    )
-
-
-def _ensure_pictures_dir() -> None:
-    """~/Pictures может не существовать — создаём в момент вызова команды
-    (метод вызывается CommandExecutor._run в execute-time, callable)."""
-    Path("~/Pictures").expanduser().mkdir(parents=True, exist_ok=True)
 
 
 class GNOMEAdapter(BaseAdapter):
@@ -81,34 +66,20 @@ class GNOMEAdapter(BaseAdapter):
     def window_prev(self) -> str:
         return "xdotool key alt+shift+Escape"
 
-    # Screenshots — org.gnome.Shell.Screenshot (не закрыт, в отличие от
-    # Eval). Путь и время раскрываем в Python (shell=False), mkdir тоже
-    # заранее — CommandExecutor не исполняет shell-цепочки.
+    # Screenshots — НЕ-интерактивного пути на GNOME 41+ нет: org.gnome.Shell
+    # .Screenshot закрыт тем же MR !1970, что и Eval, а не-интерактивный
+    # org.freedesktop.portal.Screenshot требует диалога согласия.
+    # Print открывает UI скриншотов Shell (работает и на X11, и на Wayland);
+    # файл кладётся в ~/Pictures/Screenshots средствами Shell — кастомное
+    # имя через _screenshot_path недоступно.
     def screenshot_screen(self) -> str:
-        _ensure_pictures_dir()
-        path = shlex.quote(_screenshot_path())
-        return (
-            "gdbus call --session --dest org.gnome.Shell.Screenshot "
-            "--object-path /org/gnome/Shell/Screenshot "
-            f"--method org.gnome.Shell.Screenshot.Screenshot false false {path}"
-        )
+        return "xdotool key Print"
 
     def screenshot_area(self) -> str:
-        # Интерактивный выбор области: вне-shell нельзя ни спросить геометрию
-        # (slurp), ни передать координаты в D-Bus. Print открывает
-        # интерактивный UI скриншотов GNOME 42+; файл кладётся в
-        # ~/Pictures/Screenshots средствами Shell.
-        _ensure_pictures_dir()
         return "xdotool key Print"
 
     def screenshot_window(self) -> str:
-        _ensure_pictures_dir()
-        path = shlex.quote(_screenshot_path())
-        return (
-            "gdbus call --session --dest org.gnome.Shell.Screenshot "
-            "--object-path /org/gnome/Shell/Screenshot "
-            f"--method org.gnome.Shell.Screenshot.ScreenshotWindow false false {path}"
-        )
+        return "xdotool key Print"
 
     # Audio control
     def volume_up(self, amount: int = 5) -> str:
