@@ -58,6 +58,22 @@ _ensure_stub("faster_whisper", {"WhisperModel": MagicMock()})
 # silero_vad (используется как `silero_vad` через torch.hub.load в реальности —
 # но если кто-то импортит модуль напрямую, у него должен быть)
 _ensure_stub("silero_vad")
+try:
+    import silero_vad  # noqa: F401
+except Exception:
+    # Пакет установлен, но не импортируем (torchaudio/_extension не грузится
+    # на cp314 + torch 2.13) — юнит-тесты обёртки мокают его функции.
+    _silero_stub = types.ModuleType("silero_vad")
+    for _name in (
+        "load_silero_vad",
+        "VADIterator",
+        "get_speech_timestamps",
+        "collect_chunks",
+        "save_audio",
+        "read_audio",
+    ):
+        setattr(_silero_stub, _name, MagicMock())
+    sys.modules["silero_vad"] = _silero_stub
 # torch — тащится через vad.py → stt_whisper.py
 _ensure_stub("torch")
 # audioop — удалён из stdlib на Python 3.13+; стаб на случай его отсутствия
