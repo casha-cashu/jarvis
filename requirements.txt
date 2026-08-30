@@ -18,4 +18,4 @@ audioop-lts>=0.2; python_version >= '3.13'
 # ── Опционально ──
 # vosk: wheels только для Python 3.10-3.12; на 3.13+ используйте
 # stt.engine: whisper или ставьте vosk вручную (alphacephei.com/vosk)
-vosk>=0.3.38
+# vosk>=0.3.38  (extras: pip install -e ".[vosk]")

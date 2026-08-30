@@ -1,0 +1,18 @@
+# venv хоста затирает venv образа (shebang'и с путями хоста)
+venv/
+# — гигантский мусор контекста —
+.git/
+**/__pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+logs/
+*.joblib
+*.log
+audit-review/
+.opencode/
+docs/
+# UI и Rust не нужны python-тестам (собираются вне docker)
+jarvis-ui/node_modules/
+jarvis-ui/src-tauri/target/
+jarvis-ui/dist/

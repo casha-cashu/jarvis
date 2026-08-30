@@ -9,6 +9,15 @@ export WLR_LIBINPUT_NO_DEVICES=1
 mkdir -p "$XDG_RUNTIME_DIR"
 chmod 0700 "$XDG_RUNTIME_DIR"
 
+# D-Bus: адрес наружу + демон уведомлений (notify-send)
+dbus-daemon --session --fork --print-address > /tmp/dbus-addr 2>/dev/null || true
+if [ -s /tmp/dbus-addr ]; then
+    export DBUS_SESSION_BUS_ADDRESS="$(cat /tmp/dbus-addr)"
+fi
+# PulseAudio null-sink для pactl-команд
+pulseaudio --start --disallow-exit --exit-idle-time=-1 2>/dev/null || true
+pactl load-module module-null-sink sink_name=jarvis 2>/dev/null || true
+
 echo "=== Starting sway (headless) ==="
 sway -c /etc/sway/config > /tmp/sway.log 2>&1 &
 SWAY_PID=$!
@@ -20,7 +29,11 @@ for i in $(seq 1 20); do
     if [ -n "$SOCK" ]; then
         export SWAYSOCK="$SOCK"
         if swaymsg -t get_workspaces > /dev/null 2>&1; then
-            echo "=== Sway running (PID=$SWAY_PID) ==="
+            # wl-сокет: sway мог занять wayland-1, а не wayland-0 —
+            # grim/dunst требуют АКТУАЛЬНОЕ имя
+            WL=$(find "$XDG_RUNTIME_DIR" -name 'wayland-*' -type s 2>/dev/null | head -1)
+            [ -n "$WL" ] && export WAYLAND_DISPLAY="$(basename "$WL")"
+            echo "=== Sway running (PID=$SWAY_PID, WAYLAND_DISPLAY=$WAYLAND_DISPLAY) ==="
             break
         fi
     fi
@@ -32,6 +45,10 @@ for i in $(seq 1 20); do
         exit 1
     fi
 done
+
+# Демон уведомлений: только после работающего sway (без композитора
+# dunst крушится, как в i3 до Xvfb)
+dunst >/dev/null 2>&1 &
 
 # Run integration tests
 cd /app

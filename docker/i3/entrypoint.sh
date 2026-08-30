@@ -1,8 +1,15 @@
 #!/bin/bash
 set +e
 
-# D-Bus (optional)
-dbus-daemon --session --fork 2>/dev/null || true
+# D-Bus: адрес экспортируем — notify-send/pulseaudio должны видеть одну шину
+dbus-daemon --session --fork --print-address > /tmp/dbus-addr 2>/dev/null || true
+if [ -s /tmp/dbus-addr ]; then
+    export DBUS_SESSION_BUS_ADDRESS="$(cat /tmp/dbus-addr)"
+fi
+
+# PulseAudio с null-sink: pactl-команды требуют живой сервер
+pulseaudio --start --disallow-exit --exit-idle-time=-1 2>/dev/null || true
+pactl load-module module-null-sink sink_name=jarvis 2>/dev/null || true
 
 # Virtual display
 export DISPLAY=:99
@@ -26,6 +33,9 @@ for i in $(seq 1 10); do
         exit 1
     fi
 done
+
+# Демон уведомлений: только после X (до Xvfb dunst крушится, signal 5)
+dunst >/dev/null 2>&1 &
 
 # Run integration tests
 cd /app

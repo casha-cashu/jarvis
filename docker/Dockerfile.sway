@@ -1,7 +1,11 @@
+# syntax=docker/dockerfile:1
 # Sway integration tests on Arch Linux (fresh packages)
 FROM archlinux:latest AS base
 
-RUN pacman -Syu --noconfirm && \
+# Зеркало Яндекса: fastly/geo.pkgbuild.com режутся некоторыми сетями
+    # (TLS unexpected eof) — первый Server в mirrorlist имеет приоритет
+    RUN echo 'Server = https://mirror.yandex.ru/archlinux/$repo/os/$arch' > /etc/pacman.d/mirrorlist && \
+        pacman -Syu --noconfirm && \
     pacman -S --noconfirm \
         base-devel \
         python \
@@ -15,14 +19,22 @@ RUN pacman -Syu --noconfirm && \
         slurp \
         xorg-server-xvfb \
         libnotify \
-        xterm
+        xterm \
+        foot \
+        procps-ng \
+        pulseaudio \
+        dunst
 
 WORKDIR /app
-COPY . .
-
+# Слои: манифесты -> deps (кэшируются) -> исходники. Любой чих репо
+# больше не перекачивает torch.
+COPY pyproject.toml requirements.txt ./
 RUN python -m venv venv && \
-    venv/bin/pip install --upgrade pip setuptools && \
-    venv/bin/pip install -e ".[dev]"
+    venv/bin/pip install --upgrade pip setuptools wheel && \
+    venv/bin/pip install --retries 5 --timeout 120 torch --index-url https://download.pytorch.org/whl/cpu && \
+    venv/bin/pip install --retries 5 --timeout 120 -r requirements.txt pytest pytest-cov pytest-mock pytest-timeout
+COPY . .
+RUN venv/bin/pip install -e ".[dev]" --no-deps
 
 FROM base AS integration
 

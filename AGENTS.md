@@ -68,6 +68,17 @@ lives in:
 
 ## Hard rules
 
+- **CI/infra: код возврата тестируемого не глотается.** `|| true`,
+  `set +e`, пайпы без `pipefail`, skip-on-empty — только для cleanup,
+  best-effort демонов и косметики. Команда, которую CI проверяет,
+  обязана ронять джобу. Любой бинарь, вызываемый тестами/энтрипоинтами,
+  должен быть установлен в соответствующем образе (класс бага: pgrep/
+  pactl/xrandr отсутствовали в контейнерах, а `--timeout` — в deps).
+- **docker: зависимости до исходников.** Сначала копируются манифесты
+  зависимостей и ставятся пакеты, потом `COPY . .` — иначе любой чих
+  репо перекачивает torch. CPU-сборка torch (--index-url
+  .../whl/cpu) во всех образах: PyPI тянет CUDA-бандл.
+
 - **No `shell=True`** anywhere in `jarvis/`. Adapter command strings go
   through `shlex.split` and `subprocess.Popen(env=sanitized_env())`. If a
   command needs runtime expansion (timestamp, slurp geometry), pass a

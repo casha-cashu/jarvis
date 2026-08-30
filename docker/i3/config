@@ -1,3 +1,4 @@
+# i3 config file (v4)
 # i3 config for Docker headless testing
 font pango:monospace 8
 exec_always xrandr --auto

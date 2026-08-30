@@ -21,7 +21,7 @@ class TestI3Screenshot:
 
     def test_screenshot_file_not_empty(self, run_cmd):
         with tempfile.NamedTemporaryFile(suffix=".png") as tmp:
-            run_cmd(f"scrot {tmp.name}")
+            run_cmd(f"scrot --overwrite {tmp.name}")
             assert os.path.getsize(tmp.name) > 0, "screenshot file is empty"
 
 

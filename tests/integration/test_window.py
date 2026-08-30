@@ -34,5 +34,12 @@ class TestSwayWindow:
         assert result.returncode == 0
 
     def test_window_minimize(self, run_cmd):
+        # На пустом воркспейсе sway отвечает rc=2
+        # ("Can't move an empty workspace to the scratchpad") —
+        # сначала создаём окно, потом минимизируем.
+        run_cmd("swaymsg exec foot")
+        import time
+
+        time.sleep(1.5)
         result = run_cmd("swaymsg move scratchpad")
         assert result.returncode == 0

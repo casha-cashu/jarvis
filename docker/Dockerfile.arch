@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1
 FROM archlinux:latest
 
 # Обновляем ключи и ставим пакеты за один проход (экономит ~1 мин двойного sync)
@@ -13,10 +14,14 @@ RUN pacman-key --init && pacman-key --populate archlinux && \
     && pacman -Scc --noconfirm
 
 WORKDIR /app
-COPY . .
-
+# Слои: манифесты -> deps (кэшируются) -> исходники. Любой чих репо
+# больше не перекачивает torch.
+COPY pyproject.toml requirements.txt ./
 RUN python -m venv venv && \
     venv/bin/pip install --upgrade pip setuptools wheel && \
-    venv/bin/pip install --retries 5 --timeout 120 -e ".[dev]"
+    venv/bin/pip install --retries 5 --timeout 120 torch --index-url https://download.pytorch.org/whl/cpu && \
+    venv/bin/pip install --retries 5 --timeout 120 -r requirements.txt pytest pytest-cov pytest-mock pytest-timeout
+COPY . .
+RUN venv/bin/pip install -e ".[dev]" --no-deps
 
 CMD ["venv/bin/python", "-m", "pytest", "tests/", "-v", "-m", "not slow and not integration"]
