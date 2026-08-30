@@ -11,6 +11,7 @@ from __future__ import annotations
 import contextlib
 import json
 import sys
+import threading
 from typing import TYPE_CHECKING, Any, Callable, TypeVar
 
 import requests
@@ -30,18 +31,46 @@ class Bridge:
         self.started = False
         self._pending_config: dict[str, Any] | None = None
         self._current_session: str | None = None
+        # Мультиплексирование: длинный «message» выполняется в отдельном
+        # потоке, короткие команды обслуживаются reader-циклом сразу.
+        self._message_lock = threading.Lock()
+        self._message_busy = False
+        self._start_lock = threading.Lock()
+        # id активного message: стрим/инструмент строки помечаются им,
+        # чтобы Rust-роутер доставил их в персональный канал
+        self._current_id: str | None = None
         # Real protocol stdout, captured before any contextlib redirect.
         self._proto_out = sys.stdout
+
+    def _try_begin_message(self) -> bool:
+        """True если сообщение начало обрабатываться в этом потоке."""
+        with self._message_lock:
+            if self._message_busy:
+                return False
+            self._message_busy = True
+            return True
+
+    def _end_message(self) -> None:
+        with self._message_lock:
+            self._message_busy = False
+
+    def _write_response(self, obj: dict[str, Any]) -> None:
+        """Ответ протокола — ВСЕГДА через реальный stdout (минуя
+        redirect_stdout рабочей ветки: иначе мультиплексированные ответы
+        терялись бы в stderr)."""
+        try:
+            self._proto_out.write(json.dumps(obj, ensure_ascii=False) + "\n")
+            self._proto_out.flush()
+        except Exception:
+            pass
 
     def _emit_delta(self, delta: str) -> None:
         """Streams one chunk as a JSONL line; Rust forwards it to the UI."""
         try:
-            self._proto_out.write(
-                json.dumps(
-                    {"ok": True, "stream": True, "delta": delta}, ensure_ascii=False
-                )
-                + "\n"
-            )
+            payload: dict[str, Any] = {"ok": True, "stream": True, "delta": delta}
+            if self._current_id:
+                payload["id"] = self._current_id
+            self._proto_out.write(json.dumps(payload, ensure_ascii=False) + "\n")
             self._proto_out.flush()
         except Exception:
             pass  # UI stream loss must never kill generation
@@ -123,6 +152,12 @@ class Bridge:
             jarvis.reminder_mgr = None
 
     def _start(self) -> dict[str, Any]:
+        # Сериализуем: двойной _start (автостарт message + кнопка Start)
+        # порождал два Jarvis и течь ReminderManager'ов
+        with self._start_lock:
+            return self._start_serialized()
+
+    def _start_serialized(self) -> dict[str, Any]:
         if self.started:
             return {"ok": True, "started": True}
 
@@ -340,8 +375,27 @@ class Bridge:
         self._current_session = None
         return {"ok": True, "removed": removed}
 
+    # Команды, меняющие состояние моста: во время активного «message»
+    # они отклоняются — иначе гонка с идущей генерацией.
+    _MUTATING_COMMANDS = frozenset(
+        {
+            "configure",
+            "switch_session",
+            "delete_session",
+            "purge_session",
+            "purge_all_sessions",
+            "clear_history",
+            "stop",
+        }
+    )
+
     def handle(self, request: dict[str, Any]) -> dict[str, Any]:
         command = request.get("command")
+        if command in self._MUTATING_COMMANDS and self._message_busy:
+            return {
+                "ok": False,
+                "error": "Идёт обработка сообщения — повторите после ответа",
+            }
         if command == "start":
             return self._start()
         if command == "status":
@@ -366,11 +420,11 @@ class Bridge:
             self._pending_config = config
             return self._start()
         if command == "switch_session":
-            return self._switch_session(str(request.get("id", "")))
+            return self._switch_session(str(request.get("session_id", "")))
         if command == "delete_session":
-            return self._delete_session(str(request.get("id", "")))
+            return self._delete_session(str(request.get("session_id", "")))
         if command == "purge_session":
-            return self._purge_session(str(request.get("id", "")))
+            return self._purge_session(str(request.get("session_id", "")))
         if command == "purge_all_sessions":
             return self._purge_all_sessions()
         if command == "message":
@@ -561,10 +615,67 @@ def main() -> None:
     for line in sys.stdin:
         try:
             request = json.loads(line)
+        except Exception as exc:
+            bridge._write_response({"ok": False, "error": f"bad request: {exc}"})
+            continue
+
+        rid = request.get("id")
+        if request.get("command") == "message":
+            # Длинный запрос — в отдельный поток: короткие команды
+            # (timers/status/get_config) обслуживаются, пока генерация идёт.
+            if not bridge._try_begin_message():
+                bridge._write_response(
+                    {
+                        "ok": False,
+                        "id": rid,
+                        "error": "Уже обрабатывается сообщение",
+                    }
+                )
+                continue
+
+            def work(req: dict[str, Any] = request, rid: str = rid) -> None:
+                # BaseException, а не Exception: ConfigLoader зовёт sys.exit(1)
+                # на кривом конфиге — SystemExit не должен молча убивать поток
+                # (иначе _end_message не вызовется и busy-флаг зависнет).
+                bridge._current_id = rid
+                result: dict[str, Any] = {"ok": False, "error": "внутренняя ошибка"}
+                stop_beat = threading.Event()
+
+                def beat() -> None:
+                    # Heartbeat: сбрасывает 180-секундный стрим-таймаут Rust'а,
+                    # пока генерация жива (не-стримящая итерация молчит)
+                    while not stop_beat.wait(20):
+                        bridge._emit_delta("")
+
+                beat_thread = threading.Thread(target=beat, daemon=True)
+                beat_thread.start()
+                try:
+                    result = bridge.handle(req)
+                except BaseException as exc:  # noqa: BLE001
+                    result = {"ok": False, "error": str(exc) or type(exc).__name__}
+                finally:
+                    stop_beat.set()
+                    bridge._current_id = None
+                    result["id"] = rid
+                    bridge._write_response(result)
+                    bridge._end_message()
+
+            try:
+                threading.Thread(
+                    target=work, name="jarvis-bridge-message", daemon=True
+                ).start()
+            except Exception as exc:  # noqa: BLE001
+                bridge._write_response({"ok": False, "id": rid, "error": str(exc)})
+                bridge._end_message()
+            continue
+
+        try:
             result = bridge.handle(request)
-        except Exception as exc:  # Keep protocol alive after one failed request.
-            result = {"ok": False, "error": str(exc)}
-        print(json.dumps(result, ensure_ascii=False), flush=True)
+        except BaseException as exc:  # Keep protocol alive after one failed request.
+            result = {"ok": False, "error": str(exc) or type(exc).__name__}
+        if rid:
+            result["id"] = rid
+        bridge._write_response(result)
 
 
 if __name__ == "__main__":

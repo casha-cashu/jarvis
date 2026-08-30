@@ -90,3 +90,27 @@ jobs:
           # и джоба зелёная при любых падениях тестов.
           set -o pipefail
           python -m pytest tests/ -v -x --tb=long -m "not slow and not integration" 2>&1 | tail -100
+
+  frontend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - name: Set up Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: jarvis-ui/package-lock.json
+      - name: Install dependencies
+        working-directory: jarvis-ui
+        run: npm ci
+      - name: Build (tsc strict + vite)
+        working-directory: jarvis-ui
+        run: npm run build
+      - name: Lint (oxlint)
+        working-directory: jarvis-ui
+        run: npm run lint
+      - name: Unit tests (vitest)
+        working-directory: jarvis-ui
+        run: npm run test

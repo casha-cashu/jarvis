@@ -215,7 +215,9 @@ def test_switch_session_clears_llm_cache(isolated_history):
     client = _attach_llm(bridge)
     bridge.jarvis.llm._cache["0:продолжай"] = "чужой ответ"
 
-    result = bridge.handle({"command": "switch_session", "id": "aaaaaaaa"})
+    result = bridge.handle(
+        {"command": "switch_session", "id": "r17", "session_id": "aaaaaaaa"}
+    )
     assert result == {"ok": True, "session": "aaaaaaaa"}
     assert not bridge.jarvis.llm._cache
     assert client.history[-1]["content"] == "yo"
@@ -232,9 +234,9 @@ def test_delete_active_session_clears_llm_cache(isolated_history):
     bridge.jarvis.llm._cache["0:q"] = "a"
     bridge._current_session = "aaaaaaaa"
 
-    assert bridge.handle({"command": "delete_session", "id": "aaaaaaaa"}) == {
-        "ok": True
-    }
+    assert bridge.handle(
+        {"command": "delete_session", "id": "r18", "session_id": "aaaaaaaa"}
+    ) == {"ok": True}
     assert not bridge.jarvis.llm._cache
     assert client.history == []
 
@@ -250,7 +252,9 @@ def test_first_switch_archives_legacy_history(isolated_history):
     isolated_history.write_text(json.dumps(legacy), encoding="utf-8")
 
     bridge = Bridge()
-    assert bridge.handle({"command": "switch_session", "id": "aaaaaaaa"})["ok"]
+    assert bridge.handle(
+        {"command": "switch_session", "id": "r17", "session_id": "aaaaaaaa"}
+    )["ok"]
 
     archived = isolated_history.parent / "ui-history" / "_legacy-cli.json"
     assert archived.exists()
@@ -262,7 +266,9 @@ def test_first_switch_archives_legacy_history(isolated_history):
     # Повторный switch архивирует уже под id сессии, legacy не перезаписывает.
     follow_up = [{"role": "user", "content": "aaa chat"}]
     isolated_history.write_text(json.dumps(follow_up), encoding="utf-8")
-    assert bridge.handle({"command": "switch_session", "id": "bbbbbbbb"})["ok"]
+    assert bridge.handle(
+        {"command": "switch_session", "id": "r26", "session_id": "bbbbbbbb"}
+    )["ok"]
     assert (
         json.loads(
             (isolated_history.parent / "ui-history" / "aaaaaaaa.json").read_text(
@@ -288,7 +294,9 @@ def test_purge_session_deletes_only_own_archive(isolated_history):
     )
 
     bridge = Bridge()
-    assert bridge.handle({"command": "purge_session", "id": "bbbbbbbb"}) == {"ok": True}
+    assert bridge.handle(
+        {"command": "purge_session", "id": "r27", "session_id": "bbbbbbbb"}
+    ) == {"ok": True}
     assert not gone.exists()
     assert keep.exists()
 
@@ -305,7 +313,9 @@ def test_purge_session_on_active_wipes_context_and_cache(isolated_history):
     bridge.jarvis.llm._cache["0:x"] = "y"
     bridge._current_session = "aaaaaaaa"
 
-    assert bridge.handle({"command": "purge_session", "id": "aaaaaaaa"}) == {"ok": True}
+    assert bridge.handle(
+        {"command": "purge_session", "id": "r19", "session_id": "aaaaaaaa"}
+    ) == {"ok": True}
     assert not (isolated_history.parent / "ui-history" / "aaaaaaaa.json").exists()
     assert json.loads(isolated_history.read_text(encoding="utf-8")) == []
     assert client.history == []
@@ -314,7 +324,9 @@ def test_purge_session_on_active_wipes_context_and_cache(isolated_history):
 
 def test_purge_session_rejects_invalid_id(isolated_history):
     bridge = Bridge()
-    result = bridge.handle({"command": "purge_session", "id": "abc"})
+    result = bridge.handle(
+        {"command": "purge_session", "id": "r28", "session_id": "abc"}
+    )
     assert result["ok"] is False
     assert "Некорректный" in result["error"]
 
@@ -407,3 +419,47 @@ def test_chat_message_full_text_not_truncated(monkeypatch):
     assert text.count("часть2") == 200
     assert "Рассказать подробнее" not in text
     assert "[REDACTED]" in text
+
+
+# ──────────────────────────────────────────────
+# Мультиплексирование: message в отдельном потоке
+# ──────────────────────────────────────────────
+
+
+def test_mutating_command_rejected_while_message_busy():
+    """configure/switch_session/clear_history при активном message
+    отклоняются — иначе гонка с идущей генерацией."""
+    bridge = Bridge()
+    assert bridge._try_begin_message()
+    for cmd in ("configure", "switch_session", "clear_history", "purge_all_sessions"):
+        result = bridge.handle({"command": cmd, "id": "r20", "session_id": "aaaaaaaa"})
+        assert result["ok"] is False
+        assert "повторите после" in result["error"]
+    bridge._end_message()
+    # после завершения — снова доступны (switch_session ok: нет busy-ошибки)
+    result = bridge.handle(
+        {"command": "switch_session", "id": "r17", "session_id": "aaaaaaaa"}
+    )
+    assert result["ok"] is True
+    assert "повторите после" not in (result.get("error") or "")
+
+
+def test_status_and_timers_allowed_while_message_busy():
+    """Read-only команды во время message работают (ради них и затевалось)."""
+    bridge = Bridge()
+    assert bridge._try_begin_message()
+    status = bridge.handle({"command": "status"})
+    assert status["ok"] is True
+    timers = bridge.handle({"command": "timers"})
+    assert timers["ok"] is True
+
+
+def test_mux_id_does_not_collide_with_session_id():
+    """P0-регрессия: Rust кладёт mux-id в поле "id" — сессия должна
+    приходить в отдельном поле session_id, иначе switch/purge молча
+    отваливались по 'Некорректный id сессии'."""
+    result = Bridge().handle(
+        {"command": "switch_session", "id": "r17", "session_id": "aaaaaaaa"}
+    )
+    assert result["ok"] is True
+    assert result["session"] == "aaaaaaaa"

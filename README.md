@@ -49,23 +49,23 @@ npm run tauri dev   # или npm run dev для браузерного режи�
 
 ## Быстрый старт
 
-### Пакеты (рекомендуется) — v2.6.2
+### Пакеты (рекомендуется) — v2.7.0
 
-Скачайте из [Releases](https://github.com/casha-cashu/jarvis/releases/tag/v2.6.2):
+Скачайте из [Releases](https://github.com/casha-cashu/jarvis/releases/tag/v2.7.0):
 
 ```bash
 # Debian/Ubuntu
-sudo apt install ./JARVIS_0.2.2_amd64.deb
+sudo apt install ./JARVIS_2.7.0_amd64.deb
 jarvis   # /usr/bin/jarvis + /usr/bin/jarvis-bridge
 
 # Fedora
-sudo dnf install ./JARVIS-0.2.2-1.x86_64.rpm
+sudo dnf install ./JARVIS-2.7.0-1.x86_64.rpm
 
 # Arch/CachyOS
-sudo pacman -U ./jarvis-0.2.2-1-x86_64.pkg.tar.zst
+sudo pacman -U ./jarvis-2.7.0-1-x86_64.pkg.tar.zst
 
 # Универсально (любой дистр)
-chmod +x JARVIS_0.2.2_amd64.AppImage && ./JARVIS_0.2.2_amd64.AppImage
+chmod +x JARVIS_2.7.0_amd64.AppImage && ./JARVIS_2.7.0_amd64.AppImage
 ```
 
 GUI — `jarvis` в меню, конфиг сидится в `~/.config/jarvis/config.yaml` (из `config.example.yaml`).
@@ -127,7 +127,9 @@ pip install -e .
 
 Или вручную:
 ```bash
-pip install pyyaml vosk pyaudio numpy torch faster-whisper silero-vad scikit-learn joblib anthropic openai requests gtts pydantic rapidfuzz "audioop-lts>=0.2; python_version>='3.13'"
+pip install pyyaml pyaudio numpy torch faster-whisper silero-vad scikit-learn joblib anthropic openai requests gtts pydantic rapidfuzz "audioop-lts>=0.2; python_version>='3.13'"
+# vosk — опционален (wheels только для Python 3.10-3.12):
+# pip install -e ".[vosk]"
 ```
 
 > **Важно:** `torch` нужен для Silero VAD. Если у вас NVIDIA GPU — поставьте CUDA-версию: `pip install torch --index-url https://download.pytorch.org/whl/cu118`
@@ -182,9 +184,6 @@ jarvis presets
 
 # Тест модулей
 jarvis test
-
-# Диагностика окружения (конфиг, аудио, модели, LLM)
-jarvis doctor
 
 # Systemd автозапуск (только Linux)
 jarvis service install

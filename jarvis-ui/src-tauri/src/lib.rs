@@ -1,16 +1,16 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::mpsc::{self, Receiver};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::mpsc::{self, SyncSender};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tauri::Emitter;
+use tauri::{Emitter, Manager};
 
 struct BridgeProcess {
   child: Child,
-  responses: Receiver<String>,
 }
 
 struct AppState {
@@ -21,6 +21,15 @@ struct AppState {
   stdin: Mutex<Option<ChildStdin>>,
   child_pid: AtomicU32,
   started: AtomicBool,
+  /// Мультиплексирование: id запроса -> канал его финального ответа.
+  /// Reader-поток доставляет строки адресно; стрим/инструменты уходят
+  /// в события мимо каналов. Arc — reader держит клон после spawn'а.
+  pending: Arc<Mutex<HashMap<String, SyncSender<String>>>>,
+  /// Поколение bridge: reader при EOF чистит pending только если
+  /// поколение не сменилось (иначе затирает pending нового моста).
+  bridge_epoch: Arc<AtomicU64>,
+  app: Arc<Mutex<Option<tauri::AppHandle>>>,
+  req_counter: AtomicU64,
   /// Packaged builds only: user config seeded from bundled resources,
   /// forwarded to the sidecar as JARVIS_CONFIG_PATH.
   packaged_config: Mutex<Option<PathBuf>>,
@@ -138,17 +147,65 @@ fn ensure_bridge(state: &AppState) -> Result<(), String> {
     .map_err(|e| format!("Не удалось запустить Python bridge: {e}"))?;
   let stdin = child.stdin.take().ok_or("Не удалось открыть stdin bridge")?;
   let stdout = child.stdout.take().ok_or("Не удалось открыть stdout bridge")?;
-  let (tx, rx) = mpsc::channel();
-  std::thread::spawn(move || {
-    for line in BufReader::new(stdout).lines().flatten() {
-      let _ = tx.send(line);
-    }
-  });
   state.child_pid.store(child.id(), Ordering::SeqCst);
   if let Ok(mut stdin_slot) = state.stdin.lock() {
     *stdin_slot = Some(stdin);
   }
-  *guard = Some(BridgeProcess { child, responses: rx });
+  *guard = Some(BridgeProcess { child });
+
+  // Reader: адресует финальные ответы по id, стрим/инструменты — в события.
+  let pending = Arc::clone(&state.pending);
+  let app_slot = Arc::clone(&state.app);
+  let epoch_slot = Arc::clone(&state.bridge_epoch);
+  let epoch = epoch_slot.load(Ordering::SeqCst);
+  std::thread::spawn(move || {
+    for line in BufReader::new(stdout).lines().flatten() {
+      let value: serde_json::Value = match serde_json::from_str(&line) {
+        Ok(v) => v,
+        Err(_) => continue, // мусорный вывод python не рвёт протокол
+      };
+      // Сперва адресация: стрим/инструменты помечены id активного
+      // message и уходят в персональный канал (stream_request сам эмитит
+      // события и сбрасывает таймаут на каждую строку).
+      if let Some(id) = value.get("id").and_then(|v| v.as_str()).map(String::from) {
+        let delivered = pending
+          .lock()
+          .ok()
+          .and_then(|mut p| p.remove(&id))
+          .is_some_and(|tx| tx.send(line).is_ok());
+        if delivered {
+          continue;
+        }
+        // Канала нет (таймаут/закрытие) — строка больше никому не нужна.
+        continue;
+      }
+      // Легаси: строки без id — только события.
+      if value.get("stream").is_some() || value.get("tool").is_some() {
+        if let Ok(slot) = app_slot.lock() {
+          if let Some(app) = slot.as_ref() {
+            if value.get("stream").is_some() {
+              if let Some(delta) = value.get("delta").and_then(|d| d.as_str()) {
+                let _ = app.emit("chat-stream", delta);
+              }
+            } else if let Some(tool) = value.get("tool") {
+              let _ = app.emit("chat-tool", tool.to_string());
+            } else if let Some(result) = value.get("tool_result") {
+              let _ = app.emit("chat-tool-result", result.to_string());
+            }
+          }
+        }
+      }
+    }
+    // EOF/python умер: будим ждущих ТОЛЬКО своего поколения — старый
+    // reader, проснувшись после пересоздания моста, не должен стирать
+    // pending нового (гонка найдена adversarial-ревью).
+    if epoch_slot.load(Ordering::SeqCst) == epoch {
+      if let Ok(mut pending) = pending.lock() {
+        pending.clear();
+      }
+    }
+  });
+
   state.started.store(true, Ordering::SeqCst);
   Ok(())
 }
@@ -157,6 +214,10 @@ fn ensure_bridge(state: &AppState) -> Result<(), String> {
 fn shutdown_bridge(state: &AppState) {
   state.started.store(false, Ordering::SeqCst);
   state.child_pid.store(0, Ordering::SeqCst);
+  state.bridge_epoch.fetch_add(1, Ordering::SeqCst);
+  if let Ok(mut pending) = state.pending.lock() {
+    pending.clear(); // закрывает каналы — ждущие запросы получают ошибку
+  }
   if let Ok(mut stdin_slot) = state.stdin.lock() {
     *stdin_slot = None; // EOF на случай ещё живого python
   }
@@ -168,8 +229,8 @@ fn shutdown_bridge(state: &AppState) {
   }
 }
 
-fn request(state: &AppState, payload: &str) -> Result<serde_json::Value, String> {
-  match request_inner(state, payload) {
+fn request(state: &AppState, payload: serde_json::Value, timeout: Duration) -> Result<serde_json::Value, String> {
+  match request_inner(state, payload, timeout) {
     Ok(v) => Ok(v),
     // Dead or stuck python process: clean up so the NEXT call respawns it
     // instead of timing out forever against a corpse.
@@ -180,18 +241,38 @@ fn request(state: &AppState, payload: &str) -> Result<serde_json::Value, String>
   }
 }
 
-fn request_inner(state: &AppState, payload: &str) -> Result<serde_json::Value, String> {
+/// Мультиплексированный запрос: id в payload, ответ доставляется reader'ом
+/// в персональный канал — глобальный мьютекс на время ожидания НЕ держится.
+fn request_inner(state: &AppState, mut payload: serde_json::Value, timeout: Duration) -> Result<serde_json::Value, String> {
   ensure_bridge(state)?;
-  write_request(state, payload)?;
-  let mut guard = state.bridge.lock().map_err(|_| "Состояние bridge повреждено")?;
-  let bridge = guard.as_mut().ok_or("Bridge не запущен")?;
-  let response = bridge.responses.recv_timeout(Duration::from_secs(60))
-    .map_err(|e| format!("Python не ответил: {e}"))?;
-  serde_json::from_str(&response).map_err(|e| format!("Некорректный ответ Python: {e}"))
+  let id = format!("r{}", state.req_counter.fetch_add(1, Ordering::SeqCst));
+  let (tx, rx) = mpsc::sync_channel::<String>(1);
+  state
+    .pending
+    .lock()
+    .map_err(|_| "Состояние bridge повреждено")?
+    .insert(id.clone(), tx);
+  payload["id"] = serde_json::json!(id);
+  if let Err(e) = write_request(state, payload.to_string().as_str()) {
+    if let Ok(mut pending) = state.pending.lock() {
+      pending.remove(&id);
+    }
+    return Err(e);
+  }
+  let line = match rx.recv_timeout(timeout) {
+    Ok(line) => line,
+    Err(e) => {
+      if let Ok(mut pending) = state.pending.lock() {
+        pending.remove(&id);
+      }
+      return Err(format!("Python не ответил: {e}"));
+    }
+  };
+  serde_json::from_str(&line).map_err(|e| format!("Некорректный ответ Python: {e}"))
 }
 
 /// Пишет строку запроса в stdin моста. Отдельная функция + отдельный
-/// мьютекс: backend_stop не должен ждать bridge-мьютекс, чтобы закрыть stdin.
+/// мьютекс: backend_stop не должен ждать request-канал, чтобы закрыть stdin.
 fn write_request(state: &AppState, payload: &str) -> Result<(), String> {
   let mut stdin_guard = state.stdin.lock().map_err(|_| "Состояние bridge повреждено")?;
   let stdin = stdin_guard.as_mut().ok_or("Bridge не запущен")?;
@@ -201,15 +282,15 @@ fn write_request(state: &AppState, payload: &str) -> Result<(), String> {
 
 #[tauri::command]
 async fn backend_start(state: tauri::State<'_, Arc<AppState>>) -> Result<serde_json::Value, String> {
-  run_bridge(state, r#"{"command":"start"}"#.to_string()).await
+  run_bridge(state, serde_json::json!({"command":"start"}), Duration::from_secs(60)).await
 }
 
 #[tauri::command]
 async fn backend_stop(state: tauri::State<'_, Arc<AppState>>) -> Result<String, String> {
   // Async + spawn_blocking: sync-команды Tauri выполняются в main thread.
   // Отмена реальная, а не отложенная: stdin закрывается БЕЗ ожидания
-  // bridge-мьютекса (который держит 180-секундный стриминг), затем SIGTERM
-  // по pid — раньше «Стоп» во время генерации не делал ничего до её конца.
+  // занятого канала, затем SIGTERM по pid — раньше «Стоп» во время
+  // генерации не делал ничего до её конца.
   let state: Arc<AppState> = state.inner().clone();
   tauri::async_runtime::spawn_blocking(move || {
     state.started.store(false, Ordering::SeqCst);
@@ -220,6 +301,10 @@ async fn backend_stop(state: tauri::State<'_, Arc<AppState>>) -> Result<String, 
       if let Some(mut stdin) = stdin_slot.take() {
         let _ = writeln!(stdin, "{{\"command\":\"stop\"}}");
       }
+    }
+    // Разбудить ждущие мультиплексированные запросы.
+    if let Ok(mut pending) = state.pending.lock() {
+      pending.clear();
     }
     std::thread::sleep(Duration::from_millis(500));
     if pid != 0 {
@@ -245,9 +330,9 @@ fn backend_status(state: tauri::State<'_, Arc<AppState>>) -> BackendStatus {
   BackendStatus { running: connected, connected }
 }
 
-/// Like request(), but streams intermediate {"stream":true,"delta":...}
-/// lines as Tauri events and returns the final response object.
-fn stream_request(app: &tauri::AppHandle, state: &AppState, payload: &str) -> Result<serde_json::Value, String> {
+/// Стриминговый запрос: дельты/инструменты reader уводит в события,
+/// финальная строка приходит в персональный канал.
+fn stream_request(app: &tauri::AppHandle, state: &AppState, payload: serde_json::Value) -> Result<serde_json::Value, String> {
   match stream_request_inner(app, state, payload) {
     Ok(v) => Ok(v),
     Err(e) => {
@@ -257,14 +342,32 @@ fn stream_request(app: &tauri::AppHandle, state: &AppState, payload: &str) -> Re
   }
 }
 
-fn stream_request_inner(app: &tauri::AppHandle, state: &AppState, payload: &str) -> Result<serde_json::Value, String> {
+fn stream_request_inner(app: &tauri::AppHandle, state: &AppState, mut payload: serde_json::Value) -> Result<serde_json::Value, String> {
   ensure_bridge(state)?;
-  write_request(state, payload)?;
-  let mut guard = state.bridge.lock().map_err(|_| "Состояние bridge повреждено")?;
-  let bridge = guard.as_mut().ok_or("Bridge не запущен")?;
+  let id = format!("s{}", state.req_counter.fetch_add(1, Ordering::SeqCst));
+  let (tx, rx) = mpsc::sync_channel::<String>(4);
+  state
+    .pending
+    .lock()
+    .map_err(|_| "Состояние bridge повреждено")?
+    .insert(id.clone(), tx);
+  payload["id"] = serde_json::json!(id);
+  if let Err(e) = write_request(state, payload.to_string().as_str()) {
+    if let Ok(mut pending) = state.pending.lock() {
+      pending.remove(&id);
+    }
+    return Err(e);
+  }
   loop {
-    let line = bridge.responses.recv_timeout(Duration::from_secs(180))
-      .map_err(|e| format!("Python не ответил: {e}"))?;
+    let line = match rx.recv_timeout(Duration::from_secs(180)) {
+      Ok(line) => line,
+      Err(e) => {
+        if let Ok(mut pending) = state.pending.lock() {
+          pending.remove(&id);
+        }
+        return Err(format!("Python не ответил: {e}"));
+      }
+    };
     let value: serde_json::Value = serde_json::from_str(&line)
       .map_err(|e| format!("Некорректный ответ Python: {e}"))?;
     if value.get("stream").and_then(|s| s.as_bool()).unwrap_or(false) {
@@ -287,75 +390,76 @@ fn stream_request_inner(app: &tauri::AppHandle, state: &AppState, payload: &str)
 
 #[tauri::command]
 async fn backend_send_message(message: String, session: Option<String>, app: tauri::AppHandle, state: tauri::State<'_, Arc<AppState>>) -> Result<serde_json::Value, String> {
-  let payload = serde_json::json!({"command": "message", "text": message, "session": session}).to_string();
+  let payload = serde_json::json!({"command": "message", "text": message, "session": session});
   let app = app.clone();
   let state: Arc<AppState> = state.inner().clone();
-  tauri::async_runtime::spawn_blocking(move || stream_request(&app, &state, &payload))
+  tauri::async_runtime::spawn_blocking(move || stream_request(&app, &state, payload))
     .await
     .map_err(|e| format!("Внутренняя ошибка: {e}"))?
 }
 
 #[tauri::command]
 async fn backend_configure(config: ApiPresetConfig, state: tauri::State<'_, Arc<AppState>>) -> Result<serde_json::Value, String> {
-  let payload = serde_json::json!({"command": "configure", "config": {"type": config.r#type, "endpoint": config.endpoint, "api_key": config.api_key, "model": config.model, "agent_enabled": config.agent_enabled, "approval_mode": config.approval_mode}}).to_string();
-  run_bridge(state, payload).await
+  let payload = serde_json::json!({"command": "configure", "config": {"type": config.r#type, "endpoint": config.endpoint, "api_key": config.api_key, "model": config.model, "agent_enabled": config.agent_enabled, "approval_mode": config.approval_mode}});
+  run_bridge(state, payload, Duration::from_secs(60)).await
 }
 
 #[tauri::command]
 async fn backend_list_models(config: ApiPresetConfig, state: tauri::State<'_, Arc<AppState>>) -> Result<serde_json::Value, String> {
-  let payload = serde_json::json!({"command": "list_models", "config": {"type": config.r#type, "endpoint": config.endpoint, "api_key": config.api_key, "model": config.model}}).to_string();
-  run_bridge(state, payload).await
+  let payload = serde_json::json!({"command": "list_models", "config": {"type": config.r#type, "endpoint": config.endpoint, "api_key": config.api_key, "model": config.model}});
+  run_bridge(state, payload, Duration::from_secs(60)).await
 }
 
 #[tauri::command]
 async fn backend_timers(state: tauri::State<'_, Arc<AppState>>) -> Result<serde_json::Value, String> {
-  run_bridge(state, r#"{"command":"timers"}"#.to_string()).await
+  run_bridge(state, serde_json::json!({"command":"timers"}), Duration::from_secs(60)).await
 }
 
 #[tauri::command]
 async fn backend_clear_history(state: tauri::State<'_, Arc<AppState>>) -> Result<serde_json::Value, String> {
-  run_bridge(state, r#"{"command":"clear_history"}"#.to_string()).await
-}
-
-#[tauri::command]
-async fn backend_get_config(state: tauri::State<'_, Arc<AppState>>) -> Result<serde_json::Value, String> {
-  // Read-only: текущие значения config.yaml для настроек GUI
-  run_bridge(state, r#"{"command":"get_config"}"#.to_string()).await
+  run_bridge(state, serde_json::json!({"command":"clear_history"}), Duration::from_secs(60)).await
 }
 
 #[tauri::command]
 async fn backend_switch_session(id: String, state: tauri::State<'_, Arc<AppState>>) -> Result<serde_json::Value, String> {
-  let payload = serde_json::json!({"command": "switch_session", "id": id}).to_string();
-  run_bridge(state, payload).await
+  let payload = serde_json::json!({"command": "switch_session", "session_id": id});
+  run_bridge(state, payload, Duration::from_secs(60)).await
 }
 
 #[tauri::command]
 async fn backend_delete_session(id: String, state: tauri::State<'_, Arc<AppState>>) -> Result<serde_json::Value, String> {
-  let payload = serde_json::json!({"command": "delete_session", "id": id}).to_string();
-  run_bridge(state, payload).await
+  let payload = serde_json::json!({"command": "delete_session", "session_id": id});
+  run_bridge(state, payload, Duration::from_secs(60)).await
 }
 
 #[tauri::command]
 async fn backend_purge_session(id: String, state: tauri::State<'_, Arc<AppState>>) -> Result<serde_json::Value, String> {
-  // purge_session/delete-архива + очистка живого контекста, если чат активен.
-  let payload = serde_json::json!({"command": "purge_session", "id": id}).to_string();
-  run_bridge(state, payload).await
+  // purge_session: delete-архива + очистка живого контекста, если чат активен.
+  let payload = serde_json::json!({"command": "purge_session", "session_id": id});
+  run_bridge(state, payload, Duration::from_secs(60)).await
 }
 
 #[tauri::command]
 async fn backend_purge_all_sessions(state: tauri::State<'_, Arc<AppState>>) -> Result<serde_json::Value, String> {
   // «Удалить всю память модели»: без purge архивы ui-history/<sid>.json
   // воскресали удалённый контекст при следующем switch_session.
-  run_bridge(state, r#"{"command":"purge_all_sessions"}"#.to_string()).await
+  run_bridge(state, serde_json::json!({"command":"purge_all_sessions"}), Duration::from_secs(60)).await
+}
+
+#[tauri::command]
+async fn backend_get_config(state: tauri::State<'_, Arc<AppState>>) -> Result<serde_json::Value, String> {
+  // Read-only: текущие значения config.yaml для настроек GUI
+  run_bridge(state, serde_json::json!({"command":"get_config"}), Duration::from_secs(60)).await
 }
 
 /// Runs a blocking bridge request off the async runtime so the UI never freezes.
 async fn run_bridge(
   state: tauri::State<'_, Arc<AppState>>,
-  payload: String,
+  payload: serde_json::Value,
+  timeout: Duration,
 ) -> Result<serde_json::Value, String> {
   let app: Arc<AppState> = state.inner().clone();
-  tauri::async_runtime::spawn_blocking(move || request(&app, &payload))
+  tauri::async_runtime::spawn_blocking(move || request(&app, payload, timeout))
     .await
     .map_err(|e| format!("Внутренняя ошибка: {e}"))?
 }
@@ -447,6 +551,10 @@ pub fn run() {
       stdin: Mutex::new(None),
       child_pid: AtomicU32::new(0),
       started: AtomicBool::new(false),
+      pending: Arc::new(Mutex::new(HashMap::new())),
+      bridge_epoch: Arc::new(AtomicU64::new(0)),
+      app: Arc::new(Mutex::new(None)),
+      req_counter: AtomicU64::new(0),
       packaged_config: Mutex::new(None),
     }))
     .invoke_handler(tauri::generate_handler![backend_start, backend_stop, backend_status, backend_send_message, backend_configure, backend_list_models, backend_timers, backend_clear_history, backend_switch_session, backend_delete_session, backend_purge_session, backend_purge_all_sessions, backend_get_config, list_microphones, set_default_microphone, system_stats])
@@ -469,6 +577,10 @@ pub fn run() {
           ])
           .build(),
       )?;
+      // AppHandle для событий стрима из reader-потока
+      if let Ok(mut slot) = app.state::<Arc<AppState>>().app.lock() {
+        *slot = Some(app.handle().clone());
+      }
       if !cfg!(debug_assertions) {
         if let Err(e) = seed_user_config(app.handle()) {
           log::warn!("seed_user_config failed (non-fatal): {e}");

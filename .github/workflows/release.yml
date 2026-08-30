@@ -137,7 +137,7 @@ jobs:
 
   build-macos-intel:
     # macos-13 — последний Intel (x86_64) раннер; dmg для старых Mac
-    runs-on: macos-13
+    runs-on: macos-15-intel
     steps:
       - uses: actions/checkout@v6
 
@@ -195,18 +195,29 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v6
+
       - name: Download artifacts
         uses: actions/download-artifact@v6
         with:
           path: artifacts
 
+      - name: Generate SBOM (SPDX)
+        uses: anchore/sbom-action@v0
+        with:
+          format: spdx-json
+          output-file: jarvis-sbom-${{ github.ref_name }}.spdx.json
+          artifact-name: jarvis-sbom-${{ github.ref_name }}.spdx.json
+
       - name: Create GitHub Release with artifacts
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "${GITHUB_REF_NAME}" \
-            --title "${GITHUB_REF_NAME}" \
-            --generate-notes \
-            --verify-tag
+          gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1 || \
+            gh release create "${GITHUB_REF_NAME}" \
+              --title "${GITHUB_REF_NAME}" \
+              --generate-notes \
+              --verify-tag
           find artifacts -type f \( -name "*.deb" -o -name "*.rpm" -o -name "*.AppImage" -o -name "*.dmg" \) \
             -exec gh release upload "${GITHUB_REF_NAME}" {} +
+          gh release upload "${GITHUB_REF_NAME}" "jarvis-sbom-${GITHUB_REF_NAME}.spdx.json"
