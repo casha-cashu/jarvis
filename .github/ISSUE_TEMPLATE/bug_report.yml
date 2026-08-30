@@ -1,0 +1,74 @@
+name: 🐛 Баг-репорт
+description: Что-то сломалось — расскажите, что именно
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Спасибо! Пара правил, которые сильно ускоряют разбор:
+        - вывод `jarvis doctor` и `jarvis --version` — почти половина диагноза;
+        - логи из `logs/jarvis.log` (уберите API-ключи, они начинаются с `sk-`).
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: Что произошло?
+      description: Ожидание vs реальность, в одну-две фразы
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Шаги воспроизведения
+      placeholder: |
+        1. jarvis run
+        2. Скажи «...»
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: Вывод `jarvis doctor` и `jarvis --version`
+      description: Скопируйте целиком — там конфиг, аудио, модели и версия
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: ОС
+      options:
+        - Arch / CachyOS
+        - Debian / Ubuntu
+        - Fedora
+        - macOS
+        - Другое
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: Как установлено
+      options:
+        - Пакет (deb/rpm/AppImage/pkg)
+        - install.sh (из исходников)
+        - pip install -e . (разработка)
+        - GUI (jarvis-ui)
+    validations:
+      required: true
+  - type: dropdown
+    id: de
+    attributes:
+      label: Desktop / WM
+      options:
+        - Hyprland
+        - KDE Plasma
+        - GNOME
+        - i3
+        - Sway
+        - macOS
+        - Другое / без GUI
+  - type: textarea
+    id: logs
+    attributes:
+      label: Логи (logs/jarvis.log)
+      description: Фрагмент вокруг ошибки. Ключи (sk-…) затрите

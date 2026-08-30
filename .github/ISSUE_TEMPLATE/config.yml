@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Вопросы и идеи (Discussions)
+    url: https://github.com/casha-cashu/jarvis/discussions
+    about: Не баг и не фича, а вопрос «как сделать» — сюда
+  - name: Готовые пакеты (Releases)
+    url: https://github.com/casha-cashu/jarvis/releases
+    about: deb/rpm/AppImage/pkg/dmg — перед багом проверьте, что версия свежая

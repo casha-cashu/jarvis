@@ -1,0 +1,31 @@
+name: 💡 Идея / фича
+description: Чего не хватает JARVIS'у
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Какая задача не решается?
+      description: «Я хочу …, но JARVIS …»
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Как видите решение
+      description: Формулировка не обязана быть технической
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: К какой части относится
+      options:
+        - Голос (STT/VAD/TTS)
+        - Команды / адаптеры DE
+        - LLM / bash-агент
+        - GUI (jarvis-ui)
+        - Установка / пакеты
+        - Другое
+    validations:
+      required: true

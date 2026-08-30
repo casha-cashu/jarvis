@@ -21,7 +21,6 @@ classifiers = [
 
 dependencies = [
     "pyyaml>=6.0",
-    "vosk>=0.3.38",
     "pyaudio>=0.2.14",
     "numpy>=1.24",
     "torch>=2.0",
@@ -51,6 +50,10 @@ jarvis = "jarvis.cli:main"
 include = ["jarvis*"]
 
 [project.optional-dependencies]
+# vosk опционален: wheels есть только для Python 3.10-3.12, на 3.13+
+# установка провалится. Движок STT переключается на whisper (stt.engine).
+# Ставится так: pip install -e ".[vosk]"
+vosk = ["vosk>=0.3.38"]
 dev = ["pytest>=7", "pytest-cov>=4", "pytest-mock>=3", "pytest-timeout>=2.1", "pre-commit>=3"]
 
 [tool.pytest.ini_options]

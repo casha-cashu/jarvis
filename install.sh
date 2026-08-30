@@ -111,6 +111,12 @@ pip install --upgrade pip
 if [[ "$OS" == "linux" ]]; then
     pip install torch --index-url https://download.pytorch.org/whl/cpu
 fi
+# vosk best-effort: wheels есть только для 3.10-3.12 — на 3.13+ пропускаем
+# (движок STT переключается на whisper, см. config.yaml: stt.engine)
+if ! pip install vosk 2>/dev/null; then
+    echo "⚠️  vosk не установился (нет wheels для этой версии Python) —"
+    echo "    STT-движок whisper продолжит работать: config.yaml → stt.engine: whisper"
+fi
 # Сам пакет + все зависимости (pydantic, scikit-learn, rapidfuzz, openai, ...)
 # — в venv/bin появляется бинарь `jarvis`
 pip install -e .

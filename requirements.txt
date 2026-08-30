@@ -1,5 +1,4 @@
 pyyaml>=6.0
-vosk>=0.3.38
 pyaudio>=0.2.14
 numpy>=1.24
 torch>=2.0
@@ -15,3 +14,8 @@ pydantic>=2.0
 filelock>=3.11
 rapidfuzz>=3.0
 audioop-lts>=0.2; python_version >= '3.13'
+
+# ── Опционально ──
+# vosk: wheels только для Python 3.10-3.12; на 3.13+ используйте
+# stt.engine: whisper или ставьте vosk вручную (alphacephei.com/vosk)
+vosk>=0.3.38

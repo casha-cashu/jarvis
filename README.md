@@ -215,6 +215,19 @@ jarvis service install
 6. **Озвучка** — Piper TTS озвучивает ответ
 7. **Multi-turn** — после ответа 10с ожидание follow-up (прерывается wake word)
 
+## Обратная связь
+
+Нашли баг или чего-то не хватает — [создайте issue](https://github.com/casha-cashu/jarvis/issues/new/choose),
+шаблоны уже подскажут, что приложить. Два правила, которые ускоряют разбор:
+
+- **`jarvis doctor`** — одна команда собирает окружение целиком (конфиг,
+  аудио, модели, LLM); её вывод + `jarvis --version` = половина диагноза;
+- **`logs/jarvis.log`** — фрагмент вокруг ошибки (ключи вида `sk-…`
+  затрите).
+
+Вопросы «как сделать» и идеи без конкретики — в
+[Discussions](https://github.com/casha-cashu/jarvis/discussions).
+
 ## Лицензия
 
 MIT

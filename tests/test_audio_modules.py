@@ -10,6 +10,8 @@ silero-vad / pyaudio — гигабайты весов и нативные би�
 """
 
 import json
+
+import pytest
 import sys
 import types
 import wave
@@ -729,3 +731,21 @@ class TestDictationStopPhrase:
         assert result == ""
         assert on_text == []
         assert typed == []
+
+
+class TestVoskEngineFriendlyError:
+    """vosk не установлен → понятная ошибка с путями решения,
+    а не голый ImportError из глубин stt.py."""
+
+    def test_vosk_engine_missing_package(self, monkeypatch):
+        import sys
+
+        from jarvis.audio_pipeline import AudioPipeline
+
+        config = {"stt": {"engine": "vosk", "vosk": {"model_path": "auto"}}}
+        pipeline = AudioPipeline(config)
+        # None в sys.modules заставляет import raise ImportError —
+        # детерминированная эмуляция "vosk не установлен"
+        monkeypatch.setitem(sys.modules, "jarvis.modules.stt", None)
+        with pytest.raises(RuntimeError, match="whisper"):
+            pipeline.start()

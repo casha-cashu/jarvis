@@ -63,7 +63,15 @@ class AudioPipeline:
                 silence_threshold=silence_threshold,
             )
         else:
-            from jarvis.modules.stt import VoskSTT
+            try:
+                from jarvis.modules.stt import VoskSTT
+            except ImportError as e:
+                raise RuntimeError(
+                    "Движок STT 'vosk' выбран в config.yaml, но vosk не установлен. "
+                    'Варианты: pip install ".[vosk]" — wheels есть только для Python '
+                    "3.10-3.12; либо переключитесь на whisper: config.yaml → "
+                    "stt.engine: whisper (проверка: jarvis doctor)."
+                ) from e
 
             self.stt = VoskSTT(
                 model_path=stt_cfg["vosk"]["model_path"],
