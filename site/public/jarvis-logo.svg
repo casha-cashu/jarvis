@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" role="img">
+  <title>JARVIS — hex mic (symmetric)</title>
+  <rect width="512" height="512" rx="96" fill="#141417"/>
+  <!-- Hex + Mic — scaled 1.18× -->
+  <g transform="translate(256,214) scale(1.18) translate(-256,-214)">
+    <path d="M 256 118 L 333.9 163 L 333.9 253 L 256 298 L 178.1 253 L 178.1 163 Z" fill="none" stroke="#e2e8f0" stroke-width="2.8" stroke-linejoin="round"/>
+    <path d="M 256 138 L 315.6 172.4 L 315.6 241.2 L 256 275.6 L 196.4 241.2 L 196.4 172.4 Z" fill="none" stroke="#e2e8f0" stroke-width="1" opacity="0.22"/>
+    <g stroke-linecap="round" stroke-linejoin="round">
+      <rect x="236" y="166" width="40" height="62" rx="20" fill="none" stroke="#f8fafc" stroke-width="4.2"/>
+      <path d="M 226 208 Q 226 240 256 240 Q 286 240 286 208" fill="none" stroke="#94a3b8" stroke-width="3.2"/>
+      <line x1="256" y1="240" x2="256" y2="256" stroke="#94a3b8" stroke-width="3.2"/>
+      <line x1="238" y1="256" x2="274" y2="256" stroke="#94a3b8" stroke-width="3.2"/>
+    </g>
+  </g>
+  <text x="256" y="376" text-anchor="middle" font-family="Geist, Inter, Helvetica, Arial, sans-serif" font-size="46" font-weight="700" letter-spacing="8" fill="#f8fafc">JARVIS</text>
+</svg>

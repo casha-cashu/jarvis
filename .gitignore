@@ -84,3 +84,8 @@ dist/arch/pkg/
 
 # личный промпт владельца — в репо не нужен
 docs/site/V0_PROMPT.md
+
+# v0-сайт: сборка и зависимости
+site/node_modules/
+site/.next/
+site/out/

@@ -1,0 +1,118 @@
+@import 'tailwindcss';
+@import 'tw-animate-css';
+@import 'shadcn/tailwind.css';
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-border: var(--border);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-accent: var(--accent);
+  --color-accent-light: var(--accent-light);
+  --color-ring: var(--ring);
+
+  --font-sans: var(--font-inter), -apple-system, BlinkMacSystemFont, 'Segoe UI',
+    Roboto, sans-serif;
+  --font-mono: ui-monospace, 'SF Mono', 'JetBrains Mono', 'Fira Code', Menlo,
+    monospace;
+
+  --radius-sm: 8px;
+  --radius-md: 10px;
+  --radius-lg: 12px;
+  --radius-xl: 14px;
+}
+
+:root {
+  color-scheme: dark;
+  --background: #0a0a0b;
+  --foreground: #ededee;
+  --card: #141417;
+  --card-foreground: #ededee;
+  --muted: #1a1a1e;
+  --muted-foreground: #8a8a90;
+  --border: #2a2a2e;
+  --primary: #3b82f6;
+  --primary-foreground: #ffffff;
+  --accent: #3b82f6;
+  --accent-light: #60a5fa;
+  --ring: #3b82f6;
+  --radius: 0.75rem;
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  html {
+    scroll-behavior: smooth;
+  }
+  body {
+    @apply bg-background text-foreground antialiased;
+    font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
+  }
+  ::selection {
+    background: color-mix(in srgb, var(--accent) 35%, transparent);
+    color: #ffffff;
+  }
+}
+
+/* ── Hero audio wave ───────────────────────────────── */
+@keyframes wave-bar {
+  0%,
+  100% {
+    transform: scaleY(0.18);
+  }
+  50% {
+    transform: scaleY(1);
+  }
+}
+
+.wave-bar {
+  transform-origin: center;
+  animation: wave-bar 1.2s ease-in-out infinite;
+}
+
+/* ── Terminal blinking cursor ──────────────────────── */
+@keyframes caret-blink {
+  0%,
+  49% {
+    opacity: 1;
+  }
+  50%,
+  100% {
+    opacity: 0;
+  }
+}
+.caret {
+  animation: caret-blink 1s step-end infinite;
+}
+
+/* ── Scroll reveal ─────────────────────────────────── */
+.reveal {
+  opacity: 0;
+  transform: translateY(24px);
+  transition: opacity 0.7s cubic-bezier(0.22, 1, 0.36, 1),
+    transform 0.7s cubic-bezier(0.22, 1, 0.36, 1);
+  will-change: opacity, transform;
+}
+.reveal.is-visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .reveal {
+    opacity: 1;
+    transform: none;
+    transition: none;
+  }
+  .wave-bar,
+  .caret {
+    animation: none;
+  }
+}
