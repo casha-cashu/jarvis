@@ -243,9 +243,9 @@ class TestResponsePipelineAgentIntegration:
             except OSError:
                 pass
             return
-        # LLM may have chosen a different command (e.g. echo > file via bash).
-        # That's acceptable — the test just checks the agent ran.
-        assert "error" not in result.lower() or result
+        # LLM may have chosen a different command (e.g. echo > file via bash):
+        # файл проверить нельзя — но результат обязан быть непустым текстом.
+        assert isinstance(result, str) and result.strip()
 
     def test_blocked_command_returns_refused_response(self, pipeline):
         """Asking for `rm -rf /` should return a response that mentions

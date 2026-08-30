@@ -62,4 +62,9 @@ package() {
     if [[ -f "$startdir/../../LICENSE" ]]; then
         install -Dm644 "$startdir/../../LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
     fi
+
+    # man-page
+    if [[ -f "$startdir/../../docs/jarvis.1" ]]; then
+        install -Dm644 "$startdir/../../docs/jarvis.1" "$pkgdir/usr/share/man/man1/jarvis.1"
+    fi
 }

@@ -183,9 +183,10 @@ class TestNluWiring:
     def test_greeting_falls_through_to_llm(self, executor_with_nlu):
         """Greetings should NOT match commands → return None → LLM."""
         result = executor_with_nlu.execute("сколько будет дважды два")
-        # Could be None (LLM) or a fuzzy false-positive. We at least
-        # ensure not crash.
-        assert result is None or isinstance(result, str)
+        # «Сколько будет дважды два» обучена как intent=unknown — команда
+        # не должна dispatched'иться: None → LLM. Частичный fuzzy-ответ
+        # вида «Запускаю ...» был бы регрессией.
+        assert result is None, f"приветствие ушло в команды: {result!r}"
 
     def test_low_confidence_falls_through(self, executor_with_nlu, monkeypatch):
         """When NLU confidence is below threshold, fuzzy/pattern must still work."""

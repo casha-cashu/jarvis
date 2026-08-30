@@ -19,7 +19,10 @@ jobs:
       - name: Build and test on ${{ matrix.distro }}
         run: |
           for i in $(seq 1 3); do \
-            docker build \
+            docker buildx build \
+              --cache-from type=gha \
+              --cache-to type=gha,mode=max \
+              --load \
               -t jarvis-test:${{ matrix.distro }} \
               -f docker/Dockerfile.${{ matrix.distro }} \
               . && break; \
@@ -41,7 +44,10 @@ jobs:
       - name: Build and test on ${{ matrix.de }}
         run: |
           for i in $(seq 1 3); do \
-            docker build \
+            docker buildx build \
+              --cache-from type=gha \
+              --cache-to type=gha,mode=max \
+              --load \
               --target integration \
               -t jarvis-integration:${{ matrix.de }} \
               -f docker/Dockerfile.${{ matrix.de }} \

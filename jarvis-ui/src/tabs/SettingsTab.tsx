@@ -5,6 +5,8 @@ import {
   listApiModels,
   listMicrophones,
   setDefaultMicrophone,
+  getBackendConfig,
+  type BackendConfigInfo,
   type MicrophoneDevice,
   type ModelGroup,
 } from "../api/backend";
@@ -52,11 +54,14 @@ export default function SettingsTab() {
   const [microphones, setMicrophones] = useState<MicrophoneDevice[]>([]);
   const [selectedMic, setSelectedMic] = useState("");
 
+  const [configInfo, setConfigInfo] = useState<BackendConfigInfo | null>(null);
+
   useEffect(() => {
     listMicrophones().then((devices) => {
       setMicrophones(devices);
       setSelectedMic(devices.find((device) => device.isDefault)?.name ?? devices[0]?.name ?? "");
     }).catch(() => undefined);
+    getBackendConfig().then(setConfigInfo).catch(() => setConfigInfo(null));
   }, []);
 
   useEffect(() => {
@@ -342,8 +347,19 @@ export default function SettingsTab() {
               <h2 className="text-lg font-medium text-text">Микрофон</h2>
               <p className="text-sm text-text-muted">
                 STT/TTS настраиваются в config.yaml (stt.engine, tts.engine) —
-                здесь только системный микрофон.
+                здесь только системный микрофон. Текущие значения:
               </p>
+              <div className="rounded-lg border border-border bg-surface px-4 py-3 text-xs text-text-muted">
+                {configInfo ? (
+                  <ul className="list-none space-y-0.5">
+                    <li>STT: {configInfo.stt.engine ?? "—"} · wake word: «{configInfo.stt.wake_word ?? "—"}»</li>
+                    <li>TTS: {configInfo.tts.engine ?? "—"}</li>
+                    <li>LLM: {configInfo.llm.provider ?? "—"} / {configInfo.llm.model ?? "—"}</li>
+                  </ul>
+                ) : (
+                  <span>Конфиг недоступен (backend не запущен?)</span>
+                )}
+              </div>
               <Field label="Микрофон" hint="Системный источник PulseAudio/PipeWire">
                 <select
                   value={selectedMic}

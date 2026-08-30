@@ -156,6 +156,9 @@ cp config.example.yaml config.yaml
 ## Использование
 
 ```bash
+# Диагностика окружения (конфиг, аудио, модели, LLM)
+jarvis doctor
+
 # Полный список команд
 jarvis --help
 
@@ -211,7 +214,7 @@ jarvis service install
 2. **Загрузка адаптера** — выбирается соответствующий адаптер (Hyprland, KDE, GNOME, etc.)
 3. **Генерация команд** — команды генерируются динамически под текущую платформу
 4. **Распознавание речи** — Vosk/Whisper слушает wake word и команды
-5. **Pipeline обработки**: exact → fuzzy → pattern (открой {app}) → standalone app → voice cmd → LLM
+5. **Pipeline обработки**: exact → NLU (intent+slots) → fuzzy → pattern (открой {app}) → standalone app → voice cmd → LLM
 6. **Озвучка** — Piper TTS озвучивает ответ
 7. **Multi-turn** — после ответа 10с ожидание follow-up (прерывается wake word)
 

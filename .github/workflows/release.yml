@@ -134,3 +134,79 @@ jobs:
             jarvis-ui/src-tauri/target/release/bundle/macos/*.app
           if-no-files-found: warn
           retention-days: 14
+
+  build-macos-intel:
+    # macos-13 — последний Intel (x86_64) раннер; dmg для старых Mac
+    runs-on: macos-13
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: jarvis-ui/package-lock.json
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install Python deps + PyInstaller sidecar (macOS Intel)
+        run: |
+          python3 -m venv venv
+          venv/bin/pip install --upgrade pip
+          venv/bin/pip install torch --index-url https://download.pytorch.org/whl/cpu
+          venv/bin/pip install -e .
+          venv/bin/pip install pyinstaller
+          venv/bin/pyinstaller jarvis-bridge.spec --workpath /tmp/pyi-build --distpath /tmp/pyi-dist --noconfirm
+          mkdir -p jarvis-ui/src-tauri/binaries
+          cp /tmp/pyi-dist/jarvis-bridge jarvis-ui/src-tauri/binaries/jarvis-bridge-x86_64-apple-darwin
+          chmod +x jarvis-ui/src-tauri/binaries/jarvis-bridge*
+          ls -lh jarvis-ui/src-tauri/binaries/
+
+      - name: Build frontend + Tauri dmg (Intel)
+        working-directory: jarvis-ui
+        run: |
+          npm ci
+          npm run build
+          npx tauri build --bundles dmg
+          ls -lh src-tauri/target/release/bundle/dmg/*.dmg src-tauri/target/release/bundle/macos/*.app 2>&1 | head -20
+
+      - name: Upload macOS Intel artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: jarvis-macos-intel-${{ github.ref_name }}
+          path: |
+            jarvis-ui/src-tauri/target/release/bundle/dmg/*.dmg
+            jarvis-ui/src-tauri/target/release/bundle/macos/*.app
+          if-no-files-found: warn
+          retention-days: 14
+
+  publish-release:
+    # Автосоздание GitHub Release с прикреплёнными пакетами
+    needs: [build-portable, build-macos, build-macos-intel]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v6
+        with:
+          path: artifacts
+
+      - name: Create GitHub Release with artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            --title "${GITHUB_REF_NAME}" \
+            --generate-notes \
+            --verify-tag
+          find artifacts -type f \( -name "*.deb" -o -name "*.rpm" -o -name "*.AppImage" -o -name "*.dmg" \) \
+            -exec gh release upload "${GITHUB_REF_NAME}" {} +

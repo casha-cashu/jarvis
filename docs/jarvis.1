@@ -1,0 +1,79 @@
+.TH JARVIS 1 "2026" "JARVIS 2.6" "User Commands"
+.SH NAME
+jarvis \- голосовой ИИ\-ассистент для Linux и macOS
+.SH SYNOPSIS
+.B jarvis
+.RI [ command ]
+.RI [ options ]
+.SH DESCRIPTION
+.B JARVIS
+распознаёт речь (Vosk / faster-whisper с Silero VAD), выполняет системные
+команды, отвечает через LLM (Ollama / OpenAI / Anthropic / OpenRouter) и
+озвучивает ответ (Piper / gTTS / SpeechT5). При включённом bash-агенте умеет
+автономно выполнять задачи через инструменты bash/read/write с approval gate.
+.SH COMMANDS
+.TP
+.B run
+Запуск ассистента (по умолчанию). Опции: \fB\-p\fR PROVIDER, \fB\-\-preset\fR NAME,
+\fB\-\-mode\fR classic|continuous, \fB\-\-wake\-mode\fR classic|vad, \fB\-\-mute\fR,
+\fB\-\-dry\-run\fR, \fB\-\-config\fR PATH.
+.TP
+.B doctor
+Диагностика окружения: конфиг (схема), аудио, модели STT/TTS, плееры,
+LLM-провайдер, каталог состояния. Exit 1 при критических ошибках.
+.TP
+.B test
+Тест модулей (dry-run, без микрофона).
+.TP
+.B presets
+Управление пресетами LLM-провайдеров (\-\-list, \-\-delete NAME).
+.TP
+.B voice list|download
+Список русских голосов Piper / скачивание (например,
+.B jarvis voice download ru_RU-dmitri-medium
+).
+.TP
+.B dictation
+Режим голосового ввода текста в активное окно (wtype/xdotool).
+.TP
+.B service install|remove|status
+Systemd \-\-user unit: автозапуск и журналы (journalctl --user -u jarvis).
+.TP
+.B setup
+Интерактивный мастер настройки (модели Vosk и Piper).
+.SH FILES
+.TP
+.I config.yaml
+Основной конфиг (шаблон: config.example.yaml). Валидируется strict-схемой —
+опечатка в ключе это ошибка.
+.TP
+.I ~/.local/share/jarvis/history.json
+История диалога LLM (межпроцессный filelock).
+.TP
+.I ~/.local/share/jarvis/reminders.json
+Напоминания.
+.TP
+.I ~/.local/share/jarvis/ui-history/
+Архивы чатов GUI.
+.SH ENVIRONMENT
+.TP
+.B OPENAI_API_KEY / ANTHROPIC_API_KEY / OPENROUTER_API_KEY
+Ключи облачных LLM-провайдеров (или api_key в config.yaml).
+.TP
+.B JARVIS_CONFIG_PATH
+Путь к конфигу (используется GUI-мостом).
+.TP
+.B JARVIS_NLU_CACHE
+Каталог кэша NLU-классификатора (пустая строка отключает кэш).
+.TP
+.B JARVIS_HISTORY_FILE
+Альтернативный путь истории диалога.
+.SH DIAGNOSTICS
+.B jarvis doctor
+— первая команда при проблемах. Логи: logs/jarvis.log
+(logging.level в config.yaml).
+.SH REPORTING BUGS
+https://github.com/casha-cashu/jarvis/issues — приложите вывод
+jarvis doctor и jarvis --version.
+.SH AUTHOR
+JARVIS Team (https://github.com/casha-cashu/jarvis)

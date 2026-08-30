@@ -81,6 +81,21 @@ export async function purgeAllBackendSessions(): Promise<void> {
   await unwrap(response);
 }
 
+export interface BackendConfigInfo {
+  stt: { engine?: string | null; wake_word?: string | null; phrase_time_limit?: number | null };
+  tts: { engine?: string | null };
+  llm: { provider?: string; model?: string | null };
+}
+
+/** Read-only snapshot of config.yaml for the settings screens. */
+export async function getBackendConfig(): Promise<BackendConfigInfo> {
+  const response = await invoke<{ ok: boolean; config?: BackendConfigInfo; error?: string }>(
+    "backend_get_config",
+  );
+  if (!response.ok) throw new Error(response.error ?? "Конфиг недоступен");
+  return response.config ?? { stt: {}, tts: {}, llm: {} };
+}
+
 export async function listMicrophones(): Promise<MicrophoneDevice[]> { return invoke("list_microphones"); }
 export async function setDefaultMicrophone(name: string): Promise<void> { await invoke("set_default_microphone", { name }); }
 export async function getSystemStats(): Promise<SystemStats> { return invoke("system_stats"); }

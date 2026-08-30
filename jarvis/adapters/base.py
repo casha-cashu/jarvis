@@ -3,6 +3,7 @@
 Base adapter class - defines interface for platform-specific commands
 """
 
+import os
 from abc import ABC, abstractmethod
 
 
@@ -132,15 +133,15 @@ class BaseAdapter(ABC):
     def input_text(self, text: str) -> str:
         """
         Вводит текст в активное поле (диктовка).
-        Пробует wtype (Wayland), затем xdotool (X11), затем osascript (macOS).
+        Wayland -> wtype, X11 -> xdotool (по сессии, а не fallback-цепочкой:
+        CommandExecutor._run исполняет argv через shlex — операторы || и
+        2>/dev/null там не работают и ушли бы аргументами в wtype).
+        macOS переопределяет через osascript.
         """
         escaped = text.replace("'", "'\\''")
-        # Пробуем wtype (Wayland), если нет — xdotool (X11)
-        return (
-            f"wtype '{escaped}' 2>/dev/null || "
-            f"xdotool type '{escaped}' 2>/dev/null || "
-            f"echo 'input_text: {escaped}'"
-        )
+        if os.environ.get("WAYLAND_DISPLAY"):
+            return f"wtype '{escaped}'"
+        return f"xdotool type '{escaped}'"
 
     # Applications
     def get_terminal(self) -> str:

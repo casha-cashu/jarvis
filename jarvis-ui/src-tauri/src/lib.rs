@@ -318,6 +318,12 @@ async fn backend_clear_history(state: tauri::State<'_, Arc<AppState>>) -> Result
 }
 
 #[tauri::command]
+async fn backend_get_config(state: tauri::State<'_, Arc<AppState>>) -> Result<serde_json::Value, String> {
+  // Read-only: текущие значения config.yaml для настроек GUI
+  run_bridge(state, r#"{"command":"get_config"}"#.to_string()).await
+}
+
+#[tauri::command]
 async fn backend_switch_session(id: String, state: tauri::State<'_, Arc<AppState>>) -> Result<serde_json::Value, String> {
   let payload = serde_json::json!({"command": "switch_session", "id": id}).to_string();
   run_bridge(state, payload).await
@@ -443,7 +449,7 @@ pub fn run() {
       started: AtomicBool::new(false),
       packaged_config: Mutex::new(None),
     }))
-    .invoke_handler(tauri::generate_handler![backend_start, backend_stop, backend_status, backend_send_message, backend_configure, backend_list_models, backend_timers, backend_clear_history, backend_switch_session, backend_delete_session, backend_purge_session, backend_purge_all_sessions, list_microphones, set_default_microphone, system_stats])
+    .invoke_handler(tauri::generate_handler![backend_start, backend_stop, backend_status, backend_send_message, backend_configure, backend_list_models, backend_timers, backend_clear_history, backend_switch_session, backend_delete_session, backend_purge_session, backend_purge_all_sessions, backend_get_config, list_microphones, set_default_microphone, system_stats])
     .setup(|app| {
       // Лог и в release: без него warn! о несуществующем сайдкаре уходил
       // в никуда, а пользователь получал «Не удалось запустить Python

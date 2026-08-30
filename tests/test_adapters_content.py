@@ -226,7 +226,7 @@ def _t():
                 i3,
                 "input_text",
                 {"text": "hello"},
-                "wtype 'hello' 2>/dev/null || xdotool type 'hello' 2>/dev/null || echo 'input_text: hello'",
+                "xdotool type 'hello'",
                 True,
                 id="i3-input_text",
             ),
@@ -234,7 +234,7 @@ def _t():
                 i3,
                 "input_text",
                 {"text": "it's fine"},
-                "wtype 'it'\\''s fine' 2>/dev/null || xdotool type 'it'\\''s fine' 2>/dev/null || echo 'input_text: it'\\''s fine'",
+                "xdotool type 'it'\\''s fine'",
                 True,
                 id="i3-input_text_escape",
             ),
@@ -417,7 +417,7 @@ def _t():
                 sway,
                 "input_text",
                 {"text": "hello"},
-                "wtype 'hello' 2>/dev/null || xdotool type 'hello' 2>/dev/null || echo 'input_text: hello'",
+                "xdotool type 'hello'",
                 True,
                 id="sway-input_text",
             ),
@@ -609,7 +609,7 @@ def _t():
                 hypr,
                 "input_text",
                 {"text": "hello"},
-                "wtype 'hello' 2>/dev/null || xdotool type 'hello' 2>/dev/null || echo 'input_text: hello'",
+                "xdotool type 'hello'",
                 True,
                 id="hyprland-input_text",
             ),
@@ -816,7 +816,7 @@ def _t():
                 gnome,
                 "input_text",
                 {"text": "hello"},
-                "wtype 'hello' 2>/dev/null || xdotool type 'hello' 2>/dev/null || echo 'input_text: hello'",
+                "xdotool type 'hello'",
                 True,
                 id="gnome-input_text",
             ),
@@ -1013,7 +1013,7 @@ def _t():
                 kde,
                 "input_text",
                 {"text": "hello"},
-                "wtype 'hello' 2>/dev/null || xdotool type 'hello' 2>/dev/null || echo 'input_text: hello'",
+                "xdotool type 'hello'",
                 True,
                 id="kde-input_text",
             ),
@@ -1351,13 +1351,12 @@ class TestBaseAdapterFallback:
         result = adapter.notify("it's", "test's")
         assert result == "notify-send 'it'\\''s' 'test'\\''s'"
 
-    def test_base_input_text(self):
+    def test_base_input_text(self, monkeypatch):
         adapter = _MinimalAdapter()
+        # X11-ветка детерминированно (на Wayland-машине вернулась бы wtype)
+        monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
         result = adapter.input_text("hello")
-        assert (
-            result
-            == "wtype 'hello' 2>/dev/null || xdotool type 'hello' 2>/dev/null || echo 'input_text: hello'"
-        )
+        assert result == "xdotool type 'hello'"
 
     def test_base_system_reboot(self):
         adapter = _MinimalAdapter()
@@ -1398,6 +1397,10 @@ def test_adapter_command(adapter_cls, method, kwargs, expected, exact, monkeypat
     # interactive selection, sway IPC for focused window geometry). Mock
     # these helper functions so the test doesn't need real Sway running.
     from jarvis.adapters import sway as sway_mod
+
+    # input_text ветвится по WAYLAND_DISPLAY — фиксируем X11-ветку
+    if method == "input_text":
+        monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
 
     if adapter.name == "sway" and method == "screenshot_area":
         monkeypatch.setattr(sway_mod, "_slurp_geometry", lambda: "100,100 500x400")

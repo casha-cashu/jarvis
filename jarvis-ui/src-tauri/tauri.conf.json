@@ -40,6 +40,11 @@
       "../../config.example.yaml"
     ],
     "linux": {
+      "deb": {
+        "files": {
+          "/usr/share/man/man1/jarvis.1": "../../docs/jarvis.1"
+        }
+      },
       "rpm": {
         "compression": {
           "type": "none"

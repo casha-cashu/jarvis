@@ -421,6 +421,8 @@ class Bridge:
             return {"ok": True, "text": response}
         if command == "list_models":
             return self._list_models(request.get("config", {}))
+        if command == "get_config":
+            return self._get_config()
         if command == "timers":
             return self._timers()
         if command == "clear_history":
@@ -447,6 +449,43 @@ class Bridge:
                 getattr(self.jarvis.response, "agent_enabled", info["agent_enabled"])
             )
         return info
+
+    def _get_config(self) -> dict[str, Any]:
+        """Текущие значения конфига для отображения в настройках GUI.
+
+        Read-only: запись с сохранением комментариев (ruamel) — будущая
+        работа; pyyaml перезаписал бы config.yaml без комментариев.
+        """
+        import os
+
+        from jarvis.config_loader import ConfigLoader
+
+        path = os.environ.get("JARVIS_CONFIG_PATH", "config.yaml")
+        try:
+            cfg = ConfigLoader(path).load()
+        except SystemExit:
+            return {"ok": False, "error": f"Конфиг {path} невалиден (см. stderr)"}
+        except Exception as exc:  # noqa: BLE001 — протокол не должен рваться
+            return {"ok": False, "error": str(exc)}
+        llm_cfg = cfg.get("llm", {})
+        provider = llm_cfg.get("provider", "ollama")
+        stt_cfg = cfg.get("stt", {})
+        tts_cfg = cfg.get("tts", {})
+        return {
+            "ok": True,
+            "config": {
+                "stt": {
+                    "engine": stt_cfg.get("engine"),
+                    "wake_word": stt_cfg.get("wake_word"),
+                    "phrase_time_limit": stt_cfg.get("phrase_time_limit"),
+                },
+                "tts": {"engine": tts_cfg.get("engine")},
+                "llm": {
+                    "provider": provider,
+                    "model": (llm_cfg.get(provider) or {}).get("model"),
+                },
+            },
+        }
 
     @staticmethod
     def _group_models(ids: list[str]) -> list[dict[str, Any]]:
