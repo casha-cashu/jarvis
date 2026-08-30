@@ -18,7 +18,7 @@
 # Выбран вариант A.
 
 pkgname=jarvis
-pkgver=2.7.0
+pkgver=2.8.0
 pkgrel=1
 pkgdesc="JARVIS — голосовой ассистент для Linux/macOS (Tauri 2 + React 19 + Rust bridge)"
 arch=('x86_64')

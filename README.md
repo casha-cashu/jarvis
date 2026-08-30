@@ -57,23 +57,23 @@ npm run tauri dev   # или npm run dev для браузерного режи�
 
 ## Быстрый старт
 
-### Пакеты (рекомендуется) — v2.7.0
+### Пакеты (рекомендуется) — v2.8.0
 
-Скачайте из [Releases](https://github.com/casha-cashu/jarvis/releases/tag/v2.7.0):
+Скачайте из [Releases](https://github.com/casha-cashu/jarvis/releases/tag/v2.8.0):
 
 ```bash
 # Debian/Ubuntu
-sudo apt install ./JARVIS_2.7.0_amd64.deb
+sudo apt install ./JARVIS_2.8.0_amd64.deb
 jarvis   # /usr/bin/jarvis + /usr/bin/jarvis-bridge
 
 # Fedora
-sudo dnf install ./JARVIS-2.7.0-1.x86_64.rpm
+sudo dnf install ./JARVIS-2.8.0-1.x86_64.rpm
 
 # Arch/CachyOS
-sudo pacman -U ./jarvis-2.7.0-1-x86_64.pkg.tar.zst
+sudo pacman -U ./jarvis-2.8.0-1-x86_64.pkg.tar.zst
 
 # Универсально (любой дистр)
-chmod +x JARVIS_2.7.0_amd64.AppImage && ./JARVIS_2.7.0_amd64.AppImage
+chmod +x JARVIS_2.8.0_amd64.AppImage && ./JARVIS_2.8.0_amd64.AppImage
 ```
 
 GUI — `jarvis` в меню, конфиг сидится в `~/.config/jarvis/config.yaml` (из `config.example.yaml`).
