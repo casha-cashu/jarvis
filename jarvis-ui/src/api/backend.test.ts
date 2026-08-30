@@ -8,6 +8,7 @@ import {
   getBackendConfig,
   getBackendTimers,
   sendBackendMessage,
+  setBackendConfigValue,
 } from "./backend";
 
 beforeEach(() => {
@@ -56,5 +57,25 @@ describe("backend wrappers", () => {
   it("clearBackendHistory ошибка → исключение", async () => {
     invoke.mockResolvedValue({ ok: false, error: "нет бриджа" });
     await expect(clearBackendHistory()).rejects.toThrow("нет бриджа");
+  });
+});
+
+describe("setBackendConfigValue", () => {
+  it("возвращает note при ok", async () => {
+    invoke.mockResolvedValue({ ok: true, note: "Сохранено: stt.engine = whisper" });
+    const note = await setBackendConfigValue("stt", "engine", "whisper");
+    expect(note).toContain("whisper");
+    expect(invoke).toHaveBeenCalledWith("backend_set_config_value", {
+      section: "stt",
+      key: "engine",
+      value: "whisper",
+    });
+  });
+
+  it("ошибка бекенда → исключение", async () => {
+    invoke.mockResolvedValue({ ok: false, error: "не редактируется из GUI" });
+    await expect(setBackendConfigValue("llm", "provider", "evil")).rejects.toThrow(
+      "не редактируется из GUI",
+    );
   });
 });

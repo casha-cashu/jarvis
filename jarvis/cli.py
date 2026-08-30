@@ -22,12 +22,53 @@ CLI для JARVIS — голосового ассистента
   jarvis -v                           # verbose режим
 """
 
+import re
 import sys
 import argparse
 import subprocess
 from pathlib import Path
 
 from jarvis._env import sanitized_env
+
+
+def _is_newer(latest: str, current: str) -> bool:
+    """Сравнение 'v2.7.0' vs '2.6.2' по числовым сегментам.
+    Битые строки → False (не апгрейдим по мусору)."""
+
+    def parts(v: str) -> tuple[int, ...] | None:
+        nums = re.findall(r"\d+", v.lstrip("v"))
+        return tuple(int(x) for x in nums) if nums else None
+
+    a, b = parts(latest), parts(current)
+    if not a or not b:
+        return False
+    return a > b
+
+
+def cmd_update(args):
+    """Проверка новой версии на GitHub Releases."""
+    import requests
+
+    current = _version().removeprefix("JARVIS ")
+    try:
+        r = requests.get(
+            "https://api.github.com/repos/casha-cashu/jarvis/releases/latest",
+            timeout=10,
+        )
+        r.raise_for_status()
+        latest = (r.json().get("tag_name") or "").lstrip("v")
+    except Exception as e:
+        print(f"❌ Не удалось проверить обновления: {e}")
+        sys.exit(1)
+
+    if not _is_newer(latest, current):
+        print(f"✅ У тебя свежая версия: {current} (последний релиз: {latest})")
+        return
+
+    print(f"⬆️  Доступна новая версия: {latest} (у тебя {current})")
+    print(f"   https://github.com/casha-cashu/jarvis/releases/tag/v{latest}")
+    print("   Обновление: пакеты — скачать и поставить; исходники — git pull")
+    print("   + bash install.sh")
 
 
 def _version() -> str:
@@ -75,6 +116,19 @@ def cmd_run(args):
     )
     jarvis.initialize()
     jarvis.run()
+
+
+def cmd_telegram(args):
+    """Запуск Telegram-бота (удалённый доступ к JARVIS)."""
+    from jarvis import telegram_bot
+    from jarvis.config_loader import ConfigLoader
+
+    cfg = ConfigLoader(args.config).load()
+    tg = cfg.get("telegram", {})
+    if not tg.get("enabled"):
+        print("⚠️  Telegram-бот выключен: config.yaml → telegram.enabled: true")
+        sys.exit(1)
+    telegram_bot.main(cfg, args.config)
 
 
 def cmd_doctor(args):
@@ -422,6 +476,15 @@ def main():
         "--config", type=str, default="config.yaml", help="Путь к конфигу"
     )
 
+    # ── update ──
+    sub.add_parser("update", help="Проверить новую версию на GitHub Releases")
+
+    # ── telegram ──
+    p_tg = sub.add_parser("telegram", help="Запуск Telegram-бота (удалённый доступ)")
+    p_tg.add_argument(
+        "--config", type=str, default="config.yaml", help="Путь к конфигу"
+    )
+
     # ── doctor ──
     p_doc = sub.add_parser(
         "doctor", help="Диагностика окружения (конфиг, аудио, модели, LLM)"
@@ -453,6 +516,8 @@ def main():
         "voice": cmd_voice,
         "dictation": cmd_dictation,
         "doctor": cmd_doctor,
+        "telegram": cmd_telegram,
+        "update": cmd_update,
         "service": cmd_service,
     }
 

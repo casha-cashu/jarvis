@@ -12,6 +12,7 @@ scikit-learn>=1.3
 joblib>=1.3
 pydantic>=2.0
 filelock>=3.11
+ruamel.yaml>=0.18
 rapidfuzz>=3.0
 audioop-lts>=0.2; python_version >= '3.13'
 
@@ -19,3 +20,5 @@ audioop-lts>=0.2; python_version >= '3.13'
 # vosk: wheels только для Python 3.10-3.12; на 3.13+ используйте
 # stt.engine: whisper или ставьте vosk вручную (alphacephei.com/vosk)
 # vosk>=0.3.38  (extras: pip install -e ".[vosk]")
+# aiogram: только для Telegram-бота (pip install -e ".[telegram]")
+# aiogram>=3

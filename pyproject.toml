@@ -34,6 +34,7 @@ dependencies = [
     "gtts>=2.5",
     "pydantic>=2.0",
     "filelock>=3.11",
+    "ruamel.yaml>=0.18",
     "rapidfuzz>=3.0",
     "audioop-lts>=0.2; python_version >= '3.13'",
 ]
@@ -54,6 +55,7 @@ include = ["jarvis*"]
 # установка провалится. Движок STT переключается на whisper (stt.engine).
 # Ставится так: pip install -e ".[vosk]"
 vosk = ["vosk>=0.3.38"]
+telegram = ["aiogram>=3"]
 dev = ["pytest>=7", "pytest-cov>=4", "pytest-mock>=3", "pytest-timeout>=2.1", "pre-commit>=3"]
 
 [tool.pytest.ini_options]

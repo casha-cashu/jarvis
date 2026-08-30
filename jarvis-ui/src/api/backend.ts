@@ -96,6 +96,17 @@ export async function getBackendConfig(): Promise<BackendConfigInfo> {
   return response.config ?? { stt: {}, tts: {}, llm: {} };
 }
 
+/** Пишет одно значение в config.yaml (белый список ключей на бекенде).
+ *  Применяется после перезапуска backend. */
+export async function setBackendConfigValue(section: string, key: string, value: string): Promise<string> {
+  const response = await invoke<{ ok: boolean; note?: string; error?: string }>(
+    "backend_set_config_value",
+    { section, key, value },
+  );
+  if (!response.ok) throw new Error(response.error ?? "Не удалось сохранить");
+  return response.note ?? "Сохранено";
+}
+
 export async function listMicrophones(): Promise<MicrophoneDevice[]> { return invoke("list_microphones"); }
 export async function setDefaultMicrophone(name: string): Promise<void> { await invoke("set_default_microphone", { name }); }
 export async function getSystemStats(): Promise<SystemStats> { return invoke("system_stats"); }

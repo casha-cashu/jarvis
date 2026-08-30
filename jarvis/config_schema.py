@@ -206,6 +206,14 @@ class LLMConfig(BaseModel):
         return v
 
 
+class TelegramConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")  # опечатка в ключе = ошибка валидации
+    enabled: bool = False
+    bot_token: Optional[str] = None  # или TELEGRAM_BOT_TOKEN в окружении
+    allowed_chat_ids: list = []  # fail-closed: пусто = никто не допущен
+    config_path: str = "config.yaml"  # путь конфига для бота
+
+
 class CommandsConfig(BaseModel):
     model_config = ConfigDict(
         extra="forbid"
@@ -253,6 +261,7 @@ class JarvisConfig(BaseModel):
     commands: CommandsConfig = Field(default_factory=CommandsConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
     misc: MiscConfig = Field(default_factory=MiscConfig)
+    telegram: TelegramConfig = Field(default_factory=TelegramConfig)
 
 
 def validate_config(config: dict) -> dict:

@@ -1,5 +1,11 @@
 ![JARVIS banner](docs/logos/jarvis-banner.png)
 
+![CI](https://github.com/casha-cashu/jarvis/actions/workflows/test.yml/badge.svg)
+![Release](https://img.shields.io/github/v/release/casha-cashu/jarvis)
+![Tests](https://img.shields.io/badge/tests-927%20passed-brightgreen)
+![License](https://img.shields.io/github/license/casha-cashu/jarvis)
+[![Сайт](https://img.shields.io/website?url=https%3A%2F%2Fcasha-cashu.github.io%2Fjarvis%2F)](https://casha-cashu.github.io/jarvis/)
+
 # JARVIS — голосовой ассистент
 
 Голосовой ИИ-ассистент для Linux и macOS. Распознаёт речь (Vosk / Whisper), выполняет системные команды, отвечает через LLM (локально или через API), синтезирует речь (Piper TTS). При подключённом локальном Ollama умеет автономно выполнять задачи через bash/read/write tools с approval gate.

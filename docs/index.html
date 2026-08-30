@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>JARVIS — голосовой ИИ-ассистент для Linux и macOS</title>
+<meta name="description" content="Бесплатный голосовой ассистент с открытым кодом: распознавание речи, команды, LLM, bash-агент с approval gate. Пакеты для Arch, Debian, Fedora и macOS.">
+<style>
+  :root { --bg:#0a0a0b; --surface:#141417; --surface2:#1d1d20; --border:#2a2a2e;
+          --text:#ededee; --muted:#8a8a90; --accent:#3b82f6; --accent2:#60a5fa; }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { background:var(--bg); color:var(--text); font-family:-apple-system,"Segoe UI",Roboto,sans-serif; line-height:1.6; }
+  .wrap { max-width:1000px; margin:0 auto; padding:0 24px; }
+  header { padding:20px 0; border-bottom:1px solid var(--border); }
+  header .wrap { display:flex; align-items:center; justify-content:space-between; }
+  .brand { display:flex; align-items:center; gap:12px; font-weight:700; font-size:20px; text-decoration:none; color:var(--text); }
+  .brand img { height:36px; }
+  nav a { color:var(--muted); text-decoration:none; margin-left:24px; font-size:14px; }
+  nav a:hover { color:var(--text); }
+  .hero { text-align:center; padding:90px 0 70px; }
+  .hero h1 { font-size:clamp(32px,6vw,56px); line-height:1.15; letter-spacing:-0.02em; }
+  .hero h1 span { color:var(--accent2); }
+  .hero p { color:var(--muted); font-size:19px; max-width:640px; margin:20px auto 36px; }
+  .cta { display:inline-block; background:var(--accent); color:#fff; text-decoration:none;
+         padding:14px 32px; border-radius:12px; font-weight:600; font-size:16px; }
+  .cta:hover { filter:brightness(1.15); }
+  .cta.ghost { background:var(--surface); border:1px solid var(--border); margin-left:12px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(280px,1fr)); gap:16px; padding:30px 0 60px; }
+  .card { background:var(--surface); border:1px solid var(--border); border-radius:14px; padding:24px; }
+  .card h3 { font-size:17px; margin-bottom:8px; }
+  .card p { color:var(--muted); font-size:14px; }
+  h2 { font-size:30px; letter-spacing:-0.01em; margin:60px 0 8px; }
+  .sub { color:var(--muted); margin-bottom:28px; }
+  pre { background:var(--surface); border:1px solid var(--border); border-radius:12px;
+        padding:20px; overflow-x:auto; font-size:13.5px; color:#a5d6ff; }
+  pre .c { color:var(--muted); }
+  table { width:100%; border-collapse:collapse; font-size:14px; }
+  td { padding:10px 14px; border:1px solid var(--border); }
+  td:first-child { background:var(--surface); font-weight:600; white-space:nowrap; }
+  a.link { color:var(--accent2); }
+  footer { border-top:1px solid var(--border); margin-top:80px; padding:28px 0;
+           color:var(--muted); font-size:13px; text-align:center; }
+  footer a { color:var(--muted); }
+</style>
+</head>
+<body>
+<header><div class="wrap">
+  <a class="brand" href="#"><img src="logos/jarvis-logo.svg" alt="JARVIS"> JARVIS</a>
+  <nav>
+    <a href="#features">Возможности</a>
+    <a href="#download">Скачать</a>
+    <a href="#how">Как это работает</a>
+    <a href="https://github.com/casha-cashu/jarvis" target="_blank">GitHub</a>
+  </nav>
+</div></header>
+
+<main class="wrap">
+  <section class="hero">
+    <h1>Личный <span>Джарвис</span>.<br>Бесплатно. Локально. Твой.</h1>
+    <p>Голосовой ИИ-ассистент с открытым кодом: управляет рабочим столом,
+       выполняет команды, отвечает через LLM и делает всё это голосом —
+       без подписок и «конских денег».</p>
+    <a class="cta" href="https://github.com/casha-cashu/jarvis/releases/latest" target="_blank">Скачать v2.7.0</a>
+    <a class="cta ghost" href="https://github.com/casha-cashu/jarvis" target="_blank">Исходники</a>
+  </section>
+
+  <section id="features">
+    <h2>Возможности</h2>
+    <p class="sub">Всё локально, всё бесплатно, всё с открытым кодом.</p>
+    <div class="grid">
+      <div class="card"><h3>🎙️ Голос</h3><p>Wake word «Джарвис», распознавание через Vosk или
+        faster-whisper с Silero VAD, озвучка ответов Piper'ом.</p></div>
+      <div class="card"><h3>🖥️ Управление системой</h3><p>Воркспейсы, окна, скриншоты, громкость, блокировка —
+        Hyprland, KDE, GNOME, i3, Sway и macOS.</p></div>
+      <div class="card"><h3>🤖 LLM + bash-агент</h3><p>Ollama локально или OpenAI/Anthropic/OpenRouter.
+        Агент выполняет реальные команды с трёхслойным approval gate.</p></div>
+      <div class="card"><h3>💬 Telegram-бот</h3><p>Спрашивай Джарвиса из любого места — тот же мозг,
+        тот же bash-агент, только в мессенджере.</p></div>
+      <div class="card"><h3>⏰ Напоминания и диктовка</h3><p>«Напомни через 10 минут» — и напомнит даже после
+        перезапуска. Диктовка голосом в любое окно.</p></div>
+      <div class="card"><h3>🩺 jarvis doctor</h3><p>Диагностика окружения одной командой:
+        конфиг, аудио, модели, LLM — приложи вывод к баг-репорту.</p></div>
+    </div>
+  </section>
+
+  <section id="download">
+    <h2>Скачать</h2>
+    <p class="sub">Все пакеты — на странице
+      <a class="link" href="https://github.com/casha-cashu/jarvis/releases/latest" target="_blank">последнего релиза</a>.</p>
+    <table>
+      <tr><td>Debian / Ubuntu</td><td><a class="link" href="https://github.com/casha-cashu/jarvis/releases/latest" target="_blank">JARVIS_*_amd64.deb</a> — <code>sudo apt install ./…</code></td></tr>
+      <tr><td>Fedora</td><td><a class="link" href="https://github.com/casha-cashu/jarvis/releases/latest" target="_blank">JARVIS-*.x86_64.rpm</a> — <code>sudo dnf install ./…</code></td></tr>
+      <tr><td>Arch / CachyOS</td><td><a class="link" href="https://github.com/casha-cashu/jarvis/releases/latest" target="_blank">jarvis-*.pkg.tar.zst</a> — <code>sudo pacman -U ./…</code></td></tr>
+      <tr><td>Любой дистрибутив</td><td><a class="link" href="https://github.com/casha-cashu/jarvis/releases/latest" target="_blank">JARVIS_*_amd64.AppImage</a></td></tr>
+      <tr><td>macOS (ARM + Intel)</td><td><a class="link" href="https://github.com/casha-cashu/jarvis/releases/latest" target="_blank">JARVIS_*_aarch64.dmg / *_x64.dmg</a></td></tr>
+    </table>
+  </section>
+
+  <section id="how">
+    <h2>Быстрый старт</h2>
+    <p class="sub">Из исходников — две команды.</p>
+<pre><span class="c"># клонирование и установка (автоопределит Arch/Debian/Fedora/macOS)</span>
+git clone https://github.com/casha-cashu/jarvis.git && cd jarvis
+bash install.sh
+<span class="c"># запуск: source venv/bin/activate && jarvis run</span></pre>
+    <p class="sub" style="margin-top:16px">Проверь окружение командой <code>jarvis doctor</code> —
+    она покажет, что ещё нужно (модели, ключи, микрофон).</p>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    MIT · сделано 15-летним пацаном и бесплатными нейросетями ·
+    <a href="https://github.com/casha-cashu/jarvis/issues" target="_blank">сообщить о баге</a> ·
+    <a href="https://github.com/casha-cashu/jarvis/discussions" target="_blank">обсуждения</a>
+  </div>
+</footer>
+</body>
+</html>

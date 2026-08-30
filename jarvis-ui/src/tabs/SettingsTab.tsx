@@ -6,6 +6,7 @@ import {
   listMicrophones,
   setDefaultMicrophone,
   getBackendConfig,
+  setBackendConfigValue,
   type BackendConfigInfo,
   type MicrophoneDevice,
   type ModelGroup,
@@ -55,13 +56,23 @@ export default function SettingsTab() {
   const [selectedMic, setSelectedMic] = useState("");
 
   const [configInfo, setConfigInfo] = useState<BackendConfigInfo | null>(null);
+  const [sttEngine, setSttEngine] = useState("");
+  const [ttsEngine, setTtsEngine] = useState("");
+  const [sttWakeWord, setSttWakeWord] = useState("");
 
   useEffect(() => {
     listMicrophones().then((devices) => {
       setMicrophones(devices);
       setSelectedMic(devices.find((device) => device.isDefault)?.name ?? devices[0]?.name ?? "");
     }).catch(() => undefined);
-    getBackendConfig().then(setConfigInfo).catch(() => setConfigInfo(null));
+    getBackendConfig()
+      .then((c) => {
+        setConfigInfo(c);
+        setSttEngine(c.stt.engine ?? "vosk");
+        setTtsEngine(c.tts.engine ?? "piper");
+        setSttWakeWord(c.stt.wake_word ?? "");
+      })
+      .catch(() => setConfigInfo(null));
   }, []);
 
   useEffect(() => {
@@ -346,9 +357,67 @@ export default function SettingsTab() {
             <div className="flex flex-col gap-6">
               <h2 className="text-lg font-medium text-text">Микрофон</h2>
               <p className="text-sm text-text-muted">
-                STT/TTS настраиваются в config.yaml (stt.engine, tts.engine) —
-                здесь только системный микрофон. Текущие значения:
+                Движки сохраняются в config.yaml (комментарии сохраняются) и
+                применяются после перезапуска backend.
               </p>
+              <div className="flex flex-col gap-3">
+                <Field label="Движок распознавания" hint="vosk — быстрый (Python 3.10–3.12), whisper — точный">
+                  <select
+                    value={sttEngine}
+                    onChange={async (e) => {
+                      const previous = sttEngine;
+                      setSttEngine(e.target.value);
+                      try {
+                        setSavedNote(await setBackendConfigValue("stt", "engine", e.target.value));
+                      } catch (err) {
+                        setSttEngine(previous);
+                        setSavedNote(err instanceof Error ? err.message : "Ошибка сохранения");
+                      }
+                    }}
+                    className="w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm text-text"
+                  >
+                    <option value="vosk">Vosk (быстрый)</option>
+                    <option value="whisper">faster-whisper (точный)</option>
+                  </select>
+                </Field>
+                <Field label="Wake word" hint="Слово активации">
+                  <input
+                    type="text"
+                    value={sttWakeWord}
+                    onChange={(e) => setSttWakeWord(e.target.value)}
+                    onBlur={async () => {
+                      if (sttWakeWord && sttWakeWord !== configInfo?.stt.wake_word) {
+                        try {
+                          setSavedNote(await setBackendConfigValue("stt", "wake_word", sttWakeWord));
+                        } catch (err) {
+                          setSavedNote(err instanceof Error ? err.message : "Ошибка сохранения");
+                        }
+                      }
+                    }}
+                    className="w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm text-text"
+                  />
+                </Field>
+                <Field label="Движок озвучки">
+                  <select
+                    value={ttsEngine}
+                    onChange={async (e) => {
+                      const previous = ttsEngine;
+                      setTtsEngine(e.target.value);
+                      try {
+                        setSavedNote(await setBackendConfigValue("tts", "engine", e.target.value));
+                      } catch (err) {
+                        setTtsEngine(previous);
+                        setSavedNote(err instanceof Error ? err.message : "Ошибка сохранения");
+                      }
+                    }}
+                    className="w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm text-text"
+                  >
+                    <option value="piper">Piper (офлайн)</option>
+                    <option value="gtts">gTTS (онлайн)</option>
+                    <option value="speecht5">SpeechT5</option>
+                  </select>
+                </Field>
+              </div>
               <div className="rounded-lg border border-border bg-surface px-4 py-3 text-xs text-text-muted">
                 {configInfo ? (
                   <ul className="list-none space-y-0.5">

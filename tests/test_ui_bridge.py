@@ -463,3 +463,62 @@ def test_mux_id_does_not_collide_with_session_id():
     )
     assert result["ok"] is True
     assert result["session"] == "aaaaaaaa"
+
+
+def test_set_config_value_roundtrip_preserves_comments(tmp_path, monkeypatch):
+    """set_config_value пишет значение в config.yaml, СОХРАНЯЯ комментарии
+    (ruamel round-trip), и не ломает forbid-схему."""
+
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text(
+        '# мой комментарий\nstt:\n  engine: "vosk"  # быстрый\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("JARVIS_CONFIG_PATH", str(cfg))
+    bridge = Bridge()
+    result = bridge.handle(
+        {
+            "command": "set_config_value",
+            "section": "stt",
+            "key": "engine",
+            "value": "whisper",
+        }
+    )
+    assert result["ok"] is True
+    text = cfg.read_text(encoding="utf-8")
+    assert "whisper" in text
+    assert "# мой комментарий" in text  # комментарии выжили
+    assert "# быстрый" in text
+
+
+def test_set_config_value_whitelist():
+    """Произвольные ключи из GUI писать нельзя."""
+    bridge = Bridge()
+    result = bridge.handle(
+        {
+            "command": "set_config_value",
+            "section": "llm",
+            "key": "provider",
+            "value": "evil",
+        }
+    )
+    assert result["ok"] is False
+    assert "не редактируется" in result["error"]
+
+
+def test_set_config_value_rejects_schema_break(tmp_path, monkeypatch):
+    """Значение, ломающее forbid-схему, не пишется в файл."""
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text("stt:\n  engine: vosk\n", encoding="utf-8")
+    monkeypatch.setenv("JARVIS_CONFIG_PATH", str(cfg))
+    bridge = Bridge()
+    result = bridge.handle(
+        {
+            "command": "set_config_value",
+            "section": "stt",
+            "key": "engine",
+            "value": 12345,
+        }
+    )
+    assert result["ok"] is False
+    assert cfg.read_text(encoding="utf-8") == "stt:\n  engine: vosk\n"

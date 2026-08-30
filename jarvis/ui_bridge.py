@@ -379,6 +379,7 @@ class Bridge:
     # они отклоняются — иначе гонка с идущей генерацией.
     _MUTATING_COMMANDS = frozenset(
         {
+            "set_config_value",
             "configure",
             "switch_session",
             "delete_session",
@@ -477,6 +478,12 @@ class Bridge:
             return self._list_models(request.get("config", {}))
         if command == "get_config":
             return self._get_config()
+        if command == "set_config_value":
+            return self._set_config_value(
+                request.get("section", ""),
+                request.get("key", ""),
+                request.get("value"),
+            )
         if command == "timers":
             return self._timers()
         if command == "clear_history":
@@ -503,6 +510,56 @@ class Bridge:
                 getattr(self.jarvis.response, "agent_enabled", info["agent_enabled"])
             )
         return info
+
+    # Ключи, которые GUI имеет право менять (белый список — защита от
+    # записи произвольного конфига, ломающего схему).
+    _WRITABLE_KEYS = frozenset(
+        {("stt", "engine"), ("tts", "engine"), ("stt", "wake_word")}
+    )
+
+    def _set_config_value(self, section: str, key: str, value: Any) -> dict[str, Any]:
+        """Точечная запись в config.yaml с СОХРАНЕНИЕМ комментариев
+        (ruamel.yaml round-trip). Применяется после перезапуска backend.
+        Белый список ключей — защита от произвольной записи."""
+        from pathlib import Path
+
+        if (section, key) not in self._WRITABLE_KEYS:
+            return {
+                "ok": False,
+                "error": f"Ключ {section}.{key} не редактируется из GUI",
+            }
+        if not isinstance(value, str) or not value.strip():
+            return {"ok": False, "error": "Значение должно быть непустой строкой"}
+        import os
+
+        from ruamel.yaml import YAML
+
+        path = Path(os.environ.get("JARVIS_CONFIG_PATH", "config.yaml"))
+        if not path.is_absolute():
+            path = Path.cwd() / path
+        if not path.exists():
+            return {"ok": False, "error": f"Конфиг {path} не найден"}
+        yaml = YAML()
+        yaml.preserve_quotes = True
+        try:
+            data = yaml.load(path.read_text(encoding="utf-8"))
+            if section not in data or not isinstance(data[section], dict):
+                return {"ok": False, "error": f"Секция {section} отсутствует в конфиге"}
+            old_value = data[section].get(key)
+            data[section][key] = value
+            # валидируем ДО записи: битый конфиг не пишем
+            from jarvis.config_schema import validate_config
+
+            validate_config(json.loads(json.dumps(data, ensure_ascii=False)))
+            with path.open("w", encoding="utf-8") as f:
+                yaml.dump(data, f)
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "error": f"Не удалось применить: {exc}"}
+        return {
+            "ok": True,
+            "note": f"Сохранено: {section}.{key} = {value} (было: {old_value}). "
+            "Применится после перезапуска backend.",
+        }
 
     def _get_config(self) -> dict[str, Any]:
         """Текущие значения конфига для отображения в настройках GUI.
