@@ -2,7 +2,7 @@
 
 ![CI](https://github.com/casha-cashu/jarvis/actions/workflows/test.yml/badge.svg)
 ![Release](https://img.shields.io/github/v/release/casha-cashu/jarvis)
-![Tests](https://img.shields.io/badge/tests-927%20passed-brightgreen)
+![Tests](https://img.shields.io/badge/tests-934%20passed-brightgreen)
 ![License](https://img.shields.io/github/license/casha-cashu/jarvis)
 [![Сайт](https://img.shields.io/website?url=https%3A%2F%2Fcasha-cashu.github.io%2Fjarvis%2F)](https://casha-cashu.github.io/jarvis/)
 
@@ -16,7 +16,7 @@
 - **Синтез речи** — Piper TTS (русский голос Дмитрия), gTTS fallback
 - **LLM интеграция** — Ollama (локально, с tool-use), OpenAI (нативный API, с tool-use), Anthropic Claude (нативный API, с tool-use), OpenRouter (агрегатор, чат)
 - **NLU-классификатор** — TF-IDF + LogisticRegression intent classifier (кэшируется через joblib). Маршрутизирует русские фразы в команды по intent+slots, fallback на fuzzy-match
-- **Bash-агент** — LLM (Ollama) может вызывать bash/read/write tools через нативный Ollama tool-calling API. Трёхслойный approval gate: hardline blocklist (`rm -rf /`, `mkfs`, `dd of=/dev/`, fork bombs, ...) → dangerous-pattern детектор (~20 паттернов: `curl|sh`, `git push -f`, `iptables -F`, ...) → approval gate (`auto` / `strict` / `yolo`)
+- **Bash-агент** — LLM (Ollama, OpenAI, Anthropic) вызывает bash/read/write tools через нативный tool-calling API. Трёхслойный approval gate: hardline blocklist (`rm -rf /`, `mkfs`, `dd of=/dev/`, fork bombs, ...) → dangerous-pattern детектор (~20 паттернов: `curl|sh`, `git push -f`, `iptables -F`, ...) → approval gate (`auto` / `strict` / `yolo`)
 - **Управление системой** — воркспейсы, окна, скриншоты, звук, блокировка
 - **Кроссплатформенность** — автоопределение DE/WM (Hyprland, KDE, GNOME, i3, Sway, macOS)
 - **Multi-turn диалоги** — 10с таймаут на follow-up, mute/unmute голосом
@@ -24,6 +24,8 @@
 - **Диктовка** — голосовой ввод текста через wtype/xdotool
 - **Wake word** — «джарвис» + альтернативы
 - **Persistence LLM-истории** — диалог сохраняется в `~/.local/share/jarvis/history.json`, переключение провайдера не теряет контекст
+- **Telegram-бот** — тот же мозг из мессенджера: whitelist чатов, fail-closed (`jarvis telegram`)
+- **jarvis doctor / update** — диагностика окружения одной командой и проверка обновлений
 - **Стриминг ответов** — токены появляются по мере генерации; видно каждую выполняемую команду и её вывод
 - **Изоляция контекста** — каждый чат держит свою память LLM, диалоги не смешиваются
 
@@ -126,19 +128,20 @@ brew install python portaudio
 git clone https://github.com/casha-cashu/jarvis.git
 cd jarvis
 
-python -m venv venv
+python3 -m venv venv
 source venv/bin/activate
 pip install -e .
 ```
 
 Или вручную:
 ```bash
-pip install pyyaml pyaudio numpy torch faster-whisper silero-vad scikit-learn joblib anthropic openai requests gtts pydantic rapidfuzz "audioop-lts>=0.2; python_version>='3.13'"
+pip install pyyaml pyaudio numpy torch faster-whisper silero-vad scikit-learn joblib anthropic openai requests gtts pydantic rapidfuzz filelock "ruamel.yaml>=0.18" "audioop-lts>=0.2; python_version>='3.13'"
 # vosk — опционален (wheels только для Python 3.10-3.12):
 # pip install -e ".[vosk]"
 ```
 
-> **Важно:** `torch` нужен для Silero VAD. Если у вас NVIDIA GPU — поставьте CUDA-версию: `pip install torch --index-url https://download.pytorch.org/whl/cu118`
+> **Важно:** `torch` нужен для Silero VAD. Если у вас NVIDIA GPU — поставьте CUDA-версию с
+> [download.pytorch.org](https://pytorch.org/get-started/locally/) (выбери свою CUDA-версию).
 
 ### Модели
 
@@ -160,6 +163,7 @@ cp config.example.yaml config.yaml
 - **STT**: выберите `vosk` (быстрый) или `whisper` (точный)
 - **LLM**: укажите провайдер (`ollama`, `openai`, `anthropic`, `openrouter`)
 - **TTS**: настройте пути к Piper бинарнику и модели
+- **Telegram**: `telegram.enabled: true` + токен от @BotFather (опционально)
 
 ## Использование
 
@@ -193,6 +197,12 @@ jarvis test
 
 # Systemd автозапуск (только Linux)
 jarvis service install
+
+# Проверка новой версии
+jarvis update
+
+# Telegram-бот (нужен токен от @BotFather, см. config.example.yaml)
+jarvis telegram
 ```
 
 ## Примеры команд
