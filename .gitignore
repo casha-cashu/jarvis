@@ -81,3 +81,6 @@ dist/arch/*.pkg.tar.zst
 dist/arch/*.deb
 dist/arch/src/
 dist/arch/pkg/
+
+# личный промпт владельца — в репо не нужен
+docs/site/V0_PROMPT.md
