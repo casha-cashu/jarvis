@@ -18,7 +18,7 @@ import {
   type ProviderType,
 } from "../api/providers";
 
-type SettingSection = "llm" | "stt" | "tts" | "commands" | "general";
+type SettingSection = "llm" | "stt" | "commands";
 
 function hostOf(endpoint: string): string {
   try {
@@ -51,7 +51,6 @@ export default function SettingsTab() {
   const [savedNote, setSavedNote] = useState<string | null>(null);
   const [microphones, setMicrophones] = useState<MicrophoneDevice[]>([]);
   const [selectedMic, setSelectedMic] = useState("");
-  const [wakeWord, setWakeWord] = useState("джарвис");
 
   useEffect(() => {
     listMicrophones().then((devices) => {
@@ -149,10 +148,8 @@ export default function SettingsTab() {
         {(
           [
             { id: "llm", label: "LLM" },
-            { id: "stt", label: "STT" },
-            { id: "tts", label: "TTS" },
+            { id: "stt", label: "Микрофон" },
             { id: "commands", label: "Команды" },
-            { id: "general", label: "Общие" },
           ] as const
         ).map((s) => (
           <button
@@ -322,26 +319,31 @@ export default function SettingsTab() {
                   <option value="yolo">YOLO (опасно)</option>
                 </select>
               </Field>
+
+              {/* Применить: провайдеры в localStorage + agent-флаги в bridge */}
+              <div className="mt-2 flex justify-end gap-2 border-t border-border pt-4">
+                <button
+                  onClick={() => {
+                    saveProviders(providers);
+                    void configureBackendIfPossible(providers, agentEnabled, approvalMode).then((note) => {
+                      if (note) setSavedNote(note);
+                    });
+                  }}
+                  className="rounded-lg bg-accent px-4 py-2 text-sm font-medium text-white hover:opacity-90"
+                >
+                  Применить
+                </button>
+              </div>
             </div>
           )}
 
           {section === "stt" && (
             <div className="flex flex-col gap-6">
-              <h2 className="text-lg font-medium text-text">Настройки STT</h2>
-              <Field label="Wake word" hint="Слово активации">
-                <input
-                  type="text"
-                  value={wakeWord}
-                  onChange={(e) => setWakeWord(e.target.value)}
-                  className="w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm text-text focus:border-accent focus:outline-none"
-                />
-              </Field>
-              <Field label="Движок">
-                <select className="w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm text-text focus:border-accent focus:outline-none">
-                  <option value="vosk">Vosk</option>
-                  <option value="whisper">faster-whisper</option>
-                </select>
-              </Field>
+              <h2 className="text-lg font-medium text-text">Микрофон</h2>
+              <p className="text-sm text-text-muted">
+                STT/TTS настраиваются в config.yaml (stt.engine, tts.engine) —
+                здесь только системный микрофон.
+              </p>
               <Field label="Микрофон" hint="Системный источник PulseAudio/PipeWire">
                 <select
                   value={selectedMic}
@@ -371,19 +373,6 @@ export default function SettingsTab() {
             </div>
           )}
 
-          {section === "tts" && (
-            <div className="flex flex-col gap-6">
-              <h2 className="text-lg font-medium text-text">Настройки TTS</h2>
-              <Field label="Движок">
-                <select className="w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm text-text focus:border-accent focus:outline-none">
-                  <option value="piper">Piper (офлайн)</option>
-                  <option value="gtts">gTTS (онлайн)</option>
-                  <option value="speecht5">SpeechT5</option>
-                </select>
-              </Field>
-            </div>
-          )}
-
           {section === "commands" && (
             <div className="flex flex-col gap-4">
               <h2 className="text-lg font-medium text-text">Команды</h2>
@@ -399,40 +388,6 @@ export default function SettingsTab() {
             </div>
           )}
 
-          {section === "general" && (
-            <div className="flex flex-col gap-6">
-              <h2 className="text-lg font-medium text-text">Общие настройки</h2>
-              <Field label="Язык">
-                <select className="w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm text-text focus:border-accent focus:outline-none">
-                  <option value="ru">Русский</option>
-                  <option value="en">English</option>
-                </select>
-              </Field>
-              <Field label="Timeout выполнения (сек)">
-                <input
-                  type="number"
-                  defaultValue={30}
-                  className="w-24 rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm text-text focus:border-accent focus:outline-none"
-                />
-              </Field>
-            </div>
-          )}
-
-          {/* Save button (sticky) */}
-          <div className="mt-8 flex justify-end gap-2 border-t border-border pt-4">
-            <button className="rounded-lg px-4 py-2 text-sm text-text-muted hover:bg-surface-2">Отмена</button>
-            <button
-              onClick={() => {
-                saveProviders(providers);
-                void configureBackendIfPossible(providers, agentEnabled, approvalMode).then((note) => {
-                  if (note) setSavedNote(note);
-                });
-              }}
-              className="rounded-lg bg-accent px-4 py-2 text-sm font-medium text-white hover:opacity-90"
-            >
-              Применить
-            </button>
-          </div>
         </div>
       </div>
     </div>
