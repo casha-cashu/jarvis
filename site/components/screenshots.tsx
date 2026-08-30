@@ -12,19 +12,19 @@ type Shot = {
 const SHOTS: Shot[] = [
   {
     title: 'jarvis — чат',
-    file: 'screenshots/chat.png',
+    file: 'docs/screenshots/chat.png',
     caption: 'Чат с ассистентом',
     icon: MessageSquare,
   },
   {
     title: 'jarvis — настройки',
-    file: 'screenshots/settings.png',
+    file: 'docs/screenshots/settings.png',
     caption: 'Настройки и модели',
     icon: Settings,
   },
   {
     title: 'jarvis — статус',
-    file: 'screenshots/status.png',
+    file: 'docs/screenshots/status.png',
     caption: 'Статус и диагностика',
     icon: Activity,
   },
@@ -46,21 +46,16 @@ export function Screenshots() {
         {SHOTS.map((shot, i) => (
           <Reveal key={shot.title} delay={i * 90}>
             <WindowFrame title={shot.title} className="h-full">
-              <div className="flex h-full flex-col">
-                <div className="relative aspect-[4/3] overflow-hidden">
-                  <img
-                    src={shot.file}
-                    alt={shot.caption}
-                    loading="lazy"
-                    className="absolute inset-0 h-full w-full object-cover object-top"
-                  />
+              <div className="flex aspect-[4/3] flex-col items-center justify-center gap-3 bg-[radial-gradient(70%_70%_at_50%_30%,rgba(59,130,246,0.06),transparent)] p-6 text-center">
+                <div className="flex size-12 items-center justify-center rounded-xl border border-border bg-background text-muted-foreground">
+                  <shot.icon className="size-6" />
                 </div>
-                <div className="flex items-center gap-2 border-t border-border px-4 py-2.5">
-                  <shot.icon className="size-3.5 text-muted-foreground" />
-                  <span className="text-xs text-muted-foreground">
-                    {shot.caption}
-                  </span>
-                </div>
+                <p className="text-sm font-medium text-foreground">
+                  {shot.caption}
+                </p>
+                <p className="font-mono text-xs text-muted-foreground">
+                  {shot.file}
+                </p>
               </div>
             </WindowFrame>
           </Reveal>

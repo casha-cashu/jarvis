@@ -2,11 +2,9 @@ import { ArrowRight } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { AudioWave } from '@/components/audio-wave'
 import { GithubIcon } from '@/components/github-icon'
+import { RELEASES_URL, REPO_URL } from '@/lib/github-release'
 
-const RELEASES = 'https://github.com/casha-cashu/jarvis/releases/latest'
-const REPO = 'https://github.com/casha-cashu/jarvis'
-
-export function Hero() {
+export function Hero({ version }: { version: string }) {
   return (
     <section id="top" className="relative overflow-hidden">
       <div className="pointer-events-none absolute inset-x-0 top-0 h-[420px] bg-[radial-gradient(60%_100%_at_50%_0%,rgba(59,130,246,0.12),transparent_70%)]" />
@@ -34,16 +32,16 @@ export function Hero() {
         <div className="mt-10 flex flex-col items-center justify-center gap-3 sm:flex-row">
           <Button
             nativeButton={false}
-            render={<a href={RELEASES} target="_blank" rel="noreferrer" />}
+            render={<a href={RELEASES_URL} target="_blank" rel="noreferrer" />}
             size="lg"
             className="h-11 px-5 text-[15px]"
           >
-            Скачать v2.7.0
+            Скачать {version}
             <ArrowRight className="size-4" />
           </Button>
           <Button
             nativeButton={false}
-            render={<a href={REPO} target="_blank" rel="noreferrer" />}
+            render={<a href={REPO_URL} target="_blank" rel="noreferrer" />}
             variant="outline"
             size="lg"
             className="h-11 px-5 text-[15px]"

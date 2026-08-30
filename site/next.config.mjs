@@ -1,9 +1,5 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  // Статический экспорт для GitHub Pages (проектный сайт живёт в /jarvis/)
-  output: 'export',
-  basePath: '/jarvis',
-  trailingSlash: true,
   typescript: {
     ignoreBuildErrors: true,
   },

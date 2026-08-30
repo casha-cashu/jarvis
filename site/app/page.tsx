@@ -8,20 +8,23 @@ import { Faq } from '@/components/faq'
 import { ProjectStory } from '@/components/project-story'
 import { DownloadTable } from '@/components/download-table'
 import { SiteFooter } from '@/components/site-footer'
+import { getLatestRelease } from '@/lib/github-release'
 
-export default function Page() {
+export default async function Page() {
+  const release = await getLatestRelease()
+
   return (
     <div className="min-h-screen bg-background">
       <SiteHeader />
       <main>
-        <Hero />
+        <Hero version={release.version} />
         <Features />
         <Screenshots />
         <HowItWorks />
         <DoctorTerminal />
         <Faq />
         <ProjectStory />
-        <DownloadTable />
+        <DownloadTable release={release} />
       </main>
       <SiteFooter />
     </div>
