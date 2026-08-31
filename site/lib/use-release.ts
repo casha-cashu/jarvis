@@ -3,39 +3,66 @@
 import useSWR from 'swr'
 import type { ReleaseData } from '@/lib/github-release'
 
-/** A payload is only usable if it actually carries a rows array to render. */
-function isValidRelease(data: unknown): data is ReleaseData {
-  return (
-    !!data &&
-    typeof data === 'object' &&
-    Array.isArray((data as ReleaseData).rows) &&
-    typeof (data as ReleaseData).version === 'string'
-  )
+const REPO = 'casha-cashu/jarvis'
+const API = `https://api.github.com/repos/${REPO}/releases/latest`
+
+const FALLBACK_VERSION = '2.8.0'
+
+function normalizeVersion(tag: string): string {
+  const v = tag.trim()
+  return v.startsWith('v') ? v : `v${v}`
 }
 
-const fetcher = async (url: string): Promise<ReleaseData> => {
-  const r = await fetch(url)
-  if (!r.ok) throw new Error('Failed to load release')
-  const data = await r.json()
-  if (!isValidRelease(data)) throw new Error('Malformed release payload')
-  return data
+function buildFallback(): ReleaseData {
+  const v = FALLBACK_VERSION
+  return {
+    version: normalizeVersion(v),
+    publishedAt: null,
+    live: false,
+    rows: [],
+  }
+}
+
+async function fetcher(): Promise<ReleaseData> {
+  const res = await fetch(API, {
+    headers: {
+      Accept: 'application/vnd.github+json',
+      'X-GitHub-Api-Version': '2022-11-28',
+    },
+  })
+  if (!res.ok) return buildFallback()
+  const data = (await res.json()) as { tag_name?: string; published_at?: string; assets?: { name: string; browser_download_url: string }[] }
+  if (!data?.tag_name) return buildFallback()
+
+  const bareVersion = data.tag_name.replace(/^v/, '')
+  const rows = [
+    { platform: 'Debian / Ubuntu', file: `jarvis_${bareVersion}_amd64.deb`, cmd: `sudo apt install ./jarvis_${bareVersion}_amd64.deb`, url: data.assets?.find((a) => a.name.endsWith('.deb'))?.browser_download_url ?? `https://github.com/${REPO}/releases/latest` },
+    { platform: 'Fedora', file: `jarvis-${bareVersion}.rpm`, cmd: `sudo dnf install ./jarvis-${bareVersion}.rpm`, url: data.assets?.find((a) => a.name.endsWith('.rpm'))?.browser_download_url ?? `https://github.com/${REPO}/releases/latest` },
+    { platform: 'Arch / CachyOS', file: `jarvis-${bareVersion}.pkg.tar.zst`, cmd: `sudo pacman -U jarvis-${bareVersion}.pkg.tar.zst`, url: data.assets?.find((a) => a.name.endsWith('.pkg.tar.zst'))?.browser_download_url ?? `https://github.com/${REPO}/releases/latest` },
+    { platform: 'Любой дистрибутив', file: `Jarvis-${bareVersion}.AppImage`, cmd: `chmod +x Jarvis-${bareVersion}.AppImage && ./Jarvis-${bareVersion}.AppImage`, url: data.assets?.find((a) => a.name.toLowerCase().endsWith('.appimage'))?.browser_download_url ?? `https://github.com/${REPO}/releases/latest` },
+    { platform: 'macOS (ARM)', file: `Jarvis-${bareVersion}-arm64.dmg`, cmd: `open Jarvis-${bareVersion}-arm64.dmg`, url: data.assets?.find((a) => a.name.includes('arm64') && a.name.endsWith('.dmg'))?.browser_download_url ?? `https://github.com/${REPO}/releases/latest` },
+    { platform: 'macOS (Intel)', file: `Jarvis-${bareVersion}-x64.dmg`, cmd: `open Jarvis-${bareVersion}-x64.dmg`, url: data.assets?.find((a) => (a.name.includes('x64') || a.name.includes('x86_64')) && a.name.endsWith('.dmg'))?.browser_download_url ?? `https://github.com/${REPO}/releases/latest` },
+  ]
+
+  return {
+    version: normalizeVersion(data.tag_name),
+    publishedAt: data.published_at ?? null,
+    live: true,
+    rows,
+  }
 }
 
 /**
  * Returns the latest release, seeded with server-rendered data for an instant
- * first paint, then revalidated against the API so a new GitHub release shows
- * up without a redeploy. Refreshes on focus and reconnect.
+ * first paint, then revalidated against GitHub API so a new release shows up
+ * without a redeploy. Refreshes on focus and reconnect.
  */
 export function useRelease(initial: ReleaseData): ReleaseData {
-  const { data } = useSWR<ReleaseData>('/api/latest-release', fetcher, {
+  const { data } = useSWR<ReleaseData>('/github-release', fetcher, {
     fallbackData: initial,
     revalidateOnFocus: true,
     revalidateOnReconnect: true,
-    // Keep showing the last good data if a refresh fails.
     keepPreviousData: true,
   })
-
-  // Never hand a partial/undefined payload back to consumers that call
-  // `rows.map(...)` — always guarantee a renderable ReleaseData.
-  return isValidRelease(data) ? data : initial
+  return data ?? initial
 }
