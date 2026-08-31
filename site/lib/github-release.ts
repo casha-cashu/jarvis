@@ -100,8 +100,9 @@ export async function getLatestRelease(): Promise<ReleaseData> {
           Accept: 'application/vnd.github+json',
           'X-GitHub-Api-Version': '2022-11-28',
         },
-        // Revalidate hourly so new releases appear automatically.
-        next: { revalidate: 3600 },
+        // Short cache so new releases appear quickly while staying well
+        // under GitHub's unauthenticated rate limit (60 req/hour per IP).
+        next: { revalidate: 60 },
       },
     )
 

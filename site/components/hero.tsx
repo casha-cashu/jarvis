@@ -1,10 +1,15 @@
+'use client'
+
 import { ArrowRight } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { AudioWave } from '@/components/audio-wave'
 import { GithubIcon } from '@/components/github-icon'
-import { RELEASES_URL, REPO_URL } from '@/lib/github-release'
+import { RELEASES_URL, REPO_URL, type ReleaseData } from '@/lib/github-release'
+import { useRelease } from '@/lib/use-release'
 
-export function Hero({ version }: { version: string }) {
+export function Hero({ initialRelease }: { initialRelease: ReleaseData }) {
+  const { version } = useRelease(initialRelease)
+
   return (
     <section id="top" className="relative overflow-hidden">
       <div className="pointer-events-none absolute inset-x-0 top-0 h-[420px] bg-[radial-gradient(60%_100%_at_50%_0%,rgba(59,130,246,0.12),transparent_70%)]" />

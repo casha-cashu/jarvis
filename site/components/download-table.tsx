@@ -1,16 +1,24 @@
+'use client'
+
 import { Download } from 'lucide-react'
 import { Reveal } from '@/components/reveal'
 import { RELEASES_URL, type ReleaseData } from '@/lib/github-release'
+import { useRelease } from '@/lib/use-release'
 
 const dateFmt = new Intl.DateTimeFormat('ru-RU', {
   day: 'numeric',
   month: 'long',
   year: 'numeric',
+  timeZone: 'UTC',
 })
 
-export function DownloadTable({ release }: { release: ReleaseData }) {
-  const { version, rows, publishedAt } = release
-  const published = publishedAt ? dateFmt.format(new Date(publishedAt)) : null
+export function DownloadTable({ initialRelease }: { initialRelease: ReleaseData }) {
+  const release = useRelease(initialRelease)
+  const version = release.version
+  const rows = release.rows ?? []
+  const published = release.publishedAt
+    ? dateFmt.format(new Date(release.publishedAt))
+    : null
 
   return (
     <section id="download" className="mx-auto max-w-[1000px] px-5 py-20 md:py-28">
