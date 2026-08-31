@@ -24,7 +24,7 @@ const FAQ_ITEMS = [
   },
   {
     q: 'Есть ли Windows?',
-    a: 'Нет. Linux и macOS. Для Windows посоветуй WSL2 + AppImage — но честно: лучший опыт на Linux.',
+    a: 'Нет. Linux и macOS. Для Windows посоветую WSL2 + AppImage — но честно: лучший опыт на Linux.',
   },
   {
     q: 'Сколько это стоит?',
