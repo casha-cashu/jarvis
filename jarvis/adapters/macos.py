@@ -79,7 +79,7 @@ class MacOSAdapter(BaseAdapter):
     # Screenshots — раскрываем ~ и timestamp здесь, иначе shell=False
     # не распарсит $(date ...).
     def screenshot_screen(self) -> str:
-        return f"screencapture -c {shlex.quote(_screenshot_path())}"
+        return f"screencapture {shlex.quote(_screenshot_path())}"
 
     def screenshot_area(self) -> str:
         return f"screencapture -i {shlex.quote(_screenshot_path())}"
@@ -102,13 +102,7 @@ class MacOSAdapter(BaseAdapter):
 
     # System
     def lock_screen(self) -> str:
-        # pmset displaysleepnow гасит экран без блокировки (без пароля при
-        # пробуждении, если не включено «сразу требовать пароль»).
-        # CGSession -suspend — настоящая блокировка сессии.
-        return (
-            "'/System/Library/CoreServices/Menu Extras/User.menu/Contents/"
-            "Resources/CGSession' -suspend"
-        )
+        return "pmset displaysleepnow"
 
     def system_reboot(self) -> str:
         return "osascript -e 'tell application \"System Events\" to restart'"

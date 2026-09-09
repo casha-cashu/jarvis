@@ -211,7 +211,7 @@ _SECRET_PATTERNS = [
     re.compile(r"gh[pousr]_[A-Za-z0-9]{36,}"),
     # Generic Bearer / Token headers
     re.compile(r"(?i)bearer\s+[A-Za-z0-9_\-\.]{20,}"),
-    re.compile(r"(?i)token\s*[:=]\s*['\"]?[A-Za-z0-9_\-]{20,}['\"]?"),
+    re.compile(r"(?i)\btoken\s*[:=]\s*['\"]?[A-Za-z0-9_\-]{20,}['\"]?"),
     # AWS access keys (AKIA…) + secret keys (40-char base64)
     re.compile(r"AKIA[0-9A-Z]{16}"),
     re.compile(r"(?i)aws_secret_access_key\s*[:=]\s*[A-Za-z0-9/+=]{40}"),
@@ -235,13 +235,23 @@ _SECRET_PATTERNS = [
 _SECRET_ENV_LINE = re.compile(
     r"(?im)^(\s*(?:export\s+)?[A-Z][A-Z0-9_]*"
     r"(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|PASSPHRASE|ASKPASS|AUTH|CREDENTIALS?)"
-    r"[A-Z0-9_]*)\s*=\s*(\S+)\s*$"
+    r"[A-Z0-9_]*)\s*=\s*(['\"].*?['\"]|[^#\r\n]+?)(\s*(?:#.*)?)$"
+)
+
+# JSON and YAML key-value secret pairs:
+# "api_key": "...", 'access_token': "...", api_key: "...", api_key: secret # comment
+_SECRET_JSON_YAML_QUOTED = re.compile(
+    r"""(?i)(["']?)([a-zA-Z0-9_]*(?:api[_-]?key|access[_-]?token|auth[_-]?token|secret[_-]?key|client[_-]?secret|private[_-]?key|token|secret|password|passwd|credentials?)[a-zA-Z0-9_]*)\1(\s*:\s*)(["'])((?:\\.|(?!\4).)*)\4"""
+)
+
+_SECRET_YAML_UNQUOTED = re.compile(
+    r"""(?im)^(\s*(?:-\s+)?["']?(?:api[_-]?key|access[_-]?token|auth[_-]?token|secret[_-]?key|client[_-]?secret|private[_-]?key|token|secret|password|passwd|credentials?)[a-zA-Z0-9_]*["']?\s*:\s*)(?!["'\s])([^#\r\n]+?)(\s*(?:#.*)?)$"""
 )
 
 
 def _redact_env_lines(text: str) -> str:
     """Whole-line redaction for KEY=SECRET env assignments."""
-    return _SECRET_ENV_LINE.sub(r"\1=[REDACTED]", text)
+    return _SECRET_ENV_LINE.sub(r"\1=[REDACTED]\3", text)
 
 
 def redact_secrets(text: str) -> str:
@@ -254,6 +264,10 @@ def redact_secrets(text: str) -> str:
     if not text:
         return text
     cleaned = text
+    cleaned = _SECRET_JSON_YAML_QUOTED.sub(
+        r"\g<1>\g<2>\g<1>\g<3>\g<4>[REDACTED]\g<4>", cleaned
+    )
+    cleaned = _SECRET_YAML_UNQUOTED.sub(r"\g<1>[REDACTED]\3", cleaned)
     for pat in _SECRET_PATTERNS:
         cleaned = pat.sub("[REDACTED]", cleaned)
     cleaned = _redact_env_lines(cleaned)

@@ -7,13 +7,15 @@ import {
   listApiModels,
   switchBackendSession,
   deleteBackendSession,
-  listMicrophones,
+  getVoiceMode,
+  setVoiceMode,
   type ModelGroup,
 } from "../api/backend";
 import {
   loadProviders,
   getActiveModel,
   setActiveModel,
+  isLocalProvider,
   type ProviderEntry,
 } from "../api/providers";
 
@@ -78,10 +80,15 @@ export default function ChatTab() {
   const [sessions, setSessions] = useState<Session[]>(loadSessions);
   const [activeSession, setActiveSession] = useState<string>(() => loadSessions()[0]?.id ?? "");
   const [listening, setListening] = useState(false);
+  const [partialVoiceText, setPartialVoiceText] = useState<string | null>(null);
+  const activeSessionRef = useRef(activeSession);
+  useEffect(() => {
+    activeSessionRef.current = activeSession;
+  }, [activeSession]);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [providers] = useState<ProviderEntry[]>(loadProviders);
+  const [providers, setProviders] = useState<ProviderEntry[]>(loadProviders);
   const [active, setActive] = useState(getActiveModel);
   const [providerModels, setProviderModels] = useState<ProviderModels[]>([]);
   const [loadingModels, setLoadingModels] = useState(false);
@@ -112,6 +119,60 @@ export default function ChatTab() {
   // Keep backend LLM context aligned with the open chat.
   useEffect(() => {
     if (activeSession) void switchBackendSession(activeSession).catch(() => undefined);
+  }, [activeSession]);
+
+  // Listen for history updates from other tabs (HistoryTab)
+  useEffect(() => {
+    const onHistoryUpdated = (e: Event) => {
+      const custom = e as CustomEvent<{ source?: string }>;
+      if (custom.detail?.source === "chat") return;
+      const reloaded = loadSessions();
+      setSessions(reloaded);
+      setActiveSession((currentActive) => {
+        if (!reloaded.some((s) => s.id === currentActive)) {
+          return reloaded[0]?.id ?? "";
+        }
+        return currentActive;
+      });
+    };
+    window.addEventListener("jarvis:history-updated", onHistoryUpdated);
+    return () => window.removeEventListener("jarvis:history-updated", onHistoryUpdated);
+  }, []);
+
+  // Sync providers and active model when changed from Settings
+  useEffect(() => {
+    const onProvidersChanged = () => {
+      setProviders(loadProviders());
+      setActive(getActiveModel());
+    };
+    window.addEventListener("jarvis:providers-changed", onProvidersChanged);
+    return () => window.removeEventListener("jarvis:providers-changed", onProvidersChanged);
+  }, []);
+
+  // Re-configure backend and switch session after backend restart
+  useEffect(() => {
+    const onBackendRestarted = async () => {
+      const currentActive = getActiveModel();
+      const currentProviders = loadProviders();
+      if (currentActive) {
+        const provider = currentProviders.find((p) => p.id === currentActive.providerId);
+        if (provider) {
+          await configureBackend({
+            type: provider.type,
+            endpoint: provider.endpoint,
+            apiKey: provider.apiKey,
+            model: currentActive.model,
+            agentEnabled: localStorage.getItem("jarvis.ui.agentEnabled") !== "0",
+            approvalMode: localStorage.getItem("jarvis.ui.approvalMode") ?? "auto",
+          }).catch(() => undefined);
+        }
+      }
+      if (activeSession) {
+        await switchBackendSession(activeSession).catch(() => undefined);
+      }
+    };
+    window.addEventListener("jarvis:backend-restarted", onBackendRestarted);
+    return () => window.removeEventListener("jarvis:backend-restarted", onBackendRestarted);
   }, [activeSession]);
 
   // Stream deltas from the backend into the live bubble.
@@ -158,10 +219,144 @@ export default function ChatTab() {
         /* ignore malformed payloads */
       }
     });
+    const unlistenVoice = listen<
+      string | { status: string; text?: string; query?: string; response?: string; session?: string }
+    >("voice-event", (event) => {
+      let data: {
+        status: string;
+        text?: string;
+        query?: string;
+        response?: string;
+        session?: string;
+      };
+      if (typeof event.payload === "string") {
+        try {
+          data = JSON.parse(event.payload);
+        } catch {
+          data = { status: event.payload };
+        }
+      } else {
+        data = event.payload;
+      }
+      if (data.status === "listening") {
+        setListening(true);
+        setPartialVoiceText(null);
+      } else if (data.status === "stopped") {
+        setListening(false);
+        setPartialVoiceText(null);
+      } else if (data.status === "partial") {
+        setPartialVoiceText(data.text || null);
+      } else if (data.status === "wake_word_required") {
+        setPartialVoiceText(null);
+        const heard = data.text ? `«${data.text}»` : "";
+        setError(`Услышано ${heard}: скажите «Джарвис ...» перед запросом или включите постоянный режим`);
+      } else if (data.status === "recognized" || data.status === "processing") {
+        setPartialVoiceText(null);
+        const queryText = data.query || data.text;
+        if (queryText && queryText.trim()) {
+          const now = new Date().toLocaleTimeString("ru-RU", {
+            hour: "2-digit",
+            minute: "2-digit",
+          });
+          const userMessage: Message = {
+            id: crypto.randomUUID(),
+            role: "user",
+            text: queryText.trim(),
+            timestamp: now,
+          };
+          setSessions((prev) => {
+            const targetId = activeSessionRef.current || prev[0]?.id;
+            if (!targetId) {
+              const newId = crypto.randomUUID();
+              const newSession: Session = {
+                id: newId,
+                title: queryText.slice(0, 36) || "Голосовой чат",
+                lastMessage: queryText,
+                timestamp: now,
+                messages: [userMessage],
+              };
+              setActiveSession(newId);
+              return [newSession];
+            }
+            return prev.map((s) =>
+              s.id === targetId
+                ? {
+                    ...s,
+                    title: s.messages.length === 0 ? queryText.slice(0, 36) : s.title,
+                    lastMessage: queryText,
+                    timestamp: now,
+                    messages: [...s.messages, userMessage],
+                  }
+                : s,
+            );
+          });
+          setSending(true);
+          setLiveSegments([]);
+        }
+      } else if (data.status === "speaking" || data.status === "finished") {
+        setPartialVoiceText(null);
+        if (data.response && data.response.trim()) {
+          const now = new Date().toLocaleTimeString("ru-RU", {
+            hour: "2-digit",
+            minute: "2-digit",
+          });
+          const steps = liveSegmentsRef.current
+            .filter((s): s is { kind: "tool"; step: ToolStep } => s.kind === "tool")
+            .map((s) => s.step);
+          const assistantMessage: Message = {
+            id: crypto.randomUUID(),
+            role: "assistant",
+            text: data.response.trim(),
+            timestamp: now,
+            ...(steps.length > 0 ? { steps } : {}),
+          };
+          setSessions((prev) => {
+            const targetId = activeSessionRef.current || prev[0]?.id;
+            if (!targetId) {
+              const newId = crypto.randomUUID();
+              const newSession: Session = {
+                id: newId,
+                title: "Голосовой чат",
+                lastMessage: assistantMessage.text,
+                timestamp: now,
+                messages: [assistantMessage],
+              };
+              setActiveSession(newId);
+              return [newSession];
+            }
+            return prev.map((s) =>
+              s.id === targetId
+                ? {
+                    ...s,
+                    lastMessage: assistantMessage.text,
+                    messages: [...s.messages, assistantMessage],
+                  }
+                : s,
+            );
+          });
+          setLiveSegments([]);
+          setSending(false);
+          if (typeof window !== "undefined" && typeof window.dispatchEvent === "function") {
+            window.dispatchEvent(new CustomEvent("jarvis:history-updated", { detail: { source: "chat" } }));
+          }
+        }
+      }
+    });
+
+    getVoiceMode().then((enabled) => setListening(enabled)).catch(() => undefined);
+
+    const onVoiceModeChange = (e: Event) => {
+      const customEvent = e as CustomEvent<boolean>;
+      setListening(customEvent.detail);
+    };
+    window.addEventListener("jarvis:voice-mode-change", onVoiceModeChange);
+
     return () => {
       void unlistenDelta.then((fn) => fn());
       void unlistenTool.then((fn) => fn());
       void unlistenResult.then((fn) => fn());
+      void unlistenVoice.then((fn) => fn());
+      window.removeEventListener("jarvis:voice-mode-change", onVoiceModeChange);
     };
   }, []);
 
@@ -190,6 +385,9 @@ export default function ChatTab() {
     setSessions(remaining);
     localStorage.setItem(CHAT_STORAGE_KEY, JSON.stringify(remaining));
     if (activeSession === session.id) setActiveSession(remaining[0]?.id ?? "");
+    if (typeof window !== "undefined" && typeof window.dispatchEvent === "function") {
+      window.dispatchEvent(new CustomEvent("jarvis:history-updated", { detail: { source: "chat" } }));
+    }
     await deleteBackendSession(session.id).catch(() => undefined);
   };
 
@@ -210,8 +408,8 @@ export default function ChatTab() {
         results.push({ provider, groups: cached });
         continue;
       }
-      // Skip network if key missing (except ollama local)
-      if ((provider.type as string) !== "ollama" && !provider.apiKey) {
+      // Skip network if key missing (except local providers)
+      if (!isLocalProvider(provider) && !provider.apiKey) {
         results.push({ provider, groups: [], error: "нет ключа" });
         continue;
       }
@@ -282,12 +480,6 @@ export default function ChatTab() {
     if (!text || sending) return;
     // Без активной сессии сообщение уходило в backend, но не сохранялось
     // никуда: ответ стримился и исчезал. Требуем чат и шлём в его id.
-    const targetSession = sessions.find((s) => s.id === activeSession) ?? sessions[0];
-    if (!targetSession) {
-      setError("Создайте чат кнопкой «+» в списке сессий");
-      return;
-    }
-    const sessionKey = targetSession.id;
     setSending(true);
     setError(null);
     setLiveSegments([]);
@@ -297,13 +489,29 @@ export default function ChatTab() {
       minute: "2-digit",
     });
     const userMessage: Message = { id: crypto.randomUUID(), role: "user", text, timestamp: now };
-    setSessions((previous) => previous.map((session) => session.id === sessionKey ? {
-      ...session,
-      title: session.messages.length === 0 ? text.slice(0, 36) : session.title,
-      lastMessage: text,
-      timestamp: now,
-      messages: [...session.messages, userMessage],
-    } : session));
+    const targetSession = sessions.find((s) => s.id === activeSession) ?? sessions[0];
+    let sessionKey: string;
+    if (!targetSession) {
+      sessionKey = crypto.randomUUID();
+      const newSession: Session = {
+        id: sessionKey,
+        title: text.slice(0, 36) || "Новый чат",
+        lastMessage: text,
+        timestamp: now,
+        messages: [userMessage],
+      };
+      setSessions([newSession]);
+      setActiveSession(sessionKey);
+    } else {
+      sessionKey = targetSession.id;
+      setSessions((previous) => previous.map((session) => session.id === sessionKey ? {
+        ...session,
+        title: session.messages.length === 0 ? text.slice(0, 36) : session.title,
+        lastMessage: text,
+        timestamp: now,
+        messages: [...session.messages, userMessage],
+      } : session));
+    }
     try {
       const response = await sendBackendMessage(text, sessionKey);
       const steps = liveSegmentsRef.current
@@ -433,7 +641,7 @@ export default function ChatTab() {
                           : `${provider.name} · ${sub.provider}`;
                         return (
                           <optgroup key={`${provider.id}-${sub.provider}`} label={label}>
-                            {sub.models.map((id) => (
+                            {(sub.models ?? []).map((id) => (
                               <option
                                 key={`${provider.id}::${id}`}
                                 value={`${provider.id}::${id}`}
@@ -503,29 +711,28 @@ export default function ChatTab() {
               ),
             )}
             {sending && liveSegments.length === 0 && <ThinkingIndicator />}
-            {listening && !sending && <ListeningIndicator />}
+            {listening && !sending && <ListeningIndicator partialText={partialVoiceText} />}
             <div ref={messagesEndRef} />
           </div>
         </div>
+
+        {/* Partial voice speech recognition banner */}
+        {partialVoiceText && (
+          <div className="flex items-center gap-2 border-t border-accent/30 bg-accent/10 px-4 py-2 text-xs text-accent animate-fade-in shadow-inner">
+            <Mic size={14} className="animate-pulse shrink-0 text-accent" />
+            <span className="font-medium text-accent">Распознаётся:</span>
+            <span className="truncate italic text-text font-normal">«{partialVoiceText}»</span>
+          </div>
+        )}
 
         {/* Input bar */}
         <div className="flex items-center gap-2 border-t border-border bg-surface/80 px-4 py-3">
           <button
             onClick={async () => {
-              if (listening) {
-                setListening(false);
-                return;
-              }
               try {
-                const mics = await listMicrophones();
-                if (mics.length === 0) {
-                  setError("Микрофоны не найдены — проверь pactl / PipeWire");
-                  return;
-                }
-                setError(null);
-                setListening(true);
-                // демо-таймаут 5c — реальный STT идёт через `jarvis run` в терминале
-                setTimeout(() => setListening(false), 5000);
+                const next = !listening;
+                const ok = await setVoiceMode(next);
+                setListening(ok);
               } catch (e) {
                 setError(e instanceof Error ? e.message : String(e));
               }
@@ -535,7 +742,7 @@ export default function ChatTab() {
                 ? "border-accent bg-accent text-white shadow-sm shadow-accent/30 animate-pulse"
                 : "border-border bg-surface-2 text-text-muted hover:border-accent/50 hover:text-text"
             }`}
-            title={listening ? "Остановить (pactl OK)" : "Голосовой ввод — проверка pactl"}
+            title={listening ? "Отключить голосовой режим" : "Включить голосовой режим (микрофон)"}
           >
             <Mic size={16} />
           </button>
@@ -607,11 +814,16 @@ export default function ChatTab() {
   );
 }
 
-function ListeningIndicator() {
+function ListeningIndicator({ partialText }: { partialText?: string | null }) {
   return (
     <div className="flex animate-fade-in justify-start" role="status" aria-live="polite">
-      <div className="flex items-center gap-2 rounded-lg bg-accent-bg px-3 py-2 text-sm text-accent">
-        <span>Слушаю</span>
+      <div className="flex items-center gap-2 rounded-lg bg-accent-bg px-3 py-2 text-sm text-accent border border-accent/20 shadow-sm">
+        <Mic size={14} className="animate-pulse shrink-0" />
+        {partialText ? (
+          <span className="font-medium text-text italic">«{partialText}»</span>
+        ) : (
+          <span>Слушаю</span>
+        )}
         <Dots />
       </div>
     </div>

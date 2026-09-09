@@ -96,7 +96,7 @@ class ResponsePipeline:
         # Commands
         from jarvis.modules.commands import CommandManager
 
-        self.commands = CommandManager(self.config)
+        self.commands = CommandManager(self.config, speak_fn=self.speak)
 
         self._started = True
 
@@ -244,7 +244,7 @@ class ResponsePipeline:
             # Token-budget guard + secret scrubbing before feeding back to LLM.
             from jarvis.prompt_builder import redact_secrets, truncate_tool_output
 
-            result = truncate_tool_output(redact_secrets(result))
+            result = redact_secrets(truncate_tool_output(result))
             if tool_result_callback is not None:
                 try:
                     tool_result_callback(name, args, result)
@@ -270,5 +270,9 @@ class ResponsePipeline:
                 self.tts_worker.close()
             except Exception as e:
                 logger.error(f"❌ TTS worker shutdown: {e}")
-        # LLM/CommandManager явного shutdown'а не требуют.
+        if self.commands is not None:
+            try:
+                self.commands.cleanup()
+            except Exception as e:
+                logger.warning(f"⚠️ Command cleanup: {e}")
         self._started = False

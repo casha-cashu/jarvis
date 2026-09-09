@@ -89,3 +89,146 @@ class TestSchema:
         c = JarvisConfig()
         assert c.telegram.enabled is False
         assert c.telegram.allowed_chat_ids == []
+
+
+class TestNormalizeAllowedChatIds:
+    def test_strings_and_ints_normalized(self):
+        from jarvis.telegram_bot import normalize_allowed_chat_ids
+
+        raw = ["123", 456, "-100987654321", "invalid", None]
+        assert normalize_allowed_chat_ids(raw) == [123, 456, -100987654321]
+
+
+class TestTelegramAssistantFeatures:
+    def test_resolve_marker_reminders(self, monkeypatch, tmp_path):
+        from jarvis.telegram_bot import TelegramAssistant
+
+        cfg = {"llm": {"provider": "ollama"}, "telegram": {}}
+        assistant = TelegramAssistant(cfg)
+
+        assert assistant._resolve_marker("__MUTE__") == "Хорошо, сэр. Я замолкаю."
+        assert assistant._resolve_marker("__UNMUTE__") == "Я снова слушаю, сэр."
+        assert (
+            assistant._resolve_marker("__DICTATE__")
+            == "Режим диктовки доступен только при голосовом вводе."
+        )
+        assert assistant._resolve_marker("__EXIT__") == "Текстовая сессия продолжается."
+        assert assistant._resolve_marker("Обычный ответ") == "Обычный ответ"
+
+    def test_session_lifecycle(self, tmp_path, monkeypatch):
+        from jarvis.telegram_bot import TelegramAssistant
+        from jarvis.modules import llm as llm_module
+
+        # Redirect history
+        ui_hist = tmp_path / "ui-history"
+        ui_hist.mkdir()
+        monkeypatch.setattr(llm_module, "HISTORY_FILE", tmp_path / "history.json")
+
+        cfg = {"llm": {"provider": "ollama"}, "telegram": {}}
+        assistant = TelegramAssistant(cfg)
+        monkeypatch.setattr(assistant, "_history_dir", lambda: ui_hist)
+
+        # Create session
+        sid = assistant.create_new_session("test")
+        assert sid.startswith("test-")
+        assert assistant._current_session == sid
+        assert (ui_hist / f"{sid}.json").exists()
+
+        # List sessions
+        sessions = assistant.list_sessions()
+        assert len(sessions) == 1
+        assert sessions[0]["id"] == sid
+        assert sessions[0]["is_current"] is True
+
+        # Clear session
+        assistant.clear_current_session()
+        assert (ui_hist / f"{sid}.json").read_text(encoding="utf-8") == "[]"
+
+    def test_ensure_pipeline_binds_attributes(self, monkeypatch):
+        from unittest.mock import MagicMock, patch
+        from jarvis.telegram_bot import TelegramAssistant
+
+        assistant = TelegramAssistant({})
+        mock_jarvis = MagicMock()
+        mock_response = MagicMock()
+        mock_jarvis.response = mock_response
+
+        with patch("jarvis.Jarvis", return_value=mock_jarvis):
+            assistant._ensure_pipeline()
+            assert assistant._jarvis.commands == mock_response.commands
+            assert assistant._jarvis.llm == mock_response.llm
+            assert assistant._jarvis.platform == mock_response.platform
+
+    @pytest.mark.anyio
+    async def test_process_resolves_command_markers(self):
+        from unittest.mock import MagicMock
+        from jarvis.telegram_bot import TelegramAssistant
+
+        assistant = TelegramAssistant({})
+        assistant._jarvis = MagicMock()
+        assistant._jarvis.commands.process.return_value = "__MUTE__"
+
+        result = await assistant.process("тихо")
+        assert result == "Хорошо, сэр. Я замолкаю."
+        assistant._jarvis.response.process_query.assert_not_called()
+
+    def test_resolve_reminder_marker(self):
+        from unittest.mock import MagicMock
+        from jarvis.telegram_bot import TelegramAssistant
+
+        assistant = TelegramAssistant({})
+        mock_jarvis = MagicMock()
+        mock_reminder = MagicMock()
+        mock_reminder.add.return_value = "Напоминание установлено: чай через 60 сек."
+        mock_jarvis.reminder_mgr = mock_reminder
+        assistant._jarvis = mock_jarvis
+
+        res = assistant._resolve_marker("__REMINDER__:60:чай")
+        assert res == "Напоминание установлено: чай через 60 сек."
+        mock_reminder.add.assert_called_once_with("чай", 60)
+
+    def test_switch_session(self, tmp_path, monkeypatch):
+        from jarvis.telegram_bot import TelegramAssistant
+        from jarvis.modules import llm as llm_module
+        import json
+
+        ui_hist = tmp_path / "ui-history"
+        ui_hist.mkdir()
+        monkeypatch.setattr(llm_module, "HISTORY_FILE", tmp_path / "history.json")
+
+        assistant = TelegramAssistant({})
+        monkeypatch.setattr(assistant, "_history_dir", lambda: ui_hist)
+
+        # Create session 1
+        s1 = assistant.create_new_session("first")
+        (ui_hist / f"{s1}.json").write_text(
+            json.dumps([{"role": "user", "content": "hello"}]), encoding="utf-8"
+        )
+
+        # Create session 2
+        s2 = assistant.create_new_session("second")
+        assert s2.startswith("second-")
+
+        # Switch back to session 1
+        assert assistant.switch_session(s1) is True
+        assert assistant._current_session == s1
+
+        # Switch to non-existent session
+        assert assistant.switch_session("nonexistent_session") is False
+
+    @pytest.mark.anyio
+    async def test_process_normal_query_delegates_to_response_pipeline(self):
+        from unittest.mock import MagicMock
+        from jarvis.telegram_bot import TelegramAssistant
+
+        assistant = TelegramAssistant({})
+        assistant._jarvis = MagicMock()
+        assistant._jarvis.commands.process.return_value = None
+        assistant._jarvis.response.process_query.return_value = "Ответ модели"
+
+        result = await assistant.process("расскажи что-нибудь")
+        assert result == "Ответ модели"
+        assert assistant._jarvis.response.process_query.call_count == 1
+        args, kwargs = assistant._jarvis.response.process_query.call_args
+        assert args[0] == "расскажи что-нибудь"
+        assert "tool_callback" in kwargs

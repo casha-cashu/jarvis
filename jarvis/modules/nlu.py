@@ -24,21 +24,71 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Dict, List, Tuple
 
+try:
+    from rapidfuzz import fuzz as _rf_fuzz
+
+    _HAVE_RAPIDFUZZ = True
+except ImportError:
+    from difflib import SequenceMatcher
+
+    _HAVE_RAPIDFUZZ = False
+
 import numpy as np
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.linear_model import LogisticRegression
 
 _RAW_CACHE_ENV = os.environ.get("JARVIS_NLU_CACHE")
-# Пустая строка ЯВНО выключает кэш. Раньше Path("") резолвился в CWD и
-# classifier_*.joblib сыпался в текущую директорию (в корень репо).
-_NLU_CACHE_DISABLED = _RAW_CACHE_ENV == ""
+_NLU_CACHE_DISABLED = (
+    _RAW_CACHE_ENV.lower().strip() in ("", "0", "false", "no", "off")
+    if _RAW_CACHE_ENV is not None
+    else False
+)
 CACHE_DIR = Path(
     _RAW_CACHE_ENV
-    if _RAW_CACHE_ENV
+    if (_RAW_CACHE_ENV and not _NLU_CACHE_DISABLED)
     else os.path.expanduser("~/.local/share/jarvis/nlu"),
 )
 
 logger = logging.getLogger(__name__)
+
+
+def normalize_utterance(text: str) -> str:
+    """Normalizes spoken Russian utterances by stripping conversational fillers,
+    wake-words, and mapping colloquial prefixes (e.g. 'погромче' -> 'громче').
+    """
+    if not text:
+        return ""
+    q = text.strip().lower()
+
+    # 1. Remove leading wake-words
+    q = re.sub(r"^(?:джарвис|жарвис|джервис|jarvis)[,\s]+", "", q)
+
+    # 2. Remove polite/conversational fillers
+    fillers = [
+        r"\bпожалуйста\b",
+        r"\bну-ка\b",
+        r"\bбудь добр\b",
+        r"\bплиз\b",
+        r"\bпопробуй\b",
+        r"\bдавай\b",
+    ]
+    for pattern in fillers:
+        q = re.sub(pattern, " ", q)
+
+    # 3. Normalize common auxiliary command phrases
+    q = re.sub(r"\bсделай\s+(?:звук\s+)?погромче\b", "громче", q)
+    q = re.sub(r"\bсделай\s+(?:звук\s+)?громче\b", "громче", q)
+    q = re.sub(r"\bсделай\s+(?:звук\s+)?потише\b", "тише", q)
+    q = re.sub(r"\bсделай\s+(?:звук\s+)?тише\b", "тише", q)
+    q = re.sub(r"\bпогромче\b", "громче", q)
+    q = re.sub(r"\bпотише\b", "тише", q)
+
+    # "а включи" / "а открой" / "а запусти" -> "включи" / "открой" / "запусти"
+    q = re.sub(r"^\s*а\s+(включи|открой|запусти|найди|выключи)\b", r"\1", q)
+
+    # Clean multiple spaces
+    q = re.sub(r"\s+", " ", q).strip()
+    return q
 
 
 def _try_import_joblib():
@@ -112,6 +162,11 @@ def _build_slot_patterns() -> None:
             "volume_amount",
             5,
         ),
+        (
+            re.compile(r"(?:громкость|звук)\s+(?:на\s+)?(\d+)", re.IGNORECASE),
+            "volume_amount",
+            5,
+        ),
     ]
 
 
@@ -176,6 +231,10 @@ class IntentClassifier:
             return
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                os.chmod(path.parent, 0o700)
+            except Exception:
+                pass
             tmp = path.with_suffix(path.suffix + ".tmp")
             joblib.dump(
                 {
@@ -185,6 +244,10 @@ class IntentClassifier:
                 },
                 tmp,
             )
+            try:
+                os.chmod(tmp, 0o600)
+            except Exception:
+                pass
             os.replace(tmp, path)
             logger.debug("NLU classifier cached to %s", path)
         except Exception as e:
@@ -195,6 +258,17 @@ class IntentClassifier:
         """Load a cached classifier. Returns None on miss / corruption."""
         joblib = _try_import_joblib()
         if joblib is None or not path.exists():
+            return None
+
+        try:
+            st = os.stat(path)
+            if (st.st_mode & 0o777) != 0o600:
+                logger.warning(
+                    "NLU cache file %s has insecure permissions, skipping", path
+                )
+                return None
+        except Exception as e:
+            logger.warning("Failed to stat NLU cache: %s", e)
             return None
         try:
             data = joblib.load(path)
@@ -280,6 +354,14 @@ def build_training_data(
 
     # Synthetic patterns — only if there are real commands/apps to contextualise
     if has_cmds or has_apps:
+        for phrase in [
+            "воркспейс 1",
+            "рабочий стол 2",
+            "переключи на 3 воркспейс",
+            "первый воркспейс",
+        ]:
+            training.append(IntentExample(phrase=phrase, intent="system"))
+
         for prefix in ["найди ", "поиск ", "ищи "]:
             for noun in [
                 "рецепт",
@@ -325,6 +407,7 @@ class IntentRouter:
         self._commands = self._load_json(commands_file)
         self._apps = self._load_json(apps_file)
         self._classifier: Optional[IntentClassifier] = None
+        self._examples: List[IntentExample] = []
         self._train()
 
     def _load_json(self, path: str) -> dict:
@@ -336,6 +419,7 @@ class IntentRouter:
 
     def _train(self) -> None:
         examples = build_training_data(self._commands, self._apps)
+        self._examples = examples
         if not examples:
             logger.warning("No training data — IntentRouter will always fallback")
             return
@@ -376,14 +460,49 @@ class IntentRouter:
             return None
         return self._classifier.predict(text)
 
+    def _fuzzy_fallback(self, query: str) -> Optional[Tuple[str, float]]:
+        """Fuzzy-matches query against known training phrases before LLM fallback."""
+        if not self._examples or len(query) < 3:
+            return None
+        query_lower = query.lower()
+        best_score = 0.0
+        best_intent: Optional[str] = None
+        for ex in self._examples:
+            phrase = ex.phrase.lower()
+            if _HAVE_RAPIDFUZZ:
+                score = _rf_fuzz.ratio(query_lower, phrase) / 100.0
+            else:
+                score = SequenceMatcher(None, query_lower, phrase).ratio()
+            if score > best_score:
+                best_score = score
+                best_intent = ex.intent
+        if best_score >= 0.80 and best_intent:
+            return (best_intent, best_score)
+        return None
+
     def parse(self, text: str) -> Dict[str, object]:
-        """Full NLU parse: intent + slots."""
+        """Full NLU parse: intent + slots with normalization and fuzzy fallback."""
+        norm = normalize_utterance(text)
+        query = norm if norm else text
+
         result: Dict[str, object] = {"raw": text}
-        intent = self.classify(text)
+        intent = self.classify(query)
+        if not intent and query != text:
+            intent = self.classify(text)
+
+        if not intent:
+            intent = self._fuzzy_fallback(query)
+            if not intent and query != text:
+                intent = self._fuzzy_fallback(text)
+
         if intent:
             result["intent"] = intent[0]
             result["intent_confidence"] = intent[1]
-        slots = extract_slots(text)
+
+        slots = extract_slots(query)
+        if not slots and query != text:
+            slots = extract_slots(text)
+
         if slots:
             result["slots"] = slots
         return result

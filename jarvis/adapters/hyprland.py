@@ -3,7 +3,38 @@
 Hyprland adapter - commands for Hyprland window manager
 """
 
+from datetime import datetime
+from pathlib import Path
+import shlex
+import shutil
+import subprocess
+from typing import Optional
+
+from jarvis._env import sanitized_env
 from .base import BaseAdapter
+
+
+def _screenshot_path() -> str:
+    d = Path("~/Pictures").expanduser()
+    d.mkdir(parents=True, exist_ok=True)
+    return str(d / f"screenshot-{datetime.now().strftime('%Y%m%d_%H%M%S')}.png")
+
+
+def _slurp_geometry() -> Optional[str]:
+    if not shutil.which("slurp"):
+        return None
+    try:
+        proc = subprocess.run(
+            ["slurp"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            env=sanitized_env(),
+        )
+        geom = (proc.stdout or "").strip()
+        return geom or None
+    except Exception:
+        return None
 
 
 class HyprlandAdapter(BaseAdapter):
@@ -47,13 +78,25 @@ class HyprlandAdapter(BaseAdapter):
 
     # Screenshots
     def screenshot_screen(self) -> str:
-        return "grimblast copy screen"
+        if shutil.which("grimblast"):
+            return "grimblast copy screen"
+        return f"grim {shlex.quote(_screenshot_path())}"
 
     def screenshot_area(self) -> str:
-        return "grimblast copy area"
+        if shutil.which("grimblast"):
+            return "grimblast copy area"
+        geom = _slurp_geometry()
+        if geom:
+            return f"grim -g {shlex.quote(geom)} {shlex.quote(_screenshot_path())}"
+        return f"grim {shlex.quote(_screenshot_path())}"
 
     def screenshot_window(self) -> str:
-        return "grimblast copy active"
+        if shutil.which("grimblast"):
+            return "grimblast copy active"
+        geom = _slurp_geometry()
+        if geom:
+            return f"grim -g {shlex.quote(geom)} {shlex.quote(_screenshot_path())}"
+        return f"grim {shlex.quote(_screenshot_path())}"
 
     # Audio control (PipeWire/PulseAudio)
     def volume_up(self, amount: int = 5) -> str:

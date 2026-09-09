@@ -51,15 +51,28 @@ export default function HistoryTab() {
   const [clearing, setClearing] = useState(false);
 
   useEffect(() => {
-    const onFocus = () => setSessions(loadSessions());
-    window.addEventListener("focus", onFocus);
-    return () => window.removeEventListener("focus", onFocus);
+    const onSync = () => setSessions(loadSessions());
+    window.addEventListener("focus", onSync);
+    window.addEventListener("jarvis:history-updated", onSync);
+    return () => {
+      window.removeEventListener("focus", onSync);
+      window.removeEventListener("jarvis:history-updated", onSync);
+    };
   }, []);
+
+  useEffect(() => {
+    if (!confirmOpen) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setConfirmOpen(false);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [confirmOpen]);
 
   const items: FlatItem[] = useMemo(() => {
     const flat: FlatItem[] = [];
-    for (const session of [...sessions].reverse()) {
-      for (const m of session.messages) {
+    for (const session of sessions) {
+      for (const m of session.messages ?? []) {
         if (m.role === "system") continue;
         flat.push({
           key: `${session.id}-${m.id}`,
@@ -71,7 +84,7 @@ export default function HistoryTab() {
         });
       }
     }
-    return flat.reverse(); // newest first
+    return flat;
   }, [sessions]);
 
   const filtered = items.filter((h) =>
@@ -87,13 +100,34 @@ export default function HistoryTab() {
     });
   };
 
+  const allFilteredSelected = filtered.length > 0 && filtered.every((i) => selected.has(i.key));
+
   const toggleAll = () => {
-    if (selected.size === filtered.length) setSelected(new Set());
-    else setSelected(new Set(filtered.map((i) => i.key)));
+    if (allFilteredSelected) {
+      setSelected((prev) => {
+        const next = new Set(prev);
+        for (const i of filtered) next.delete(i.key);
+        return next;
+      });
+    } else {
+      setSelected((prev) => {
+        const next = new Set(prev);
+        for (const i of filtered) next.add(i.key);
+        return next;
+      });
+    }
   };
 
   /** Removes selected messages; drops sessions left with no messages. */
-  const deleteSelected = () => {
+  const deleteSelected = async () => {
+    const touched = Array.from(
+      new Set(
+        sessions
+          .filter((s) => s.messages.some((m) => selected.has(`${s.id}-${m.id}`)))
+          .map((s) => s.id),
+      ),
+    );
+
     const remaining = sessions
       .map((session) => ({
         ...session,
@@ -105,29 +139,26 @@ export default function HistoryTab() {
     saveSessions(remaining);
     setSessions(remaining);
     setSelected(new Set());
+    window.dispatchEvent(new CustomEvent("jarvis:history-updated", { detail: { source: "history" } }));
+
+    const remainingIds = new Set(remaining.map((s) => s.id));
+    const droppedSessionIds = touched.filter((id) => !remainingIds.has(id));
+
+    for (const id of droppedSessionIds) {
+      await purgeBackendSession(id).catch(() => undefined);
+    }
   };
 
   const requestDelete = () => {
     if (selected.size === 0) return;
-    if (skipConfirm) deleteSelected();
+    if (skipConfirm) void deleteSelected();
     else setConfirmOpen(true);
   };
 
-  const confirmDelete = async () => {
+  const confirmDelete = () => {
     if (skipConfirm) localStorage.setItem(SKIP_CONFIRM_KEY, "1");
     setConfirmOpen(false);
-    // Затронутые сессии: их бекенд-архивы purge'ются, иначе «удалённая
-    // память модели» воскресала при следующем switch_session (clear_history
-    // чистит только живой history.json, не архивы ui-history/<sid>.json).
-    const touched = new Set(
-      sessions
-        .filter((s) => s.messages.some((m) => selected.has(`${s.id}-${m.id}`)))
-        .map((s) => s.id),
-    );
-    deleteSelected();
-    for (const id of touched) {
-      await purgeBackendSession(id).catch(() => undefined);
-    }
+    void deleteSelected();
   };
 
   const handleClearAll = async () => {
@@ -139,6 +170,7 @@ export default function HistoryTab() {
       localStorage.removeItem(CHAT_STORAGE_KEY);
       setSessions([]);
       setSelected(new Set());
+      window.dispatchEvent(new CustomEvent("jarvis:history-updated", { detail: { source: "history" } }));
     } finally {
       setClearing(false);
     }
@@ -160,9 +192,9 @@ export default function HistoryTab() {
           <button
             onClick={toggleAll}
             className="rounded p-1.5 text-text-muted hover:bg-surface-2 hover:text-text"
-            title={selected.size === filtered.length ? "Снять выделение" : "Выбрать все"}
+            title={allFilteredSelected ? "Снять выделение" : "Выбрать все"}
           >
-            {selected.size === filtered.length && filtered.length > 0
+            {allFilteredSelected
               ? <CheckSquare size={14} />
               : <Square size={14} />}
           </button>
@@ -238,7 +270,7 @@ export default function HistoryTab() {
 
           {filtered.length === 0 && (
             <div className="py-12 text-center text-sm text-text-muted">
-              {sessions.length === 0 ? "История пуста" : "Ничего не найдено"}
+              {items.length === 0 ? "История пуста" : "Ничего не найдено"}
             </div>
           )}
         </div>
@@ -246,7 +278,14 @@ export default function HistoryTab() {
 
       {/* Confirm dialog */}
       {confirmOpen && (
-        <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/60 p-6">
+        <div
+          role="dialog"
+          aria-modal="true"
+          tabIndex={-1}
+          onClick={(e) => e.target === e.currentTarget && setConfirmOpen(false)}
+          onKeyDown={(e) => e.key === "Escape" && setConfirmOpen(false)}
+          className="absolute inset-0 z-50 flex items-center justify-center bg-black/60 p-6"
+        >
           <div className="flex w-full max-w-sm flex-col gap-4 rounded-xl border border-border bg-surface p-5 shadow-2xl">
             <div className="flex items-start justify-between gap-2">
               <h3 className="text-base font-medium text-text">Удалить сообщения?</h3>
@@ -258,8 +297,7 @@ export default function HistoryTab() {
               </button>
             </div>
             <p className="text-sm text-text-muted">
-              Будет удалено {selected.size} сообщ. из локальных чатов и память
-              модели. Действие необратимо.
+              Будет удалено {selected.size} сообщ. из истории. Действие необратимо.
             </p>
             <label className="flex cursor-pointer items-center gap-2 text-xs text-text-muted">
               <input

@@ -52,7 +52,8 @@ class AudioPipeline:
             from jarvis.modules.stt_whisper import WhisperSTT
 
             wcfg = stt_cfg.get("whisper", {})
-            self.stt = WhisperSTT(
+            initial_prompt = wcfg.get("initial_prompt")
+            whisper_kwargs: dict[str, Any] = dict(
                 model_size=wcfg.get("model_size", "tiny"),
                 model_path=wcfg.get("model_path") or None,
                 sample_rate=sample_rate,
@@ -62,6 +63,9 @@ class AudioPipeline:
                 partial_interval_ms=wcfg.get("partial_interval_ms", 1000),
                 silence_threshold=silence_threshold,
             )
+            if initial_prompt is not None:
+                whisper_kwargs["initial_prompt"] = initial_prompt
+            self.stt = WhisperSTT(**whisper_kwargs)
         else:
             try:
                 from jarvis.modules.stt import VoskSTT
@@ -96,6 +100,8 @@ class AudioPipeline:
                 callback=on_partial,
             )
         except Exception as e:
+            if not self._started:
+                return None
             logger.error(f"❌ STT ошибка: {e}")
             return None
 
@@ -105,4 +111,5 @@ class AudioPipeline:
                 self.stt.close()
             except Exception:
                 pass
+        self.stt = None
         self._started = False

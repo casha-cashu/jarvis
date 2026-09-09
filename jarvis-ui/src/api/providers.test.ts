@@ -11,13 +11,28 @@ Object.defineProperty(globalThis, "localStorage", {
   configurable: true,
 });
 
+// Mock window.dispatchEvent
+const dispatchedEvents: Event[] = [];
+Object.defineProperty(globalThis, "window", {
+  value: {
+    dispatchEvent: (e: Event) => {
+      dispatchedEvents.push(e);
+      return true;
+    },
+  },
+  configurable: true,
+});
+
 import {
   addProvider,
   clearActiveModel,
   deleteProvider,
   getActiveModel,
+  getProvider,
+  isLocalProvider,
   loadProviders,
   setActiveModel,
+  setProviders,
   updateProvider,
   type ProviderEntry,
 } from "./providers";
@@ -31,9 +46,10 @@ const entry: Omit<ProviderEntry, "id"> = {
 
 beforeEach(() => {
   store.clear();
+  dispatchedEvents.length = 0;
 });
 
-describe("providers", () => {
+describe("providers store and CRUD", () => {
   it("addProvider добавляет и сохраняет", () => {
     const next = addProvider(entry);
     expect(next).toHaveLength(1);
@@ -45,6 +61,12 @@ describe("providers", () => {
     const [p] = addProvider(entry);
     updateProvider(p.id, { name: "Мой Ollama" });
     expect(loadProviders()[0].name).toBe("Мой Ollama");
+  });
+
+  it("getProvider возвращает провайдера по id или null", () => {
+    const [p] = addProvider(entry);
+    expect(getProvider(p.id)).toEqual(p);
+    expect(getProvider("nonexistent-id")).toBeNull();
   });
 
   it("deleteProvider удаляет и сбрасывает активную модель", () => {
@@ -71,5 +93,56 @@ describe("providers", () => {
     setActiveModel(p.id, "m1");
     clearActiveModel();
     expect(getActiveModel()).toBeNull();
+  });
+
+  it("диспатчит jarvis:providers-changed при add, update, delete, setProviders", () => {
+    dispatchedEvents.length = 0;
+    const [p] = addProvider(entry);
+    expect(dispatchedEvents.some((e) => e.type === "jarvis:providers-changed")).toBe(true);
+
+    dispatchedEvents.length = 0;
+    updateProvider(p.id, { name: "Ollama 2" });
+    expect(dispatchedEvents.some((e) => e.type === "jarvis:providers-changed")).toBe(true);
+
+    dispatchedEvents.length = 0;
+    setProviders([p]);
+    expect(dispatchedEvents.some((e) => e.type === "jarvis:providers-changed")).toBe(true);
+
+    dispatchedEvents.length = 0;
+    deleteProvider(p.id);
+    expect(dispatchedEvents.some((e) => e.type === "jarvis:providers-changed")).toBe(true);
+  });
+
+  it("мигрирует старые пресеты из jarvis.ui.api-presets", () => {
+    const legacy = [
+      {
+        id: "legacy-1",
+        name: "Old Ollama",
+        type: "openai" as const,
+        endpoint: "http://127.0.0.1:11434/v1",
+        apiKey: "",
+      },
+    ];
+    store.set("jarvis.ui.api-presets", JSON.stringify(legacy));
+
+    const loaded = loadProviders();
+    expect(loaded).toHaveLength(1);
+    expect(loaded[0].id).toBe("legacy-1");
+    expect(store.get("jarvis.ui.providers")).toBeDefined();
+  });
+});
+
+describe("isLocalProvider", () => {
+  it("определяет локальные провайдеры по URL и имени", () => {
+    expect(isLocalProvider({ endpoint: "http://localhost:11434/v1" })).toBe(true);
+    expect(isLocalProvider({ endpoint: "http://127.0.0.1:1234/v1" })).toBe(true);
+    expect(isLocalProvider({ endpoint: "http://0.0.0.0:8000/v1" })).toBe(true);
+    expect(isLocalProvider({ endpoint: "http://[::1]:11434/v1" })).toBe(true);
+    expect(isLocalProvider({ name: "Ollama local", endpoint: "http://my-server:8000/v1" })).toBe(true);
+    expect(isLocalProvider({ name: "LM Studio", endpoint: "http://remote:1234/v1" })).toBe(true);
+    expect(isLocalProvider({ type: "ollama" })).toBe(true);
+    expect(isLocalProvider({ type: "lmstudio" })).toBe(true);
+    expect(isLocalProvider({ name: "OpenAI", endpoint: "https://api.openai.com/v1" })).toBe(false);
+    expect(isLocalProvider({ name: "Anthropic", endpoint: "https://api.anthropic.com/v1" })).toBe(false);
   });
 });

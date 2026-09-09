@@ -51,6 +51,13 @@ class TestParseTime:
         assert seconds == 600
         assert text == "сделать зарядку"
 
+    def test_napomni_action_before_time(self):
+        result = parse_time("напомни купить хлеб через 5 минут")
+        assert result is not None
+        seconds, text = result
+        assert seconds == 300
+        assert text == "купить хлеб"
+
     def test_timer(self):
         result = parse_time("таймер на 10 минут")
         assert result is not None
@@ -276,3 +283,29 @@ class TestReminderPersistence:
         with patch("jarvis.modules.reminder.REMINDERS_FILE", new=non_existent):
             mgr = ReminderManager(on_trigger=lambda text: None)
             assert mgr.timers == []
+
+    def test_jarvis_on_reminder_calls_subprocess_run(self, monkeypatch):
+        """Jarvis._on_reminder must call subprocess.run with timeout=5, DEVNULL, sanitized_env."""
+        import subprocess
+        from jarvis import Jarvis
+
+        j = Jarvis.__new__(Jarvis)
+        j._speak = MagicMock()
+        j.platform = MagicMock()
+        j.platform.notify.return_value = "notify-send test"
+
+        mock_run = MagicMock()
+        monkeypatch.setattr(subprocess, "run", mock_run)
+        mock_popen = MagicMock()
+        monkeypatch.setattr(subprocess, "Popen", mock_popen)
+
+        j._on_reminder("купить хлеб")
+
+        j._speak.assert_called_once_with("Напоминаю: купить хлеб")
+        mock_run.assert_called_once()
+        mock_popen.assert_not_called()
+        call_kwargs = mock_run.call_args.kwargs
+        assert call_kwargs.get("timeout") == 5
+        assert call_kwargs.get("stdout") == subprocess.DEVNULL
+        assert call_kwargs.get("stderr") == subprocess.DEVNULL
+        assert "env" in call_kwargs

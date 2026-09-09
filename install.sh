@@ -37,7 +37,7 @@ fi
 
 install_arch() {
     echo "📦 Установка зависимостей (Arch/Manjaro/CachyOS)..."
-    sudo pacman -S --needed python python-pip portaudio python-pyaudio wtype xdotool --noconfirm || true
+    sudo pacman -S --needed python python-pip portaudio python-pyaudio wtype xdotool mpv grim slurp wl-clipboard --noconfirm || true
     # piper-tts в AUR (yay/paru), устанавливается опционально
     if command -v yay &> /dev/null; then
         yay -S --needed piper-tts --noconfirm 2>/dev/null || true
@@ -53,13 +53,13 @@ install_debian() {
     sudo apt update
     sudo apt install -y python3 python3-pip python3-venv python3-dev \
         portaudio19-dev python3-pyaudio \
-        libnotify-bin xdotool wtype espeak-ng mpv || true
+        libnotify-bin xdotool wtype espeak-ng mpv grim slurp wl-clipboard || true
 }
 
 install_fedora() {
     echo "📦 Установка зависимостей (Fedora)..."
     sudo dnf install -y python3 python3-pip gcc python3-devel portaudio-devel \
-        libnotify xdotool wtype espeak-ng mpv || true
+        libnotify xdotool wtype espeak-ng mpv grim slurp wl-clipboard || true
 }
 
 install_macos() {
@@ -134,8 +134,13 @@ fi
 
 # ── Модели ──
 echo ""
-echo "📥 Модели ставятся интерактивно: source venv/bin/activate && jarvis setup"
-echo "   (скачает Vosk модель и Piper-голос)"
+if [[ "$*" == *"--with-models"* || "$*" == *"--all"* ]]; then
+    echo "📥 Автоматическая загрузка моделей..."
+    python3 -m jarvis setup || true
+else
+    echo "📥 Модели ставятся интерактивно: source venv/bin/activate && jarvis setup"
+    echo "   (скачает Vosk модель и Piper-голос, либо передай флаг --all при установке)"
+fi
 
 echo ""
 echo "✅ Установка завершена!"

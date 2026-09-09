@@ -492,13 +492,13 @@ def test_set_config_value_roundtrip_preserves_comments(tmp_path, monkeypatch):
 
 
 def test_set_config_value_whitelist():
-    """Произвольные ключи из GUI писать нельзя."""
+    """Произвольные корневые секции из GUI писать нельзя."""
     bridge = Bridge()
     result = bridge.handle(
         {
             "command": "set_config_value",
-            "section": "llm",
-            "key": "provider",
+            "section": "unauthorized_section",
+            "key": "field",
             "value": "evil",
         }
     )
@@ -522,3 +522,217 @@ def test_set_config_value_rejects_schema_break(tmp_path, monkeypatch):
     )
     assert result["ok"] is False
     assert cfg.read_text(encoding="utf-8") == "stt:\n  engine: vosk\n"
+
+
+def test_set_config_value_dot_notation(tmp_path, monkeypatch):
+    """Поддержка вложенных ключей dot-notation."""
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text(
+        "stt:\n  whisper:\n    model_size: tiny\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("JARVIS_CONFIG_PATH", str(cfg))
+    bridge = Bridge()
+    result = bridge.handle(
+        {
+            "command": "set_config_value",
+            "section": "stt",
+            "key": "whisper.model_size",
+            "value": "base",
+        }
+    )
+    assert result["ok"] is True
+    assert "base" in cfg.read_text(encoding="utf-8")
+
+
+def test_continuous_mode_commands():
+    bridge = Bridge()
+    # Initially false
+    res = bridge.handle({"command": "get_continuous_mode"})
+    assert res["ok"] is True
+    assert res["continuous"] is False
+
+    # Set true
+    res = bridge.handle({"command": "set_continuous_mode", "enabled": True})
+    assert res["ok"] is True
+    assert res["continuous"] is True
+
+    # Check again
+    res = bridge.handle({"command": "get_continuous_mode"})
+    assert res["continuous"] is True
+
+
+def test_scenario_bridge_commands(tmp_path, monkeypatch):
+    monkeypatch.setenv("JARVIS_DATA_DIR", str(tmp_path))
+    bridge = Bridge()
+
+    # Get scenarios
+    res = bridge.handle({"command": "get_scenarios"})
+    assert res["ok"] is True
+
+    # Save scenario
+    res = bridge.handle(
+        {
+            "command": "save_scenario",
+            "id": "macro_1",
+            "data": {
+                "name": "Macro 1",
+                "actions": [{"type": "speak", "text": "Hello"}],
+            },
+        }
+    )
+    assert res["ok"] is True
+
+    # Delete scenario
+    res = bridge.handle({"command": "delete_scenario", "id": "macro_1"})
+    assert res["ok"] is True
+
+
+def test_bridge_streaming_and_tool_emits():
+    import io
+
+    bridge = Bridge()
+    stream_out = io.StringIO()
+    bridge._proto_out = stream_out
+    bridge._current_id = "msg-123"
+
+    # Emit delta
+    bridge._emit_delta("привет ")
+    # Emit tool
+    bridge._emit_tool("bash", {"cmd": "ls"})
+    # Emit tool result
+    bridge._emit_tool_result("bash", {"cmd": "ls"}, "file1\nfile2")
+
+    lines = [json.loads(line) for line in stream_out.getvalue().strip().split("\n")]
+    assert len(lines) == 3
+
+    assert lines[0] == {"ok": True, "stream": True, "delta": "привет ", "id": "msg-123"}
+    assert lines[1] == {
+        "ok": True,
+        "tool": {"name": "bash", "args": {"cmd": "ls"}},
+        "id": "msg-123",
+    }
+    assert lines[2] == {
+        "ok": True,
+        "tool_result": {
+            "name": "bash",
+            "args": {"cmd": "ls"},
+            "output": "file1\nfile2",
+        },
+        "id": "msg-123",
+    }
+
+
+def test_bridge_local_endpoint_without_api_key():
+    # Local endpoint should validate without api_key
+    local_cfg = {
+        "type": "openai",
+        "endpoint": "http://localhost:11434/v1",
+        "model": "qwen2.5:3b",
+    }
+    assert Bridge._validate_config(local_cfg) is None
+    assert Bridge._is_local_endpoint("http://localhost:11434/v1") is True
+    assert Bridge._is_local_endpoint("http://127.0.0.1:1234/v1") is True
+    assert Bridge._is_local_endpoint("http://lmstudio.local/v1") is True
+    assert Bridge._is_local_endpoint("https://api.openai.com/v1") is False
+
+
+def test_bridge_get_config_masks_secrets(tmp_path, monkeypatch):
+    import yaml
+
+    cfg_data = {
+        "llm": {
+            "provider": "openai",
+            "openai": {
+                "api_key": "sk-1234567890abcdef",
+                "model": "gpt-4o",
+            },
+        },
+        "telegram": {
+            "bot_token": "secret_bot_token_value",
+        },
+    }
+    cfg_file = tmp_path / "mask_test_config.yaml"
+    cfg_file.write_text(yaml.dump(cfg_data), encoding="utf-8")
+    monkeypatch.setenv("JARVIS_CONFIG_PATH", str(cfg_file))
+
+    bridge = Bridge()
+    res = bridge.handle({"command": "get_config"})
+    assert res["ok"] is True
+    masked_llm_key = res["config"]["llm"]["openai"]["api_key"]
+    assert masked_llm_key.startswith("sk-1")
+    assert "***" in masked_llm_key
+    assert "sk-1234567890abcdef" not in masked_llm_key
+
+    masked_token = res["config"]["telegram"]["bot_token"]
+    assert "***" in masked_token
+    assert "secret_bot_token_value" not in masked_token
+
+
+def test_set_config_value_preserves_masked_secrets(tmp_path, monkeypatch):
+    """If key contains api_key/token/secret/password and new value has '***',
+    existing non-empty secret must not be overwritten."""
+    import yaml
+
+    cfg_data = {
+        "llm": {
+            "provider": "openai",
+            "provider_config": {
+                "openai": {
+                    "api_key": "sk-real-secret-12345",
+                    "model": "gpt-4o",
+                },
+            },
+        },
+        "telegram": {
+            "token": "real_telegram_token",
+        },
+    }
+    cfg_file = tmp_path / "secret_test_config.yaml"
+    cfg_file.write_text(yaml.dump(cfg_data), encoding="utf-8")
+    monkeypatch.setenv("JARVIS_CONFIG_PATH", str(cfg_file))
+
+    bridge = Bridge()
+    res = bridge.handle(
+        {
+            "command": "set_config_value",
+            "section": "llm.provider_config.openai",
+            "key": "api_key",
+            "value": "sk-r***",
+        }
+    )
+    assert res["ok"] is True
+    assert res.get("note") == "Значение оставлено без изменений"
+
+    # Verify original secret was preserved on disk
+    updated = yaml.safe_load(cfg_file.read_text(encoding="utf-8"))
+    assert (
+        updated["llm"]["provider_config"]["openai"]["api_key"] == "sk-real-secret-12345"
+    )
+
+    # Also test for telegram token
+    res_tg = bridge.handle(
+        {
+            "command": "set_config_value",
+            "section": "telegram",
+            "key": "token",
+            "value": "***",
+        }
+    )
+    assert res_tg["ok"] is True
+    assert res_tg.get("note") == "Значение оставлено без изменений"
+    updated_tg = yaml.safe_load(cfg_file.read_text(encoding="utf-8"))
+    assert updated_tg["telegram"]["token"] == "real_telegram_token"
+
+
+def test_restart_allowed_while_message_busy(monkeypatch):
+    """'restart' must always be allowed even when _message_busy is True for emergency recovery."""
+    bridge = Bridge()
+    monkeypatch.setattr(bridge, "_start", lambda: {"ok": True, "started": True})
+    assert bridge._try_begin_message() is True
+    assert bridge._message_busy is True
+
+    res = bridge.handle({"command": "restart"})
+    assert res["ok"] is True
+    assert res.get("started") is True
+    assert bridge._message_busy is False

@@ -185,3 +185,93 @@ class TestNewMethods:
             assert "poweroff" in result.lower() or "shutdown" in result.lower()
         else:
             assert "shut" in result.lower()
+
+
+class TestMacOSSpecificCommands:
+    def test_macos_screenshot_screen_no_clipboard_flag(self):
+        adapter = _get_adapter("macos")
+        res = adapter.screenshot_screen()
+        assert "screencapture" in res
+        assert "-c" not in res.split()
+
+    def test_macos_lock_screen_pmset(self):
+        adapter = _get_adapter("macos")
+        res = adapter.lock_screen()
+        assert res == "pmset displaysleepnow"
+
+
+class TestWave4AdaptersRegression:
+    def test_kde_qdbus_fallback(self, monkeypatch):
+        import shutil
+        from jarvis.adapters.kde import KDEAdapter
+
+        # Case 1: qdbus exists
+        monkeypatch.setattr(
+            shutil,
+            "which",
+            lambda cmd: "/usr/bin/qdbus" if cmd == "qdbus" else None,
+        )
+        adapter = KDEAdapter()
+        assert adapter.workspace_switch(2).startswith("qdbus ")
+
+        # Case 2: only qdbus6 exists
+        monkeypatch.setattr(
+            shutil,
+            "which",
+            lambda cmd: "/usr/bin/qdbus6" if cmd == "qdbus6" else None,
+        )
+        adapter = KDEAdapter()
+        assert adapter.workspace_switch(2).startswith("qdbus6 ")
+
+        # Case 3: only qdbus-qt6 exists
+        monkeypatch.setattr(
+            shutil,
+            "which",
+            lambda cmd: "/usr/bin/qdbus-qt6" if cmd == "qdbus-qt6" else None,
+        )
+        adapter = KDEAdapter()
+        assert adapter.workspace_switch(2).startswith("qdbus-qt6 ")
+
+        # Case 4: none exists -> defaults to qdbus
+        monkeypatch.setattr(shutil, "which", lambda cmd: None)
+        adapter = KDEAdapter()
+        assert adapter.workspace_switch(2).startswith("qdbus ")
+
+    def test_hyprland_screenshot_grimblast_and_grim_fallback(self, monkeypatch):
+        import shutil
+        from jarvis.adapters.hyprland import HyprlandAdapter
+
+        # Case 1: grimblast exists
+        monkeypatch.setattr(
+            shutil,
+            "which",
+            lambda cmd: "/usr/bin/grimblast" if cmd == "grimblast" else None,
+        )
+        adapter = HyprlandAdapter()
+        assert adapter.screenshot_screen() == "grimblast copy screen"
+        assert adapter.screenshot_area() == "grimblast copy area"
+        assert adapter.screenshot_window() == "grimblast copy active"
+
+        # Case 2: grimblast missing, grim available
+        monkeypatch.setattr(
+            shutil,
+            "which",
+            lambda cmd: "/usr/bin/grim" if cmd == "grim" else None,
+        )
+        adapter = HyprlandAdapter()
+        screen_cmd = adapter.screenshot_screen()
+        assert screen_cmd.startswith("grim ")
+        assert "grimblast" not in screen_cmd
+
+    def test_window_floating_kde_and_gnome_no_false_echo(self):
+        from jarvis.adapters.kde import KDEAdapter
+        from jarvis.adapters.gnome import GNOMEAdapter
+
+        kde = KDEAdapter()
+        gnome = GNOMEAdapter()
+
+        # Must not return echo with exit code 0
+        assert "echo" not in kde.window_floating()
+        assert "echo" not in gnome.window_floating()
+        assert kde.window_floating() == "false"
+        assert gnome.window_floating() == "false"

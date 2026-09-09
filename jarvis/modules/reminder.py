@@ -12,6 +12,7 @@ import time
 import logging
 import threading
 import subprocess
+import uuid
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator, Optional, Callable
@@ -87,42 +88,43 @@ def _modify_reminders() -> Iterator[list]:
         _save_reminders_raw(reminders)
 
 
+NUM_WORDS = {
+    "ноль": 0,
+    "один": 1,
+    "одну": 1,
+    "одна": 1,
+    "два": 2,
+    "две": 2,
+    "три": 3,
+    "четыре": 4,
+    "пять": 5,
+    "шесть": 6,
+    "семь": 7,
+    "восемь": 8,
+    "девять": 9,
+    "десять": 10,
+    "одиннадцать": 11,
+    "двенадцать": 12,
+    "тринадцать": 13,
+    "четырнадцать": 14,
+    "пятнадцать": 15,
+    "шестнадцать": 16,
+    "семнадцать": 17,
+    "восемнадцать": 18,
+    "девятнадцать": 19,
+    "двадцать": 20,
+    "тридцать": 30,
+    "сорок": 40,
+    "пятьдесят": 50,
+    "шестьдесят": 60,
+}
+
+
 def parse_time(text: str) -> Optional[tuple]:
     """
     Парсит время из текста.
     Возвращает (секунд, текст_напоминания) или None.
     """
-
-    NUM_WORDS = {
-        "ноль": 0,
-        "один": 1,
-        "одну": 1,
-        "одна": 1,
-        "два": 2,
-        "две": 2,
-        "три": 3,
-        "четыре": 4,
-        "пять": 5,
-        "шесть": 6,
-        "семь": 7,
-        "восемь": 8,
-        "девять": 9,
-        "десять": 10,
-        "одиннадцать": 11,
-        "двенадцать": 12,
-        "тринадцать": 13,
-        "четырнадцать": 14,
-        "пятнадцать": 15,
-        "шестнадцать": 16,
-        "семнадцать": 17,
-        "восемнадцать": 18,
-        "девятнадцать": 19,
-        "двадцать": 20,
-        "тридцать": 30,
-        "сорок": 40,
-        "пятьдесят": 50,
-        "шестьдесят": 60,
-    }
 
     UNIT_WORDS = r"(?:секунд[а-я]*|минут[а-я]*|час[а-я]*)"
     NUMBER = r"(?:\d+|" + "|".join(NUM_WORDS.keys()) + r")"
@@ -146,33 +148,28 @@ def parse_time(text: str) -> Optional[tuple]:
     text_lower = text.lower().strip()
 
     patterns = [
-        rf"(?:через|подожди)\s+({NUMBER})\s+({UNIT_WORDS})\s+(.+)$",
-        rf"напомни\s+через\s+({NUMBER})\s+({UNIT_WORDS})\s+(.+)$",
-        rf"напомни\s+(.+?)\s+через\s+({NUMBER})\s+({UNIT_WORDS})$",
-        rf"(?:поставь\s+)?таймер(?:а)?\s+на\s+({NUMBER})\s+({UNIT_WORDS})(?:\s*(.+))?$",
-        rf"(?:через|подожди)\s+({NUMBER})\s+({UNIT_WORDS})$",
+        rf"(?:через|подожди)\s+(?P<amount>{NUMBER})\s+(?P<unit>{UNIT_WORDS})\s+(?P<text>.+)$",
+        rf"напомни\s+через\s+(?P<amount>{NUMBER})\s+(?P<unit>{UNIT_WORDS})\s+(?P<text>.+)$",
+        rf"напомни\s+(?P<text>.+?)\s+через\s+(?P<amount>{NUMBER})\s+(?P<unit>{UNIT_WORDS})$",
+        rf"(?:поставь\s+)?таймер(?:а)?\s+на\s+(?P<amount>{NUMBER})\s+(?P<unit>{UNIT_WORDS})(?:\s*(?P<text>.+))?$",
+        rf"(?:(?:через|подожди)\s+)?(?P<amount>{NUMBER})\s+(?P<unit>{UNIT_WORDS})$",
     ]
 
     for pat in patterns:
         m = re.search(pat, text_lower)
         if m:
-            groups = m.groups()
-            groups = tuple("" if g is None else g for g in groups)
+            gd = m.groupdict()
+            amount_str = gd.get("amount") or ""
+            unit_str = gd.get("unit") or ""
+            reminder_text = (gd.get("text") or "").strip()
 
-            if len(groups) >= 2:
-                amount_str = groups[0]
-                unit_str = groups[1]
-                reminder_text = (
-                    groups[2].strip() if len(groups) > 2 and groups[2] else ""
-                )
+            amount = _amount(amount_str)
+            seconds = amount * _unit_multiplier(unit_str)
 
-                amount = _amount(amount_str)
-                seconds = amount * _unit_multiplier(unit_str)
-
-                if reminder_text:
-                    text_clean = reminder_text.rstrip(".")
-                    return (seconds, text_clean)
-                return (seconds, f"прошло {amount} {unit_str}")
+            if reminder_text:
+                text_clean = reminder_text.rstrip(".")
+                return (seconds, text_clean)
+            return (seconds, f"прошло {amount} {unit_str}")
 
     return None
 
@@ -226,7 +223,11 @@ class ReminderManager:
     def _cleanup_fired_timers(self):
         """Удаляет сработавшие и отменённые таймеры из списка"""
         with self._lock:
-            active = [t for t in self.timers if t.is_alive()]
+            active = [
+                t
+                for t in self.timers
+                if t.is_alive() and t is not threading.current_thread()
+            ]
             removed = len(self.timers) - len(active)
             self.timers = active
         if removed:
@@ -235,8 +236,27 @@ class ReminderManager:
     def _fire(self, reminder: dict):
         text = reminder["text"]
         logger.info(f"⏰ Напоминание сработало: {text}")
+        with _modify_reminders() as reminders:
+            rid = reminder.get("id")
+            rtext = reminder.get("text")
+            rtime = reminder.get("time")
+            target_idx = None
+            for idx, r in enumerate(reminders):
+                if rid and r.get("id") == rid:
+                    target_idx = idx
+                    break
+                elif (
+                    not rid
+                    and r.get("text") == rtext
+                    and abs(r.get("time", 0) - rtime) < 2.0
+                ):
+                    target_idx = idx
+                    break
+            if target_idx is None:
+                # Напоминание уже сработало и удалено другим процессом (например, Telegram или GUI)!
+                return
+            del reminders[target_idx]
         self.on_trigger(text)
-        self._prune()
         self._cleanup_fired_timers()
 
     def add(self, text: str, seconds: int) -> str:
@@ -244,7 +264,12 @@ class ReminderManager:
             self.on_trigger(text)
             return "Напоминание сработало."
 
-        reminder = {"text": text, "time": time.time() + seconds, "created": time.time()}
+        reminder = {
+            "id": uuid.uuid4().hex[:12],
+            "text": text,
+            "time": time.time() + seconds,
+            "created": time.time(),
+        }
 
         with _modify_reminders() as reminders:
             reminders.append(reminder)

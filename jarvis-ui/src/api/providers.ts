@@ -22,7 +22,10 @@ const ACTIVE_KEY = "jarvis.ui.active-model";
 export function loadProviders(): ProviderEntry[] {
   try {
     const raw = localStorage.getItem(PROVIDERS_KEY);
-    if (raw) return JSON.parse(raw) as ProviderEntry[];
+    if (raw !== null) {
+      const parsed = JSON.parse(raw) as ProviderEntry[];
+      if (Array.isArray(parsed)) return parsed;
+    }
   } catch {
     /* fall through to migration */
   }
@@ -55,19 +58,32 @@ export function loadProviders(): ProviderEntry[] {
   return [];
 }
 
+function notifyProvidersChanged(): void {
+  if (typeof window !== "undefined" && typeof window.dispatchEvent === "function") {
+    window.dispatchEvent(new CustomEvent("jarvis:providers-changed"));
+  }
+}
+
 export function saveProviders(providers: ProviderEntry[]): void {
   localStorage.setItem(PROVIDERS_KEY, JSON.stringify(providers));
+}
+
+export function setProviders(providers: ProviderEntry[]): void {
+  saveProviders(providers);
+  notifyProvidersChanged();
 }
 
 export function addProvider(entry: Omit<ProviderEntry, "id">): ProviderEntry[] {
   const next = [...loadProviders(), { ...entry, id: crypto.randomUUID() }];
   saveProviders(next);
+  notifyProvidersChanged();
   return next;
 }
 
 export function updateProvider(id: string, patch: Partial<ProviderEntry>): ProviderEntry[] {
   const next = loadProviders().map((p) => (p.id === id ? { ...p, ...patch } : p));
   saveProviders(next);
+  notifyProvidersChanged();
   return next;
 }
 
@@ -76,7 +92,28 @@ export function deleteProvider(id: string): ProviderEntry[] {
   saveProviders(next);
   const active = getActiveModel();
   if (active && active.providerId === id) clearActiveModel();
+  notifyProvidersChanged();
   return next;
+}
+
+/** Checks whether a provider is a local service (Ollama, LM Studio, etc.) where API key is optional. */
+export function isLocalProvider(provider: { endpoint?: string; name?: string; type?: string }): boolean {
+  const ep = (provider.endpoint || "").toLowerCase();
+  const name = (provider.name || "").toLowerCase();
+  const type = (provider.type || "").toLowerCase();
+  if (type === "ollama" || type === "lmstudio") return true;
+  return (
+    ep.includes("localhost") ||
+    ep.includes("127.0.0.1") ||
+    ep.includes("0.0.0.0") ||
+    ep.includes("::1") ||
+    ep.includes("ollama") ||
+    ep.includes("lmstudio") ||
+    ep.includes("lm-studio") ||
+    name.includes("ollama") ||
+    name.includes("lm studio") ||
+    name.includes("lmstudio")
+  );
 }
 
 export function getProvider(id: string): ProviderEntry | null {
@@ -89,7 +126,6 @@ export function getActiveModel(): ActiveModel | null {
     if (!raw) return null;
     const parsed = JSON.parse(raw) as ActiveModel;
     if (!parsed.providerId || !parsed.model) return null;
-    // Drop selection pointing at a deleted provider.
     return getProvider(parsed.providerId) ? parsed : null;
   } catch {
     return null;

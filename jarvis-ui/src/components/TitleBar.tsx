@@ -1,31 +1,35 @@
 import { Moon, Sun, Laptop, Minus, Maximize2, X } from "lucide-react";
 import { useTheme, type Theme } from "../hooks/useTheme";
 import { useState, useRef, useEffect } from "react";
+import { getBackendStatus, type BackendStatus } from "../api/backend";
+import { tauriCommand } from "../utils/ui";
 
-function isTauri(): boolean {
-  if (typeof window === "undefined") return false;
-  return "__TAURI_INTERNALS__" in window;
-}
-
-async function tauriCommand(
-  cmd: "minimize" | "toggleMaximize" | "close",
-): Promise<void> {
-  if (!isTauri()) return;
-  const { getCurrentWindow } = await import("@tauri-apps/api/window");
-  const w = getCurrentWindow();
-  if (cmd === "minimize") await w.minimize();
-  else if (cmd === "toggleMaximize") await w.toggleMaximize();
-  else if (cmd === "close") await w.close();
-}
 
 export default function TitleBar() {
   const { theme, setTheme } = useTheme();
   const [themeOpen, setThemeOpen] = useState(false);
+  const [status, setStatus] = useState<BackendStatus>({ running: false, connected: false });
   const dropdownRef = useRef<HTMLDivElement>(null);
 
-  const minimize = () => tauriCommand("minimize");
-  const toggleMaximize = () => tauriCommand("toggleMaximize");
-  const close = () => tauriCommand("close");
+  const minimize = () => void tauriCommand("minimize");
+  const toggleMaximize = () => void tauriCommand("toggleMaximize");
+  const close = () => void tauriCommand("close");
+
+
+  useEffect(() => {
+    let active = true;
+    const poll = () => {
+      getBackendStatus()
+        .then((s) => active && setStatus(s))
+        .catch(() => undefined);
+    };
+    poll();
+    const interval = window.setInterval(poll, 3000);
+    return () => {
+      active = false;
+      window.clearInterval(interval);
+    };
+  }, []);
 
   useEffect(() => {
     const onClick = (e: MouseEvent) => {
@@ -48,14 +52,29 @@ export default function TitleBar() {
   const ThemeIcon =
     theme === "dark" ? Moon : theme === "light" ? Sun : Laptop;
 
+  const statusColor = status.connected
+    ? "bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.7)]"
+    : status.running
+    ? "bg-amber-500 shadow-[0_0_8px_rgba(245,158,11,0.7)]"
+    : "bg-neutral-500";
+
+  const statusTitle = status.connected
+    ? "JARVIS: подключён и готов к работе"
+    : status.running
+    ? "JARVIS: сервис запускается..."
+    : "JARVIS: отключён";
+
   return (
     <div
       data-tauri-drag-region
-      className="flex h-9 items-center justify-between border-b border-border bg-surface px-3"
+      className="flex h-9 items-center justify-between border-b border-border bg-surface px-3 select-none"
     >
       <div className="flex items-center gap-2">
-        <div className="h-2.5 w-2.5 rounded-full bg-accent shadow-[0_0_6px_var(--color-accent)]" />
-        <span className="text-xs font-medium tracking-wide text-text-muted">
+        <div
+          className={`h-2.5 w-2.5 rounded-full transition-colors ${statusColor}`}
+          title={statusTitle}
+        />
+        <span className="text-xs font-semibold tracking-wider text-text">
           JARVIS
         </span>
       </div>
@@ -63,11 +82,12 @@ export default function TitleBar() {
       <div className="flex-1" />
 
       <div className="flex items-center gap-1">
+        {/* Theme dropdown */}
         <div className="relative" ref={dropdownRef}>
           <button
             onClick={() => setThemeOpen(!themeOpen)}
             className="rounded p-1.5 text-text-muted hover:bg-surface-2 hover:text-text"
-            title="Тема"
+            title="Выбор темы оформления"
           >
             <ThemeIcon size={14} />
           </button>
@@ -93,28 +113,28 @@ export default function TitleBar() {
           )}
         </div>
 
-        <div className="mx-1.5 h-4 w-px bg-border" />
+        <div className="mx-1 h-3.5 w-px bg-border" />
 
         <button
           onClick={minimize}
           className="rounded p-1.5 text-text-muted hover:bg-surface-2 hover:text-text"
           title="Свернуть"
         >
-          <Minus size={14} />
+          <Minus size={13} />
         </button>
         <button
           onClick={toggleMaximize}
           className="rounded p-1.5 text-text-muted hover:bg-surface-2 hover:text-text"
           title="Развернуть"
         >
-          <Maximize2 size={12} />
+          <Maximize2 size={13} />
         </button>
         <button
           onClick={close}
-          className="rounded p-1.5 text-text-muted hover:bg-danger hover:text-white"
+          className="rounded p-1.5 text-text-muted hover:bg-danger/20 hover:text-danger"
           title="Закрыть"
         >
-          <X size={14} />
+          <X size={13} />
         </button>
       </div>
     </div>

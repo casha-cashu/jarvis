@@ -40,24 +40,47 @@ def _tokens(cmd: str) -> List[str]:
         return cmd.split()
 
 
-def _rm_recursive_force(cmd: str) -> Optional[str]:
-    """Returns the rm target if the command is a recursive+forced rm."""
+_SHELL_SEPARATORS = {";", "&&", "||", "|", "&"}
+
+
+def _rm_recursive_targets(cmd: str) -> List[str]:
+    """Returns all targets of recursive+forced rm commands, stopping at shell separators."""
     toks = _tokens(cmd)
-    for i, tok in enumerate(toks):
+    all_targets: List[str] = []
+    i = 0
+    n = len(toks)
+    while i < n:
+        tok = toks[i]
         base = tok.rsplit("/", 1)[-1]
-        if base != "rm":
-            continue
-        args_after = toks[i + 1 :]
-        shorts = "".join(
-            t[1:] for t in args_after if t.startswith("-") and not t.startswith("--")
-        )
-        longs = " ".join(t for t in args_after if t.startswith("--"))
-        recursive = "--recursive" in longs or "r" in shorts.lower()
-        force = "--force" in longs or "f" in shorts.lower()
-        targets = [t for t in args_after if t != "--" and not t.startswith("-")]
-        if recursive and force and targets:
-            return targets[-1]
-    return None
+        if base == "rm":
+            args: List[str] = []
+            i += 1
+            while i < n:
+                arg = toks[i]
+                if arg in _SHELL_SEPARATORS or any(
+                    arg.startswith(sep) for sep in (";", "&&", "||", "|", "&")
+                ):
+                    break
+                m = re.search(r";|&&|\|\||\||&", arg)
+                if m:
+                    target_part = arg[: m.start()]
+                    if target_part:
+                        args.append(target_part)
+                    break
+                if arg:
+                    args.append(arg)
+                i += 1
+            shorts = "".join(
+                t[1:] for t in args if t.startswith("-") and not t.startswith("--")
+            )
+            longs = " ".join(t for t in args if t.startswith("--"))
+            recursive = "--recursive" in longs or "r" in shorts.lower()
+            targets = [t for t in args if t != "--" and not t.startswith("-")]
+            if recursive and targets:
+                all_targets.extend(targets)
+        else:
+            i += 1
+    return all_targets
 
 
 def _is_shell_expansion(token: str) -> bool:
@@ -119,14 +142,15 @@ def _is_hardline_blocked(cmd: str) -> Optional[str]:
 
     # Token-based destructive-rm detection (survives /bin/rm,
     # rm --recursive --force, env prefixes, quoting).
-    target = _rm_recursive_force(cmd)
-    if target is not None:
+    targets = _rm_recursive_targets(cmd)
+    for target in targets:
         stripped = target.rstrip("/")
         catastrophic = (
-            stripped in ("", "/", "~", "$HOME")
+            stripped in ("", "/", "~", "$HOME", "/*", "/.*", "~/*")
             or set(stripped) <= {"*"}
             # Runtime expansion hides the real target — refuse outright.
             or _is_shell_expansion(target)
+            or bool(re.match(r"^/+(\*+|\.+)", target))
         )
         if catastrophic:
             return f"Blocked (hardline): recursive forced deletion of '{target}'"
@@ -158,7 +182,9 @@ def _is_hardline_blocked(cmd: str) -> Optional[str]:
     regex_patterns = [
         (re.compile(r"mkfs"), "mkfs"),
         (
-            re.compile(r"shutdown\s+(-h\s+now|-P|-r)|halt\s+-f|poweroff\s+-f"),
+            re.compile(
+                r"\b(shutdown(\s+now|\s+-[a-zA-Z0-9]+|\b)|reboot|poweroff|halt|init\s+[06]|systemctl\s+(reboot|poweroff|halt))\b"
+            ),
             "shutdown/halt",
         ),
         (
@@ -168,6 +194,20 @@ def _is_hardline_blocked(cmd: str) -> Optional[str]:
         (re.compile(r"fdisk\s+/dev|parted\s+/dev|sgdisk"), "partition editor"),
         (re.compile(r":\(\)\s*\{\s*:\|:&\s*\};:"), "fork bomb"),
         (re.compile(r"chmod\s+(-R\s+)?000\s+/(\s|$)"), "chmod 000 /"),
+        (
+            re.compile(
+                r"\bchmod\b(?=.*?(?:-[a-zA-Z]*r|--recursive))(?=.*?\b0?777\b).*?\s+['\"]?/(?:['\"]|\s|$)",
+                re.IGNORECASE,
+            ),
+            "chmod -R 777 /",
+        ),
+        (
+            re.compile(
+                r"\bchown\b(?=.*?(?:-[a-zA-Z]*r|--recursive)).*?\s+['\"]?/(?:['\"]|\s|$)",
+                re.IGNORECASE,
+            ),
+            "chown -R /",
+        ),
         (
             re.compile(r"cat\s+/dev/zero\s*>|cat\s+/dev/urandom\s*>"),
             "zero-fill redirect",
@@ -180,6 +220,14 @@ def _is_hardline_blocked(cmd: str) -> Optional[str]:
         (
             re.compile(r"base64\s+-d[^|]*\|\s*(sudo\s+)?(ba|z)?sh\b"),
             "base64-decoded shell",
+        ),
+        (
+            re.compile(r"eval\s+[\"']?.*?(?:rm\s+-rf|mkfs|dd\s+.*of=/dev/)"),
+            "eval destructive command",
+        ),
+        (
+            re.compile(r"(?:echo|cat|printf)\s+.*?\|\s*(?:sudo\s+)?(?:bash|sh)\b"),
+            "piped destructive shell",
         ),
     ]
     for rx, desc in regex_patterns:
@@ -200,6 +248,12 @@ _STARTUP_FILE_BASENAMES = frozenset(
         ".bash_profile",
         ".xsession",
         ".pam_environment",
+        ".zshenv",
+        ".zlogin",
+        ".bash_login",
+        ".bash_aliases",
+        ".xinitrc",
+        "config.fish",
     }
 )
 
@@ -216,13 +270,33 @@ def _touches_startup_file(cmd: str) -> bool:
 _DANGEROUS_PATTERNS: List[tuple] = [
     (
         re.compile(
-            r"rm\s+(-[a-zA-Z]*r[a-zA-Z]*f|-[a-zA-Z]*f[a-zA-Z]*r|--recursive)",
+            r"\brm\b\s+.*?(-[a-zA-Z]*r[a-zA-Z]*|--recursive)\b",
             re.IGNORECASE,
         ),
         "recursive rm",
     ),
-    (re.compile(r"chmod\s+777\s+-R", re.IGNORECASE), "recursive world-writable"),
+    (
+        re.compile(
+            r"\bchmod\b(?=.*?(?:-[a-zA-Z]*r[a-zA-Z]*|--recursive))(?=.*?\b0?777\b)|\bchmod\b\s+777\s+-R",
+            re.IGNORECASE,
+        ),
+        "recursive world-writable",
+    ),
     (re.compile(r"chmod\s+777\s+/", re.IGNORECASE), "root world-writable"),
+    (
+        re.compile(
+            r"\bchmod\b\s+.*?(-[a-zA-Z]*r[a-zA-Z]*|--recursive)\b",
+            re.IGNORECASE,
+        ),
+        "recursive chmod",
+    ),
+    (
+        re.compile(
+            r"\bchown\b\s+.*?(-[a-zA-Z]*r[a-zA-Z]*|--recursive)\b",
+            re.IGNORECASE,
+        ),
+        "recursive chown",
+    ),
     (
         re.compile(r"(curl|wget)[^|]*\|\s*(sudo\s+)?(z)?sh\b", re.IGNORECASE),
         "download-piped-shell",
@@ -240,7 +314,35 @@ _DANGEROUS_PATTERNS: List[tuple] = [
         re.compile(r">\s*/etc/(passwd|shadow|sudoers)", re.IGNORECASE),
         "overwrite system file",
     ),
+    (
+        re.compile(
+            r"(?:(?<!/)\bpasswd\b|/(?:usr/)?s?bin/passwd\b)",
+            re.IGNORECASE,
+        ),
+        "change password",
+    ),
     (re.compile(r"passwd\s+root", re.IGNORECASE), "change root password"),
+    (
+        re.compile(
+            r"(?:(?<!/)\bchpasswd\b|/(?:usr/)?s?bin/chpasswd\b)",
+            re.IGNORECASE,
+        ),
+        "change password",
+    ),
+    (
+        re.compile(
+            r"(?:(?<!/)\bvisudo\b|/(?:usr/)?s?bin/visudo\b)",
+            re.IGNORECASE,
+        ),
+        "edit sudoers",
+    ),
+    (
+        re.compile(
+            r"\bcrontab\b\s+.*?(-r\b|--remove)",
+            re.IGNORECASE,
+        ),
+        "remove crontab",
+    ),
     (re.compile(r"userdel\s+\S+", re.IGNORECASE), "delete user account"),
     (
         re.compile(r"mv\s+\S+\s+/etc\b|mv\s+/etc\b", re.IGNORECASE),
@@ -274,6 +376,10 @@ _DANGEROUS_PATTERNS: List[tuple] = [
         re.compile(r">\s*~/.bash_history|\bshred\s+", re.IGNORECASE),
         "wipe history/files",
     ),
+    (
+        re.compile(r"\btee\b\s+.*?/(?:etc|boot|sys|proc|usr)\b", re.IGNORECASE),
+        "tee into system directory",
+    ),
 ]
 
 
@@ -285,7 +391,7 @@ def _detect_dangerous(cmd: str) -> List[str]:
     # Separated-flag rm (-r --force) evades the regex above; the token
     # helper catches it. Any target counts as dangerous here — hardline
     # separately blocks catastrophic targets in every mode.
-    if _rm_recursive_force(cmd) is not None:
+    if _rm_recursive_targets(cmd):
         if not any("recursive rm" in w or "recursive forced rm" in w for w in warnings):
             warnings.append("recursive forced rm")
     if _touches_startup_file(cmd):
@@ -314,21 +420,45 @@ def _tool_bash(cmd: str) -> str:
 
     try:
         timeout = 30  # fixed server-side; not model-controllable
-        proc = subprocess.run(
+        import os
+        import signal
+
+        proc = subprocess.Popen(
             ["bash", "-c", cmd],
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=timeout,
+            errors="replace",
             env=sanitized_env(),
+            start_new_session=True,
         )
-        output = proc.stdout.strip()
-        if proc.stderr.strip():
-            output += "\n[stderr]\n" + proc.stderr.strip()
+        try:
+            try:
+                out, err = proc.communicate(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except (ProcessLookupError, OSError):
+                    pass
+                try:
+                    out, err = proc.communicate(timeout=2)
+                except Exception:
+                    pass
+                return f"Timeout ({timeout}s): {cmd}"
+        finally:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except (ProcessLookupError, OSError):
+                pass
+
+        output = out.strip()
+        if err.strip():
+            output += "\n[stderr]\n" + err.strip()
         if not output and proc.returncode != 0:
             output = f"Exit code {proc.returncode} (empty output)"
+        if len(output) > 65536:
+            output = output[:32768] + "\n...[OUTPUT TRUNCATED]...\n" + output[-32768:]
         return output or "(empty)"
-    except subprocess.TimeoutExpired:
-        return f"Timeout ({timeout}s): {cmd}"
     except FileNotFoundError:
         return f"Command not found: {shlex.split(cmd)[0] if shlex.split(cmd) else cmd}"
     except Exception as e:
@@ -343,6 +473,8 @@ def _tool_read(path: str) -> str:
         p = Path(path).expanduser().resolve()
         if not p.exists():
             return f"File not found: {path}"
+        if not p.is_file():
+            return f"[ERROR] Not a regular file (directory, FIFO or special device): {path}"
         content = p.read_text(encoding="utf-8", errors="replace")[:4096]
         return content or "(empty file)"
     except PermissionError:
@@ -360,6 +492,13 @@ _SENSITIVE_WRITE_PATTERNS: List[str] = [
     ".xsession",
     ".pam_environment",
     ".xprofile",
+    ".zshenv",
+    ".zlogin",
+    ".bash_login",
+    ".bash_aliases",
+    ".xinitrc",
+    "config.fish",
+    ".config/fish/",
     ".ssh/",
     "authorized_keys",
     "autostart/",
@@ -383,13 +522,23 @@ def _tool_write(path: str, content: str) -> str:
     try:
         p = Path(path).expanduser().resolve()
         forbidden = {"/etc", "/usr", "/boot", "/sys", "/proc", "/dev"}
-        if any(str(p).startswith(d) for d in forbidden):
+        if any(str(p) == d or str(p).startswith(d + "/") for d in forbidden):
             return "[BLOCKED] Writing to system directory is forbidden"
         sp = str(p)
+        sp_slash = sp + "/"
         if sp == _HOME_BIN_DIR or sp.startswith(_HOME_BIN_DIR + "/"):
             return f"[BLOCKED] Writing to sensitive path is forbidden: {path}"
-        if any(pat in sp for pat in _SENSITIVE_WRITE_PATTERNS):
+        if any(
+            (
+                pat in sp_slash
+                if "/" in pat
+                else (p.name == pat or p.name.endswith(pat) or pat in p.parts)
+            )
+            for pat in _SENSITIVE_WRITE_PATTERNS
+        ):
             return f"[BLOCKED] Writing to sensitive path is forbidden: {path}"
+        if p.exists() and not p.is_file():
+            return f"[ERROR] Target exists and is not a regular file (FIFO, socket, or device): {path}"
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(content, encoding="utf-8")
         return f"Written {len(content)} bytes to {path}"
@@ -398,7 +547,12 @@ def _tool_write(path: str, content: str) -> str:
 
 
 # Read-tool: never hand credential files to the LLM (exfiltration channel).
-_SENSITIVE_READ_BASENAMES = (".env",)
+_SENSITIVE_READ_BASENAMES = (
+    ".env",
+    ".netrc",
+    ".bash_history",
+    ".zsh_history",
+)
 _SENSITIVE_READ_PARTS = (
     "/proc/",
     "/sys/",
@@ -408,6 +562,8 @@ _SENSITIVE_READ_PARTS = (
     ".gnupg/",
     ".config/gh/hosts",
     ".aws/",
+    ".docker/config.json",
+    ".kube/config",
 )
 _SENSITIVE_READ_SUFFIXES = (".pem", ".key")
 
@@ -422,10 +578,33 @@ def _is_sensitive_read(path: str) -> bool:
     return any(base.endswith(s) for s in _SENSITIVE_READ_SUFFIXES)
 
 
+def _tool_web_search(query: str) -> str:
+    """Search the web for information using DuckDuckGo/Brave/Tavily."""
+    try:
+        from jarvis.modules.web_search import format_search_results, search_web
+
+        results = search_web(query)
+        return format_search_results(results)
+    except Exception as e:
+        return f"Error searching web: {e}"
+
+
+def _tool_read_webpage(url: str) -> str:
+    """Fetch and extract readable text from a URL."""
+    try:
+        from jarvis.modules.web_search import fetch_webpage
+
+        return fetch_webpage(url)
+    except Exception as e:
+        return f"Error reading webpage: {e}"
+
+
 _TABLE: Dict[str, Callable] = {
     "bash": _tool_bash,
     "read": _tool_read,
     "write": _tool_write,
+    "web_search": _tool_web_search,
+    "read_webpage": _tool_read_webpage,
 }
 
 
@@ -478,6 +657,40 @@ def get_tool_schemas() -> List[dict]:
                         },
                     },
                     "required": ["path", "content"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "web_search",
+                "description": "Search the web for up-to-date information, news, documentation, or facts. Returns top results with titles, URLs, and snippets.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "The search query",
+                        },
+                    },
+                    "required": ["query"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "read_webpage",
+                "description": "Fetch and read readable text content from a web URL.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "url": {
+                            "type": "string",
+                            "description": "HTTP or HTTPS URL to fetch",
+                        },
+                    },
+                    "required": ["url"],
                 },
             },
         },

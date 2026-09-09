@@ -8,6 +8,7 @@ from jarvis.modules.bash_agent import (
     _is_sensitive_read,
     _is_shell_expansion,
     _detect_dangerous,
+    _rm_recursive_targets,
     _tool_read,
     _tool_write,
     check_approval,
@@ -29,6 +30,23 @@ class TestHardlineBlocklist:
 
     def test_shutdown_blocked(self):
         assert _is_hardline_blocked("shutdown -h now") is not None
+        assert _is_hardline_blocked("shutdown") is not None
+        assert _is_hardline_blocked("shutdown now") is not None
+        assert _is_hardline_blocked("reboot") is not None
+        assert _is_hardline_blocked("poweroff") is not None
+        assert _is_hardline_blocked("halt") is not None
+        assert _is_hardline_blocked("init 0") is not None
+        assert _is_hardline_blocked("init 6") is not None
+        assert _is_hardline_blocked("systemctl reboot") is not None
+        assert _is_hardline_blocked("systemctl poweroff") is not None
+        assert _is_hardline_blocked("systemctl halt") is not None
+
+    def test_rm_multi_target_and_chaining_blocked(self):
+        assert _is_hardline_blocked("rm -rf /tmp/foo /") is not None
+        assert _is_hardline_blocked("rm -rf / /tmp/foo") is not None
+        assert _is_hardline_blocked("rm -rf / && echo hi") is not None
+        assert _is_hardline_blocked("rm -rf /; echo hi") is not None
+        assert _is_hardline_blocked("echo hi && rm -rf /") is not None
 
     def test_fork_bomb_blocked(self):
         assert _is_hardline_blocked(":(){ :|:& };:") is not None
@@ -301,10 +319,10 @@ class TestTimeoutBypass:
 
 
 class TestToolSchemas:
-    def test_schemas_have_three_tools(self):
+    def test_schemas_have_expected_tools(self):
         schemas = get_tool_schemas()
         names = {s["function"]["name"] for s in schemas}
-        assert names == {"bash", "read", "write"}
+        assert names == {"bash", "read", "write", "web_search", "read_webpage"}
 
     def test_schemas_are_valid_openai_format(self):
         schemas = get_tool_schemas()
@@ -315,3 +333,152 @@ class TestToolSchemas:
             assert "parameters" in s["function"]
             assert "type" in s["function"]["parameters"]
             assert s["function"]["parameters"]["type"] == "object"
+
+
+class TestToolExecutionAndSanitizedEnv:
+    def test_tool_bash_passes_sanitized_env(self, monkeypatch, check_sanitized_env):
+        from unittest.mock import MagicMock
+        import jarvis.modules.bash_agent as bash_agent_mod
+
+        captured_env = None
+
+        def fake_popen(cmd, *args, **kwargs):
+            nonlocal captured_env
+            captured_env = kwargs.get("env")
+            mock_proc = MagicMock()
+            mock_proc.communicate.return_value = ("hello world\n", "")
+            mock_proc.returncode = 0
+            mock_proc.pid = 99999
+            return mock_proc
+
+        monkeypatch.setattr(bash_agent_mod.subprocess, "Popen", fake_popen)
+        out = bash_agent_mod._tool_bash("echo 'hello world'")
+
+        assert out == "hello world"
+        assert check_sanitized_env(captured_env)
+
+    def test_tool_bash_hardline_blocked_never_runs_popen(self, monkeypatch):
+        from unittest.mock import MagicMock
+        import jarvis.modules.bash_agent as bash_agent_mod
+
+        mock_popen = MagicMock()
+        monkeypatch.setattr(bash_agent_mod.subprocess, "Popen", mock_popen)
+
+        res = bash_agent_mod._tool_bash("rm -rf /")
+        assert "[BLOCKED]" in res
+        mock_popen.assert_not_called()
+
+    def test_execute_tool_unknown(self):
+        assert "Unknown tool" in execute_tool("nonexistent_tool", {})
+
+    def test_execute_tool_arg_error(self):
+        assert "Tool argument error" in execute_tool("write", {"bad_arg": 1})
+
+
+class TestRmRecursiveTargets:
+    def test_rm_recursive_targets_multiple(self):
+        targets = _rm_recursive_targets("rm -rf /tmp/a /tmp/b /tmp/c")
+        assert targets == ["/tmp/a", "/tmp/b", "/tmp/c"]
+
+    def test_rm_recursive_targets_stops_at_separators(self):
+        assert _rm_recursive_targets("rm -rf /tmp/a; echo hi") == ["/tmp/a"]
+        assert _rm_recursive_targets("rm -rf /tmp/a && ls") == ["/tmp/a"]
+        assert _rm_recursive_targets("rm -rf /tmp/a || ls") == ["/tmp/a"]
+        assert _rm_recursive_targets("rm -rf /tmp/a | grep x") == ["/tmp/a"]
+        assert _rm_recursive_targets("rm -rf /tmp/a & bg") == ["/tmp/a"]
+
+    def test_rm_recursive_targets_multiple_rms(self):
+        cmd = "rm -rf /tmp/a && rm -rf /tmp/b ; rm -rf /tmp/c"
+        assert _rm_recursive_targets(cmd) == ["/tmp/a", "/tmp/b", "/tmp/c"]
+
+    def test_rm_non_recursive_ignored(self):
+        assert _rm_recursive_targets("rm -f /tmp/a") == []
+        assert _rm_recursive_targets("rm /tmp/a") == []
+
+
+class TestWave4RegressionBug1:
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            "chmod -R 777 /",
+            "chmod 777 -R /",
+            "chmod --recursive 777 /",
+            "chmod 777 --recursive /",
+            "chmod -Rf 777 /",
+            "sudo chmod -R 777 /",
+            "chmod -R 0777 /",
+            "chown -R root /",
+            "chown --recursive root /",
+            "chown root:root -R /",
+            "sudo chown -R user /",
+        ],
+    )
+    def test_chmod_chown_root_hardline_blocked(self, cmd):
+        assert _is_hardline_blocked(cmd) is not None
+
+    def test_chmod_chown_non_root_not_hardline(self):
+        # Non-root paths must not be hardline blocked (they may be dangerous instead)
+        assert _is_hardline_blocked("chmod -R 777 /tmp/mytemp") is None
+        assert _is_hardline_blocked("chown -R user /tmp/mytemp") is None
+
+    @pytest.mark.parametrize(
+        "cmd,expected_substr",
+        [
+            ("chmod -R 777 /var/www", "world-writable"),
+            ("chmod 777 -R /var/www", "world-writable"),
+            ("chown -R user /var/www", "chown"),
+            ("passwd", "password"),
+            ("passwd alice", "password"),
+            ("sudo passwd bob", "password"),
+            ("chpasswd", "password"),
+            ("visudo", "sudoers"),
+            ("crontab -r", "crontab"),
+        ],
+    )
+    def test_dangerous_patterns_expanded(self, cmd, expected_substr):
+        warnings = _detect_dangerous(cmd)
+        assert any(expected_substr.lower() in w.lower() for w in warnings), (
+            f"Expected '{expected_substr}' in warnings for '{cmd}', got: {warnings}"
+        )
+
+    def test_cat_etc_passwd_not_change_password(self):
+        # Reading /etc/passwd must not be falsely flagged as "change password"
+        warnings = _detect_dangerous("cat /etc/passwd")
+        assert not any("change password" == w for w in warnings)
+
+
+class TestWave4RegressionBug2ToolBash:
+    def test_tool_bash_output_truncation(self):
+        from jarvis.modules.bash_agent import _tool_bash
+
+        # Generate command output > 65536 characters
+        cmd = "python3 -c \"print('A' * 70000)\""
+        out = _tool_bash(cmd)
+        assert "...[OUTPUT TRUNCATED]..." in out
+        assert len(out) == 32768 + len("\n...[OUTPUT TRUNCATED]...\n") + 32768
+
+    def test_tool_bash_errors_replace(self):
+        from jarvis.modules.bash_agent import _tool_bash
+
+        # Output invalid UTF-8 byte
+        cmd = (
+            "python3 -c \"import sys; sys.stdout.buffer.write(b'start_\\xff_end\\n')\""
+        )
+        out = _tool_bash(cmd)
+        assert "start_" in out
+        assert "_end" in out
+        assert "\ufffd" in out
+
+
+class TestWave4RegressionBug3ToolWrite:
+    def test_tool_write_to_directory(self, tmp_path):
+        out = _tool_write(str(tmp_path), "content")
+        assert "[ERROR] Target exists and is not a regular file" in out
+
+    def test_tool_write_to_fifo(self, tmp_path):
+        import os
+
+        fifo_path = tmp_path / "test_fifo"
+        os.mkfifo(str(fifo_path))
+        out = _tool_write(str(fifo_path), "content")
+        assert "[ERROR] Target exists and is not a regular file" in out

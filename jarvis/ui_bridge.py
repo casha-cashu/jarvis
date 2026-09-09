@@ -10,11 +10,17 @@ from __future__ import annotations
 
 import contextlib
 import json
+import logging
+import os
+from pathlib import Path
 import sys
 import threading
-from typing import TYPE_CHECKING, Any, Callable, TypeVar
+import time
+from typing import TYPE_CHECKING, Any, Callable, Optional, TypeVar
 
 import requests
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from jarvis import Jarvis
@@ -25,28 +31,105 @@ T = TypeVar("T")
 ANTHROPIC_VERSION = "2023-06-01"
 
 
+def _setup_runtime_paths() -> None:
+    """If running inside a PyInstaller frozen bundle, make system and local
+    site-packages available so optional hardware/audio packages (pyaudio,
+    faster-whisper, torch) can be loaded dynamically on demand.
+    """
+    candidates = [
+        os.path.expanduser("~/.local/lib/python3.14/site-packages"),
+        os.path.expanduser("~/.local/lib/python3.13/site-packages"),
+        "/usr/lib/python3.14/site-packages",
+        "/usr/lib/python3.13/site-packages",
+        "/usr/local/lib/python3.14/site-packages",
+        "/usr/local/lib/python3.13/site-packages",
+    ]
+    for p in ["./venv", "../venv", os.path.expanduser("~/Projects/jarvis-py/venv")]:
+        d = os.path.join(p, "lib")
+        if os.path.isdir(d):
+            try:
+                for py_dir in os.listdir(d):
+                    sp = os.path.join(d, py_dir, "site-packages")
+                    if os.path.isdir(sp):
+                        candidates.append(os.path.abspath(sp))
+            except Exception:
+                pass
+    for c in candidates:
+        if os.path.isdir(c) and c not in sys.path:
+            sys.path.append(c)
+
+
+_setup_runtime_paths()
+
+if getattr(sys, "frozen", False):
+    # PyInstaller сайдкар работает в чистом ONNX/CTranslate2 режиме.
+    # Блокируем импорт хостового PyTorch через meta_path finder, чтобы исключить
+    # конфликт pybind11 RpcBackendOptions и сохранить совместимость со sklearn/transformers.
+    class _BlockTorchFinder:
+        def find_spec(self, fullname: str, path: Any, target: Any = None) -> Any:
+            if fullname == "torch" or fullname.startswith("torch."):
+                raise ModuleNotFoundError(
+                    f"No module named '{fullname}' (PyTorch disabled in JARVIS sidecar)"
+                )
+            return None
+
+    sys.meta_path.insert(0, _BlockTorchFinder())
+
+
 class Bridge:
     def __init__(self) -> None:
         self.jarvis: Jarvis | None = None
         self.started = False
-        self._pending_config: dict[str, Any] | None = None
-        self._current_session: str | None = None
+        self._pending_config: Optional[dict[str, Any]] = None
+        self._current_session: Optional[str] = None
+        self._sessions_dir = (
+            Path(
+                os.environ.get("JARVIS_DATA_DIR", "~/.local/share/jarvis")
+            ).expanduser()
+            / "ui-history"
+        )
+        self._sessions_dir.mkdir(parents=True, exist_ok=True)
+        self._continuous_mode: bool = False
+        self._voice_enabled: bool = False
+        self._voice_lock = threading.Lock()
+        self._voice_thread: Optional[threading.Thread] = None
+        self._voice_stop = threading.Event()
         # Мультиплексирование: длинный «message» выполняется в отдельном
         # потоке, короткие команды обслуживаются reader-циклом сразу.
         self._message_lock = threading.Lock()
         self._message_busy = False
+        self._stop_event = threading.Event()
         self._start_lock = threading.Lock()
         # id активного message: стрим/инструмент строки помечаются им,
         # чтобы Rust-роутер доставил их в персональный канал
         self._current_id: str | None = None
         # Real protocol stdout, captured before any contextlib redirect.
+        if hasattr(sys.stdin, "reconfigure"):
+            try:
+                sys.stdin.reconfigure(errors="replace")
+            except Exception:
+                pass
+        if hasattr(sys.stdout, "reconfigure"):
+            try:
+                sys.stdout.reconfigure(errors="replace")
+            except Exception:
+                pass
         self._proto_out = sys.stdout
+        self._stdout_lock = threading.Lock()
+
+    @staticmethod
+    def _serialize(obj: dict[str, Any]) -> str:
+        try:
+            return json.dumps(obj, ensure_ascii=False)
+        except Exception:
+            return json.dumps(obj, ensure_ascii=True)
 
     def _try_begin_message(self) -> bool:
         """True если сообщение начало обрабатываться в этом потоке."""
         with self._message_lock:
             if self._message_busy:
                 return False
+            self._stop_event.clear()
             self._message_busy = True
             return True
 
@@ -59,54 +142,57 @@ class Bridge:
         redirect_stdout рабочей ветки: иначе мультиплексированные ответы
         терялись бы в stderr)."""
         try:
-            self._proto_out.write(json.dumps(obj, ensure_ascii=False) + "\n")
-            self._proto_out.flush()
+            with self._stdout_lock:
+                self._proto_out.write(self._serialize(obj) + "\n")
+                self._proto_out.flush()
         except Exception:
             pass
 
     def _emit_delta(self, delta: str) -> None:
         """Streams one chunk as a JSONL line; Rust forwards it to the UI."""
+        if self._stop_event.is_set():
+            raise InterruptedError("Генерация остановлена пользователем")
         try:
             payload: dict[str, Any] = {"ok": True, "stream": True, "delta": delta}
             if self._current_id:
                 payload["id"] = self._current_id
-            self._proto_out.write(json.dumps(payload, ensure_ascii=False) + "\n")
-            self._proto_out.flush()
+            with self._stdout_lock:
+                self._proto_out.write(self._serialize(payload) + "\n")
+                self._proto_out.flush()
         except Exception:
             pass  # UI stream loss must never kill generation
 
     def _emit_tool(self, name: str, args: dict) -> None:
         """Notifies the UI that a tool is about to execute."""
         try:
-            self._proto_out.write(
-                json.dumps(
-                    {"ok": True, "tool": {"name": name, "args": args}},
-                    ensure_ascii=False,
-                )
-                + "\n"
-            )
-            self._proto_out.flush()
+            payload: dict[str, Any] = {
+                "ok": True,
+                "tool": {"name": name, "args": args},
+            }
+            if self._current_id:
+                payload["id"] = self._current_id
+            with self._stdout_lock:
+                self._proto_out.write(self._serialize(payload) + "\n")
+                self._proto_out.flush()
         except Exception:
             pass
 
     def _emit_tool_result(self, name: str, args: dict, result: str) -> None:
         """Notifies the UI of a finished tool execution (output truncated)."""
         try:
-            self._proto_out.write(
-                json.dumps(
-                    {
-                        "ok": True,
-                        "tool_result": {
-                            "name": name,
-                            "args": args,
-                            "output": str(result)[:2000],
-                        },
-                    },
-                    ensure_ascii=False,
-                )
-                + "\n"
-            )
-            self._proto_out.flush()
+            payload: dict[str, Any] = {
+                "ok": True,
+                "tool_result": {
+                    "name": name,
+                    "args": args,
+                    "output": result[:2000],
+                },
+            }
+            if self._current_id:
+                payload["id"] = self._current_id
+            with self._stdout_lock:
+                self._proto_out.write(self._serialize(payload) + "\n")
+                self._proto_out.flush()
         except Exception:
             pass
 
@@ -123,9 +209,19 @@ class Bridge:
         llm_config = self.jarvis.config["llm"]
         llm_config["provider"] = api_type
         provider_config = llm_config.setdefault(api_type, {})
-        provider_config["api_key"] = preset["api_key"]
+        endpoint = preset.get("endpoint") or ""
+        api_key = preset.get("api_key")
+        if not api_key and self._is_local_endpoint(endpoint):
+            api_key = "local-no-key-required"
+        provider_config["api_key"] = api_key
         provider_config["model"] = preset.get("model") or provider_config.get("model")
-        provider_config["base_url"] = preset["endpoint"]
+        provider_config["base_url"] = endpoint
+        if preset.get("temperature") is not None:
+            llm_config["temperature"] = preset["temperature"]
+            provider_config["temperature"] = preset["temperature"]
+        if preset.get("max_tokens") is not None:
+            llm_config["max_tokens"] = preset["max_tokens"]
+            provider_config["max_tokens"] = preset["max_tokens"]
         # Bash agent must be enabled explicitly for tool-calling to work.
         # ResponsePipeline copies these values at construction time (before the
         # preset was applied), so mirror them onto the live pipeline instance.
@@ -161,34 +257,49 @@ class Bridge:
         if self.started:
             return {"ok": True, "started": True}
 
-        from jarvis import Jarvis
+        try:
+            from jarvis import Jarvis
 
-        self._shutdown_reminders()
+            self._shutdown_reminders()
 
-        # Text mode: initialize only the response pipeline; never open audio.
-        import os
+            # Text mode: initialize only the response pipeline; never open audio.
+            import os
 
-        # CI/hermetic runs override via JARVIS_CONFIG_PATH (repo ships
-        # config.example.yaml only; personal config.yaml is gitignored).
-        config_path = os.environ.get("JARVIS_CONFIG_PATH", "config.yaml")
-        self.jarvis = self._quiet_call(
-            lambda: Jarvis(config_path=config_path, dry_run=True)
-        )
-        self._apply_config()
-        self._quiet_call(self.jarvis.response.start)
-        self.jarvis.tts = self.jarvis.response.tts
-        self.jarvis.llm = self.jarvis.response.llm
-        self.jarvis.commands = self.jarvis.response.commands
-        self.jarvis.platform = self.jarvis.response.platform
-        # Reminders work without audio: trigger notifications go to stderr.
-        from jarvis.modules.reminder import ReminderManager
+            # CI/hermetic runs override via JARVIS_CONFIG_PATH (repo ships
+            # config.example.yaml only; personal config.yaml is gitignored).
+            config_path = os.environ.get("JARVIS_CONFIG_PATH", "config.yaml")
+            self.jarvis = self._quiet_call(
+                lambda: Jarvis(config_path=config_path, dry_run=True)
+            )
+            self._apply_config()
+            self._quiet_call(self.jarvis.response.start)
+            self.jarvis.tts = self.jarvis.response.tts
+            self.jarvis.llm = self.jarvis.response.llm
+            self.jarvis.commands = self.jarvis.response.commands
+            self.jarvis.platform = self.jarvis.response.platform
+            # Reminders work without audio: trigger notifications go to stderr.
+            from jarvis.modules.reminder import ReminderManager
 
-        reminder_mgr: ReminderManager = ReminderManager(
-            on_trigger=lambda text: print(f"⏰ НАПОМИНАНИЕ: {text}", file=sys.stderr)
-        )
-        self.jarvis.reminder_mgr = reminder_mgr
-        self.started = True
-        return {"ok": True, "started": True}
+            reminder_mgr: ReminderManager = ReminderManager(
+                on_trigger=lambda text: print(
+                    f"⏰ НАПОМИНАНИЕ: {text}", file=sys.stderr
+                )
+            )
+            self.jarvis.reminder_mgr = reminder_mgr
+            self.started = True
+            return {"ok": True, "started": True}
+        except SystemExit as exc:
+            self.started = False
+            self.jarvis = None
+            code = exc.code if exc.code is not None else 1
+            return {
+                "ok": False,
+                "error": f"Ошибка конфигурации при запуске (код {code})",
+            }
+        except Exception as exc:
+            self.started = False
+            self.jarvis = None
+            return {"ok": False, "error": f"Ошибка при запуске: {exc}"}
 
     def _resolve_marker(self, response: str) -> str:
         """Convert voice-command markers returned by process_query into
@@ -260,6 +371,7 @@ class Bridge:
         path = self._history_dir() / f"{self._current_session}.json"
         tmp = path.with_suffix(".tmp")
         tmp.write_text(json.dumps(hist, ensure_ascii=False), encoding="utf-8")
+        os.chmod(tmp, 0o600)
         tmp.replace(path)
 
     def _set_clients_history(self, hist: list[Any]) -> None:
@@ -298,6 +410,7 @@ class Bridge:
         path = self._history_dir() / "_legacy-cli.json"
         tmp = path.with_suffix(".tmp")
         tmp.write_text(json.dumps(hist, ensure_ascii=False), encoding="utf-8")
+        os.chmod(tmp, 0o600)
         tmp.replace(path)
 
     def _switch_session(self, sid: str) -> dict[str, Any]:
@@ -377,8 +490,10 @@ class Bridge:
 
     # Команды, меняющие состояние моста: во время активного «message»
     # они отклоняются — иначе гонка с идущей генерацией.
+    # Команда "stop" исключена: UI "Стоп" должна мгновенно прерывать генерацию.
     _MUTATING_COMMANDS = frozenset(
         {
+            "start",
             "set_config_value",
             "configure",
             "switch_session",
@@ -386,9 +501,246 @@ class Bridge:
             "purge_session",
             "purge_all_sessions",
             "clear_history",
-            "stop",
+            "set_continuous_mode",
+            "save_scenario",
+            "delete_scenario",
         }
     )
+
+    def stop(self) -> dict[str, Any]:
+        """Мгновенно прерывает активное сообщение, стриминг и воспроизведение."""
+        self._end_message()
+        self._stop_event.set()
+        try:
+            from jarvis.modules.tts import cancel_playback
+
+            cancel_playback()
+        except Exception:
+            pass
+        if self.jarvis is not None:
+            if hasattr(self.jarvis, "response") and self.jarvis.response is not None:
+                try:
+                    self.jarvis.response.cancel_speech()
+                except Exception:
+                    pass
+                self._quiet_call(self.jarvis.response.stop)
+            self._shutdown_reminders()
+        self._shutdown_voice()
+        self.jarvis = None
+        self.started = False
+        return {"ok": True, "started": False}
+
+    def _shutdown_voice(self) -> None:
+        self._voice_enabled = False
+        self._voice_stop.set()
+        if self.jarvis and getattr(self.jarvis, "audio", None):
+            try:
+                self.jarvis.audio.stop()
+            except Exception:
+                pass
+        if self._voice_thread is not None:
+            if self._voice_thread != threading.current_thread():
+                self._voice_thread.join(timeout=2.0)
+            self._voice_thread = None
+
+    def _set_voice_mode(self, enabled: bool) -> dict[str, Any]:
+        if not self.started:
+            start_res = self._start()
+            if not start_res.get("ok"):
+                return start_res
+
+        with self._voice_lock:
+            if enabled == self._voice_enabled:
+                return {"ok": True, "voice_enabled": self._voice_enabled}
+
+            if enabled:
+                try:
+                    if self.jarvis and getattr(self.jarvis, "audio", None):
+                        self.jarvis.audio.dry_run = False
+                        self.jarvis.audio.start()
+                except Exception as e:
+                    logger.warning("Не удалось включить аудиопоток в GUI: %s", e)
+                    return {"ok": False, "error": f"Ошибка запуска микрофона: {e}"}
+
+                self._voice_stop.clear()
+                self._voice_enabled = True
+                self._voice_thread = threading.Thread(
+                    target=self._voice_loop,
+                    name="jarvis-ui-voice-loop",
+                    daemon=True,
+                )
+                self._voice_thread.start()
+                self._emit_voice_event("listening", "Слушаю микрофон...")
+                return {"ok": True, "voice_enabled": True}
+            else:
+                self._shutdown_voice()
+                self._emit_voice_event("stopped", "Голосовой режим отключен")
+                return {"ok": True, "voice_enabled": False}
+
+    def _emit_voice_event(self, status: str, payload_data: Any = "") -> None:
+        try:
+            if isinstance(payload_data, dict):
+                event_obj = {"status": status, **payload_data}
+            else:
+                event_obj = {"status": status, "text": str(payload_data)}
+            payload: dict[str, Any] = {
+                "ok": True,
+                "voice_event": event_obj,
+            }
+            with self._stdout_lock:
+                self._proto_out.write(self._serialize(payload) + "\n")
+                self._proto_out.flush()
+        except Exception:
+            pass
+
+    def _voice_loop(self):
+        phrase_limit = 10
+        if self.jarvis and getattr(self.jarvis, "config", None):
+            phrase_limit = self.jarvis.config.get("stt", {}).get(
+                "phrase_time_limit", 10
+            )
+
+        def _on_partial(pt: str):
+            if pt and pt.strip() and not self._voice_stop.is_set():
+                self._emit_voice_event("partial", pt.strip())
+
+        while self._voice_enabled and not self._voice_stop.is_set():
+            try:
+                if not self.jarvis or not getattr(self.jarvis, "audio", None):
+                    break
+
+                if self._message_busy or self._voice_stop.is_set():
+                    time.sleep(0.3)
+                    continue
+
+                # Дожидаемся окончания текущей озвучки (если была)
+                if hasattr(self.jarvis, "response") and hasattr(
+                    self.jarvis.response, "wait_for_speech"
+                ):
+                    self.jarvis.response.wait_for_speech()
+
+                text = self.jarvis.audio.recognize(phrase_limit, on_partial=_on_partial)
+                if not text or not text.strip():
+                    continue
+
+                if self._message_busy or self._voice_stop.is_set():
+                    time.sleep(0.3)
+                    continue
+
+                text = text.strip()
+                # Проверка wake-word если не continuous
+                is_continuous = bool(
+                    getattr(self.jarvis, "continuous", False) or self._continuous_mode
+                )
+                conv = getattr(self.jarvis, "conversation", None)
+                if not is_continuous:
+                    if conv:
+                        detected, query = conv.detect_wake(text)
+                        if not detected:
+                            self._emit_voice_event(
+                                "wake_word_required",
+                                {
+                                    "text": text,
+                                    "message": "Для активации назовите «Джарвис» или включите непрерывный режим",
+                                },
+                            )
+                            continue
+                        if not query or not query.strip():
+                            # Пользователь назвал только «Джарвис» — подтверждаем и ждем запрос
+                            self._emit_voice_event("listening", "Слушаю вас, сэр...")
+                            if hasattr(self.jarvis, "response") and hasattr(
+                                self.jarvis.response, "speak"
+                            ):
+                                self.jarvis.response.speak("Слушаю вас, сэр.")
+                                self.jarvis.response.wait_for_speech()
+                            continue
+                        text = query.strip()
+                else:
+                    if conv:
+                        detected, query = conv.detect_wake(text)
+                        if detected and query and query.strip():
+                            text = query.strip()
+
+                self._emit_voice_event("recognized", text)
+
+                if not self._try_begin_message():
+                    continue
+
+                jarvis = self.jarvis
+                if not jarvis or not getattr(jarvis, "response", None):
+                    self._end_message()
+                    continue
+
+                try:
+                    self._emit_voice_event("processing", text)
+
+                    # Voice-path parity: проверка спецкоманд
+                    if hasattr(jarvis, "commands") and hasattr(
+                        jarvis.commands, "executor"
+                    ):
+                        parsed = jarvis.commands.executor.parse_voice_command(
+                            text.lower().strip()
+                        )
+                        if parsed == "__MUTE__":
+                            if hasattr(jarvis, "conversation"):
+                                jarvis.conversation.mute()
+                            self._shutdown_voice()
+                            self._emit_voice_event(
+                                "stopped", "Голосовой режим отключен"
+                            )
+                            continue
+                        elif parsed == "__CONTINUOUS_ON__":
+                            jarvis.continuous = True
+                            self._continuous_mode = True
+                            self._emit_voice_event(
+                                "status", "Постоянная прослушка включена"
+                            )
+
+                    resp = jarvis.response.process_query(
+                        text,
+                        stream_callback=self._emit_delta,
+                        tool_callback=self._emit_tool,
+                        tool_result_callback=self._emit_tool_result,
+                    )
+
+                    final_resp = resp or "Готово, сэр."
+                    self._emit_voice_event(
+                        "finished",
+                        {
+                            "query": text,
+                            "response": final_resp,
+                            "session": self._current_session,
+                        },
+                    )
+
+                    if resp and hasattr(jarvis.response, "speak"):
+                        self._emit_voice_event("speaking", resp)
+                        jarvis.response.speak(resp)
+                        if hasattr(jarvis.response, "wait_for_speech"):
+                            jarvis.response.wait_for_speech()
+
+                        # Пауза для затухания акустического эха в комнате
+                        time.sleep(0.3)
+
+                        # Сброс буферов VAD
+                        if (
+                            hasattr(jarvis, "audio")
+                            and jarvis.audio
+                            and hasattr(jarvis.audio, "stt")
+                        ):
+                            stt = jarvis.audio.stt
+                            if hasattr(stt, "vad_iterator") and stt.vad_iterator:
+                                stt.vad_iterator.reset()
+                except Exception as exc:
+                    logger.error("Ошибка обработки голосовой команды: %s", exc)
+                finally:
+                    self._end_message()
+                    if self._voice_enabled and not self._voice_stop.is_set():
+                        self._emit_voice_event("listening", "Слушаю микрофон...")
+
+            except Exception as e:
+                logger.error("Ошибка в voice_loop: %s", e)
+                time.sleep(1.0)
 
     def handle(self, request: dict[str, Any]) -> dict[str, Any]:
         command = request.get("command")
@@ -402,12 +754,7 @@ class Bridge:
         if command == "status":
             return {"ok": True, "started": self.started, **self._info()}
         if command == "stop":
-            if self.jarvis is not None:
-                self._quiet_call(self.jarvis.response.stop)
-                self._shutdown_reminders()
-            self.jarvis = None
-            self.started = False
-            return {"ok": True, "started": False}
+            return self.stop()
         if command == "configure":
             config = request.get("config", {})
             error = self._validate_config(config)
@@ -430,7 +777,14 @@ class Bridge:
             return self._purge_all_sessions()
         if command == "message":
             if not self.started:
-                self._start()
+                start_res = self._start()
+                if not start_res.get("ok"):
+                    return {
+                        "ok": False,
+                        "error": start_res.get("error", "Не удалось запустить JARVIS"),
+                    }
+            if self._stop_event.is_set():
+                return {"ok": False, "error": "Остановлено пользователем"}
             text = str(request.get("text", "")).strip()
             if not text:
                 return {"ok": False, "error": "Пустое сообщение"}
@@ -463,6 +817,8 @@ class Bridge:
                 if jarvis is not None
                 else ""
             )
+            if self._stop_event.is_set():
+                return {"ok": False, "error": "Остановлено пользователем"}
             response = self._resolve_marker(response)
             # Только маскировка секретов: в текстовом чате показываем ПОЛНЫЙ
             # ответ. Обрезка/markdown-чистка (sanitize_for_tts) — в
@@ -484,6 +840,63 @@ class Bridge:
                 request.get("key", ""),
                 request.get("value"),
             )
+        if command == "get_continuous_mode":
+            enabled = bool(getattr(self.jarvis, "continuous", self._continuous_mode))
+            return {"ok": True, "continuous": enabled}
+        if command == "set_continuous_mode":
+            enabled = bool(request.get("enabled", False))
+            self._continuous_mode = enabled
+            if self.jarvis is not None:
+                self.jarvis.continuous = enabled
+            if request.get("persist", False):
+                self._set_config_value("stt", "continuous", enabled)
+            return {"ok": True, "continuous": enabled}
+        if command == "get_voice_mode":
+            return {"ok": True, "voice_enabled": self._voice_enabled}
+        if command == "set_voice_mode":
+            enabled = bool(request.get("enabled", False))
+            return self._set_voice_mode(enabled)
+        if command == "get_scenarios":
+            try:
+                from jarvis.modules.scenarios import ScenarioManager
+
+                mgr = ScenarioManager()
+                return {"ok": True, "scenarios": mgr.list_scenarios()}
+            except Exception as e:
+                return {"ok": False, "error": str(e)}
+        if command == "save_scenario":
+            try:
+                from jarvis.modules.scenarios import ScenarioManager
+
+                mgr = ScenarioManager()
+                sc_id = request.get("id")
+                data = request.get("data")
+                if not sc_id or not isinstance(data, dict):
+                    return {"ok": False, "error": "id и data обязательны"}
+                ok = mgr.save_scenario(str(sc_id), data)
+                return {"ok": ok}
+            except Exception as e:
+                return {"ok": False, "error": str(e)}
+        if command == "delete_scenario":
+            try:
+                from jarvis.modules.scenarios import ScenarioManager
+
+                mgr = ScenarioManager()
+                sc_id = request.get("id")
+                if not sc_id:
+                    return {"ok": False, "error": "id обязателен"}
+                ok = mgr.delete_scenario(str(sc_id))
+                return {"ok": ok}
+            except Exception as e:
+                return {"ok": False, "error": str(e)}
+        if command == "restart":
+            if self.jarvis is not None:
+                self._quiet_call(self.jarvis.response.stop)
+                self._shutdown_reminders()
+            self.jarvis = None
+            self.started = False
+            self._end_message()
+            return self._start()
         if command == "timers":
             return self._timers()
         if command == "clear_history":
@@ -491,10 +904,30 @@ class Bridge:
         return {"ok": False, "error": f"Неизвестная команда: {command}"}
 
     @staticmethod
+    def _is_local_endpoint(endpoint: str) -> bool:
+        ep = endpoint.lower()
+        return any(
+            x in ep
+            for x in (
+                "localhost",
+                "127.0.0.1",
+                "0.0.0.0",
+                "::1",
+                "ollama",
+                "lmstudio",
+                "local",
+            )
+        )
+
+    @staticmethod
     def _validate_config(config: dict[str, Any]) -> str | None:
         if config.get("type") not in {"openai", "anthropic"}:
             return "Неподдерживаемый тип API"
-        if not config.get("endpoint") or not config.get("api_key"):
+        endpoint = str(config.get("endpoint") or "").strip()
+        if not endpoint:
+            return "Endpoint и API ключ обязательны"
+        api_key = str(config.get("api_key") or "").strip()
+        if not Bridge._is_local_endpoint(endpoint) and not api_key:
             return "Endpoint и API ключ обязательны"
         return None
 
@@ -504,6 +937,10 @@ class Bridge:
             "provider": preset.get("type", ""),
             "model": preset.get("model", ""),
             "agent_enabled": bool(preset.get("agent_enabled", True)),
+            "continuous": bool(getattr(self.jarvis, "continuous", False))
+            if self.jarvis
+            else False,
+            "voice_enabled": self._voice_enabled,
         }
         if self.jarvis is not None and self.jarvis.response is not None:
             info["agent_enabled"] = bool(
@@ -511,62 +948,104 @@ class Bridge:
             )
         return info
 
-    # Ключи, которые GUI имеет право менять (белый список — защита от
-    # записи произвольного конфига, ломающего схему).
-    _WRITABLE_KEYS = frozenset(
-        {("stt", "engine"), ("tts", "engine"), ("stt", "wake_word")}
+    _ALLOWED_ROOT_SECTIONS = frozenset(
+        {
+            "audio",
+            "stt",
+            "vad",
+            "tts",
+            "llm",
+            "commands",
+            "logging",
+            "web_search",
+            "telegram",
+            "misc",
+        }
     )
 
     def _set_config_value(self, section: str, key: str, value: Any) -> dict[str, Any]:
-        """Точечная запись в config.yaml с СОХРАНЕНИЕМ комментариев
-        (ruamel.yaml round-trip). Применяется после перезапуска backend.
-        Белый список ключей — защита от произвольной записи."""
+        """Точечная запись в config.yaml с СОХРАНЕНИЕМ комментариев (ruamel.yaml round-trip).
+        Поддерживает dot-notation и произвольные типы данных."""
+        import os
         from pathlib import Path
+        from ruamel.yaml import YAML
 
-        if (section, key) not in self._WRITABLE_KEYS:
+        if not section:
+            return {"ok": False, "error": "Секция не указана"}
+
+        parts = [
+            p.strip()
+            for p in (section + "." + key if key else section).split(".")
+            if p.strip()
+        ]
+        if not parts:
+            return {"ok": False, "error": "Секция не указана"}
+
+        root_section = parts[0]
+        if root_section not in self._ALLOWED_ROOT_SECTIONS:
             return {
                 "ok": False,
-                "error": f"Ключ {section}.{key} не редактируется из GUI",
+                "error": f"Секция {root_section} не редактируется из GUI",
             }
-        if not isinstance(value, str) or not value.strip():
-            return {"ok": False, "error": "Значение должно быть непустой строкой"}
-        import os
-
-        from ruamel.yaml import YAML
 
         path = Path(os.environ.get("JARVIS_CONFIG_PATH", "config.yaml"))
         if not path.is_absolute():
             path = Path.cwd() / path
         if not path.exists():
             return {"ok": False, "error": f"Конфиг {path} не найден"}
+
         yaml = YAML()
         yaml.preserve_quotes = True
         try:
-            data = yaml.load(path.read_text(encoding="utf-8"))
-            if section not in data or not isinstance(data[section], dict):
-                return {"ok": False, "error": f"Секция {section} отсутствует в конфиге"}
-            old_value = data[section].get(key)
-            data[section][key] = value
-            # валидируем ДО записи: битый конфиг не пишем
+            raw_text = path.read_text(encoding="utf-8")
+            data = yaml.load(raw_text)
+            if not isinstance(data, dict):
+                data = {}
+
+            cur = data
+            for part in parts[:-1]:
+                if part not in cur or not isinstance(cur[part], dict):
+                    cur[part] = {}
+                cur = cur[part]
+
+            leaf = parts[-1]
+            old_value = cur.get(leaf)
+
+            check_key = f"{key}.{leaf}".lower().replace("-", "_")
+            if (
+                any(s in check_key for s in ("api_key", "token", "secret", "password"))
+                and isinstance(value, str)
+                and "***" in value
+                and old_value
+            ):
+                return {"ok": True, "note": "Значение оставлено без изменений"}
+
+            cur[leaf] = value
+
+            # Валидируем ДО записи: битый конфиг не пишем
             from jarvis.config_schema import validate_config
 
             validate_config(json.loads(json.dumps(data, ensure_ascii=False)))
-            with path.open("w", encoding="utf-8") as f:
+
+            mode = path.stat().st_mode
+            tmp_path = path.with_suffix(".tmp")
+            with tmp_path.open("w", encoding="utf-8") as f:
                 yaml.dump(data, f)
+                f.flush()
+            tmp_path.chmod(mode)
+            tmp_path.replace(path)
         except Exception as exc:  # noqa: BLE001
             return {"ok": False, "error": f"Не удалось применить: {exc}"}
+
+        full_key = ".".join(parts)
         return {
             "ok": True,
-            "note": f"Сохранено: {section}.{key} = {value} (было: {old_value}). "
+            "note": f"Сохранено: {full_key} = {value} (было: {old_value}). "
             "Применится после перезапуска backend.",
         }
 
     def _get_config(self) -> dict[str, Any]:
-        """Текущие значения конфига для отображения в настройках GUI.
-
-        Read-only: запись с сохранением комментариев (ruamel) — будущая
-        работа; pyyaml перезаписал бы config.yaml без комментариев.
-        """
+        """Текущие значения полного дерева конфига для отображения в настройках GUI."""
         import os
 
         from jarvis.config_loader import ConfigLoader
@@ -578,24 +1057,30 @@ class Bridge:
             return {"ok": False, "error": f"Конфиг {path} невалиден (см. stderr)"}
         except Exception as exc:  # noqa: BLE001 — протокол не должен рваться
             return {"ok": False, "error": str(exc)}
-        llm_cfg = cfg.get("llm", {})
-        provider = llm_cfg.get("provider", "ollama")
-        stt_cfg = cfg.get("stt", {})
-        tts_cfg = cfg.get("tts", {})
+
+        def _mask_secrets(obj: Any) -> Any:
+            if isinstance(obj, dict):
+                res = {}
+                for k, v in obj.items():
+                    if (
+                        any(
+                            s in k.lower()
+                            for s in ("api_key", "token", "secret", "password")
+                        )
+                        and isinstance(v, str)
+                        and v
+                    ):
+                        res[k] = v[:4] + "***" if len(v) > 4 else "***"
+                    else:
+                        res[k] = _mask_secrets(v)
+                return res
+            elif isinstance(obj, list):
+                return [_mask_secrets(item) for item in obj]
+            return obj
+
         return {
             "ok": True,
-            "config": {
-                "stt": {
-                    "engine": stt_cfg.get("engine"),
-                    "wake_word": stt_cfg.get("wake_word"),
-                    "phrase_time_limit": stt_cfg.get("phrase_time_limit"),
-                },
-                "tts": {"engine": tts_cfg.get("engine")},
-                "llm": {
-                    "provider": provider,
-                    "model": (llm_cfg.get(provider) or {}).get("model"),
-                },
-            },
+            "config": _mask_secrets(cfg),
         }
 
     @staticmethod
@@ -615,13 +1100,15 @@ class Bridge:
             return {"ok": False, "error": error}
         api_type: str = config["type"]
         endpoint: str = config["endpoint"].rstrip("/")
-        api_key: str = config["api_key"]
+        api_key: str = str(config.get("api_key") or "").strip()
         url = f"{endpoint}/models"
         headers: dict[str, str] = {}
         if api_type == "openai":
-            headers["Authorization"] = f"Bearer {api_key}"
+            if api_key:
+                headers["Authorization"] = f"Bearer {api_key}"
         else:
-            headers["x-api-key"] = api_key
+            if api_key:
+                headers["x-api-key"] = api_key
             headers["anthropic-version"] = ANTHROPIC_VERSION
         try:
             resp = requests.get(url, headers=headers, timeout=15)
@@ -668,12 +1155,34 @@ class Bridge:
 
 
 def main() -> None:
+    if hasattr(sys.stdin, "reconfigure"):
+        try:
+            sys.stdin.reconfigure(errors="replace")
+        except Exception:
+            pass
+    if hasattr(sys.stdout, "reconfigure"):
+        try:
+            sys.stdout.reconfigure(errors="replace")
+        except Exception:
+            pass
     bridge = Bridge()
+    _worker_thread: threading.Thread | None = None
     for line in sys.stdin:
+        if not line.strip():
+            continue
+        if len(line) > 10 * 1024 * 1024:
+            bridge._write_response({"ok": False, "error": "payload too large"})
+            continue
         try:
             request = json.loads(line)
         except Exception as exc:
             bridge._write_response({"ok": False, "error": f"bad request: {exc}"})
+            continue
+
+        if not isinstance(request, dict):
+            bridge._write_response(
+                {"ok": False, "error": "bad request: expected JSON object"}
+            )
             continue
 
         rid = request.get("id")
@@ -690,7 +1199,7 @@ def main() -> None:
                 )
                 continue
 
-            def work(req: dict[str, Any] = request, rid: str = rid) -> None:
+            def work(req: dict[str, Any] = request, rid: Any = rid) -> None:
                 # BaseException, а не Exception: ConfigLoader зовёт sys.exit(1)
                 # на кривом конфиге — SystemExit не должен молча убивать поток
                 # (иначе _end_message не вызовется и busy-флаг зависнет).
@@ -702,7 +1211,10 @@ def main() -> None:
                     # Heartbeat: сбрасывает 180-секундный стрим-таймаут Rust'а,
                     # пока генерация жива (не-стримящая итерация молчит)
                     while not stop_beat.wait(20):
-                        bridge._emit_delta("")
+                        try:
+                            bridge._emit_delta("")
+                        except Exception:
+                            break
 
                 beat_thread = threading.Thread(target=beat, daemon=True)
                 beat_thread.start()
@@ -713,14 +1225,18 @@ def main() -> None:
                 finally:
                     stop_beat.set()
                     bridge._current_id = None
+                    if not isinstance(result, dict):
+                        result = {"ok": False, "error": "внутренняя ошибка"}
                     result["id"] = rid
                     bridge._write_response(result)
                     bridge._end_message()
 
             try:
-                threading.Thread(
+                t = threading.Thread(
                     target=work, name="jarvis-bridge-message", daemon=True
-                ).start()
+                )
+                t.start()
+                _worker_thread = t
             except Exception as exc:  # noqa: BLE001
                 bridge._write_response({"ok": False, "id": rid, "error": str(exc)})
                 bridge._end_message()
@@ -730,9 +1246,16 @@ def main() -> None:
             result = bridge.handle(request)
         except BaseException as exc:  # Keep protocol alive after one failed request.
             result = {"ok": False, "error": str(exc) or type(exc).__name__}
+        if not isinstance(result, dict):
+            result = {"ok": False, "error": "внутренняя ошибка"}
         if rid:
             result["id"] = rid
         bridge._write_response(result)
+
+    # EOF: Rust закрыл stdin (stop/перезапуск). Дождёмся рабочего потока,
+    # чтобы его finally-блоки успели убить дочерние процессы (bash_agent killpg).
+    if _worker_thread is not None and _worker_thread.is_alive():
+        _worker_thread.join(timeout=5)
 
 
 if __name__ == "__main__":

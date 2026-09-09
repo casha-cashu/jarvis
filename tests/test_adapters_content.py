@@ -6,6 +6,7 @@ Verifies every method returns the EXACT expected command string.
 """
 
 import os
+import shutil
 
 import pytest
 
@@ -531,24 +532,30 @@ def _t():
                 hypr,
                 "screenshot_screen",
                 {},
-                "grimblast copy screen",
-                True,
+                "grimblast copy screen"
+                if shutil.which("grimblast")
+                else ("grim " + _SHOT_DIR),
+                bool(shutil.which("grimblast")),
                 id="hyprland-screenshot_screen",
             ),
             pytest.param(
                 hypr,
                 "screenshot_area",
                 {},
-                "grimblast copy area",
-                True,
+                "grimblast copy area"
+                if shutil.which("grimblast")
+                else ("grim -g '100,100 500x400' " + _SHOT_DIR),
+                bool(shutil.which("grimblast")),
                 id="hyprland-screenshot_area",
             ),
             pytest.param(
                 hypr,
                 "screenshot_window",
                 {},
-                "grimblast copy active",
-                True,
+                "grimblast copy active"
+                if shutil.which("grimblast")
+                else ("grim -g '100,100 500x400' " + _SHOT_DIR),
+                bool(shutil.which("grimblast")),
                 id="hyprland-screenshot_window",
             ),
             pytest.param(
@@ -709,7 +716,7 @@ def _t():
                 gnome,
                 "window_floating",
                 {},
-                "echo 'Floating windows not supported on GNOME'",
+                "false",
                 True,
                 id="gnome-window_floating",
             ),
@@ -849,13 +856,22 @@ def _t():
 
     # ---- KDE ----
     kde = KDEAdapter
+    _qdbus = (
+        "qdbus"
+        if shutil.which("qdbus")
+        else (
+            "qdbus6"
+            if shutil.which("qdbus6")
+            else ("qdbus-qt6" if shutil.which("qdbus-qt6") else "qdbus")
+        )
+    )
     cases.extend(
         [
             pytest.param(
                 kde,
                 "workspace_switch",
                 {"number": 3},
-                "qdbus org.kde.KWin /KWin setCurrentDesktop 3",
+                f"{_qdbus} org.kde.KWin /KWin setCurrentDesktop 3",
                 True,
                 id="kde-workspace_switch",
             ),
@@ -863,7 +879,7 @@ def _t():
                 kde,
                 "workspace_next",
                 {},
-                "qdbus org.kde.KWin /KWin nextDesktop",
+                f"{_qdbus} org.kde.KWin /KWin nextDesktop",
                 True,
                 id="kde-workspace_next",
             ),
@@ -871,7 +887,7 @@ def _t():
                 kde,
                 "workspace_prev",
                 {},
-                "qdbus org.kde.KWin /KWin previousDesktop",
+                f"{_qdbus} org.kde.KWin /KWin previousDesktop",
                 True,
                 id="kde-workspace_prev",
             ),
@@ -879,7 +895,7 @@ def _t():
                 kde,
                 "window_close",
                 {},
-                "qdbus org.kde.KWin /KWin killWindow",
+                f"{_qdbus} org.kde.KWin /KWin killWindow",
                 True,
                 id="kde-window_close",
             ),
@@ -887,7 +903,7 @@ def _t():
                 kde,
                 "window_fullscreen",
                 {},
-                "qdbus org.kde.kglobalaccel /component/kwin invokeShortcut 'Window Fullscreen'",
+                f"{_qdbus} org.kde.kglobalaccel /component/kwin invokeShortcut 'Window Fullscreen'",
                 True,
                 id="kde-window_fullscreen",
             ),
@@ -895,7 +911,7 @@ def _t():
                 kde,
                 "window_minimize",
                 {},
-                "qdbus org.kde.kglobalaccel /component/kwin invokeShortcut 'Window Minimize'",
+                f"{_qdbus} org.kde.kglobalaccel /component/kwin invokeShortcut 'Window Minimize'",
                 True,
                 id="kde-window_minimize",
             ),
@@ -903,7 +919,7 @@ def _t():
                 kde,
                 "window_maximize",
                 {},
-                "qdbus org.kde.kglobalaccel /component/kwin invokeShortcut 'Window Maximize'",
+                f"{_qdbus} org.kde.kglobalaccel /component/kwin invokeShortcut 'Window Maximize'",
                 True,
                 id="kde-window_maximize",
             ),
@@ -911,7 +927,7 @@ def _t():
                 kde,
                 "window_floating",
                 {},
-                "echo 'Floating windows not supported on KDE'",
+                "false",
                 True,
                 id="kde-window_floating",
             ),
@@ -919,7 +935,7 @@ def _t():
                 kde,
                 "window_next",
                 {},
-                "qdbus org.kde.kglobalaccel /component/kwin invokeShortcut 'Walk Through Windows'",
+                f"{_qdbus} org.kde.kglobalaccel /component/kwin invokeShortcut 'Walk Through Windows'",
                 True,
                 id="kde-window_next",
             ),
@@ -927,7 +943,7 @@ def _t():
                 kde,
                 "window_prev",
                 {},
-                "qdbus org.kde.kglobalaccel /component/kwin invokeShortcut 'Walk Through Windows (Reverse)'",
+                f"{_qdbus} org.kde.kglobalaccel /component/kwin invokeShortcut 'Walk Through Windows (Reverse)'",
                 True,
                 id="kde-window_prev",
             ),
@@ -1122,7 +1138,7 @@ def _t():
                 macos,
                 "screenshot_screen",
                 {},
-                "screencapture -c " + _SHOT_DIR,
+                "screencapture " + _SHOT_DIR,
                 False,
                 id="macos-screenshot_screen",
             ),
@@ -1186,7 +1202,7 @@ def _t():
                 macos,
                 "lock_screen",
                 {},
-                "'/System/Library/CoreServices/Menu Extras/User.menu/Contents/Resources/CGSession' -suspend",
+                "pmset displaysleepnow",
                 True,
                 id="macos-lock_screen",
             ),
@@ -1408,6 +1424,13 @@ def test_adapter_command(adapter_cls, method, kwargs, expected, exact, monkeypat
         monkeypatch.setattr(
             sway_mod, "_focused_window_geometry", lambda: "0,0 1920x1080"
         )
+    elif adapter.name == "hyprland" and method in (
+        "screenshot_area",
+        "screenshot_window",
+    ):
+        from jarvis.adapters import hyprland as hyprland_mod
+
+        monkeypatch.setattr(hyprland_mod, "_slurp_geometry", lambda: "100,100 500x400")
 
     impl = getattr(adapter, method)
     result = impl(**kwargs)

@@ -10,6 +10,7 @@ P15: убран дубль wake-word проверки в _listen_follow_up — �
 
 from __future__ import annotations
 
+import difflib
 import logging
 import re
 from typing import Callable, Optional
@@ -65,9 +66,24 @@ class ConversationManager:
             # Word-boundary match: "джарвиссимо" must NOT trigger.
             if re.search(rf"\b{re.escape(wake)}\b", lower):
                 query = re.sub(
-                    rf"^.*?\b{re.escape(wake)}\b\s*", "", lower, count=1
+                    rf"^.*?\b{re.escape(wake)}\b[\s,.:;!?—\-]*", "", lower, count=1
                 ).strip()
                 return True, (query or None)
+
+        # Fallback: fuzzy match on the first token to tolerate slight STT/Whisper distortions
+        words = lower.split()
+        if words:
+            first_word = words[0].strip(" \t\n\r,.:;!?—-")
+            for wake in self.wake_words:
+                if " " in wake:
+                    continue  # multi-word wake words checked above
+                if len(first_word) > len(wake) + 1 or len(first_word) < len(wake) - 2:
+                    continue
+                ratio = difflib.SequenceMatcher(None, first_word, wake).ratio()
+                if ratio >= 0.75:
+                    query = " ".join(words[1:]).strip(" \t\n\r,.:;!?—-")
+                    return True, (query or None)
+
         return False, None
 
     def is_unmute_phrase(self, text: str) -> bool:

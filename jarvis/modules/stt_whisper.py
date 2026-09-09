@@ -44,6 +44,9 @@ class WhisperSTT(BaseSTT):
         vad_threshold: float = 0.5,
         partial_interval_ms: int = 1000,
         silence_threshold: Optional[float] = None,
+        initial_prompt: Optional[str] = (
+            "Разговор с голосовым ассистентом по имени Джарвис."
+        ),
     ):
         """
         Args:
@@ -56,15 +59,17 @@ class WhisperSTT(BaseSTT):
             partial_interval_ms: Интервал промежуточных гипотез (мс; 0 = off)
             silence_threshold: Секунд тишины для завершения фразы
                 (None → DEFAULT_SILENCE_THRESHOLD)
+            initial_prompt: Текстовая подсказка для контекста (опционально)
         """
         super().__init__(sample_rate=sample_rate, device_name=device_name)
         self.model_size = model_size if model_size != "auto" else "tiny"
         self.model_path = model_path
         self.use_vad = use_vad
-        self.partial_interval_ms = max(0, int(partial_interval_ms))
+        self.partial_interval_ms = max(0, partial_interval_ms)
+        self.initial_prompt = initial_prompt
         self.silence_threshold = (
-            float(silence_threshold)
-            if silence_threshold and silence_threshold > 0
+            silence_threshold
+            if silence_threshold is not None and silence_threshold > 0
             else self.DEFAULT_SILENCE_THRESHOLD
         )
 
@@ -136,11 +141,24 @@ class WhisperSTT(BaseSTT):
         Returns:
             Распознанный текст
         """
-        audio_queue: "queue.Queue[bytes]" = queue.Queue()
+        audio_queue: "queue.Queue[bytes]" = queue.Queue(maxsize=100)
+        pa_continue = getattr(pyaudio, "paContinue", 0)
+        is_recording = True
 
         def audio_callback(in_data, frame_count, time_info, status):
-            audio_queue.put(in_data)
-            return (in_data, pyaudio.paContinue)
+            if is_recording:
+                try:
+                    audio_queue.put_nowait(in_data)
+                except queue.Full:
+                    try:
+                        audio_queue.get_nowait()
+                    except queue.Empty:
+                        pass
+                    try:
+                        audio_queue.put_nowait(in_data)
+                    except queue.Full:
+                        pass
+            return (in_data, pa_continue)
 
         # Открываем поток — каналы известны заранее (определено в __init__)
         stream = self.audio.open(
@@ -154,19 +172,18 @@ class WhisperSTT(BaseSTT):
         )
 
         need_resample = self.mic_sample_rate != self.sample_rate
-        stream.start_stream()
-        logger.debug("🎤 Слушаю (Whisper)...")
-
         # Буфер для накопления аудио
         audio_buffer: List[np.ndarray] = []
         last_partial_ts = 0.0
         partial_interval_s = self.partial_interval_ms / 1000.0
 
         start_time = time.time()
-        speech_detected = False
+        speech_detected = not bool(self.use_vad and self.vad_iterator)
         silence_start = None
 
         try:
+            stream.start_stream()
+            logger.debug("🎤 Слушаю (Whisper)...")
             while stream.is_active():
                 if time.time() - start_time > phrase_time_limit:
                     logger.debug("⏱️ Таймаут")
@@ -216,24 +233,38 @@ class WhisperSTT(BaseSTT):
                     ):
                         last_partial_ts = time.time()
                         partial_text = self._transcribe_array(
-                            np.concatenate(audio_buffer), vad_filter=True
+                            np.concatenate(audio_buffer), vad_filter=True, beam_size=1
                         )
                         if partial_text:
                             logger.debug(f"📝 Whisper partial: {partial_text}")
                             callback(partial_text)
 
         finally:
-            stream.stop_stream()
-            stream.close()
-            if self.vad_iterator:
-                self.vad_iterator.reset()
+            try:
+                try:
+                    if stream.is_active():
+                        stream.stop_stream()
+                except Exception as e:
+                    logger.debug(f"stop_stream error: {e}")
+                finally:
+                    try:
+                        stream.close()
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+            finally:
+                if self.vad_iterator:
+                    self.vad_iterator.reset()
 
         # Если ничего не записано — пусто
         if not audio_buffer:
             return ""
 
         # Транскрибируем весь буфер разом
-        text = self._transcribe_array(np.concatenate(audio_buffer))
+        text = self._transcribe_array(
+            np.concatenate(audio_buffer), vad_filter=False, beam_size=3
+        )
 
         if text:
             logger.info(f"📝 Whisper: {text}")
@@ -242,15 +273,25 @@ class WhisperSTT(BaseSTT):
 
         return text
 
-    def _transcribe_array(self, audio: np.ndarray, vad_filter: bool = False) -> str:
+    def _transcribe_array(
+        self,
+        audio: np.ndarray,
+        vad_filter: bool = False,
+        beam_size: int = 3,
+        initial_prompt: Optional[str] = None,
+    ) -> str:
         """Транскрибирует float32-массив через faster-whisper."""
         try:
+            prompt = (
+                initial_prompt if initial_prompt is not None else self.initial_prompt
+            )
             segments, _info = self.model.transcribe(
                 audio,
                 language="ru",
-                beam_size=3,
+                beam_size=beam_size,
                 vad_filter=vad_filter,
                 condition_on_previous_text=False,
+                initial_prompt=prompt,
             )
             return " ".join(seg.text.strip() for seg in segments).strip()
         except Exception as e:
@@ -260,5 +301,9 @@ class WhisperSTT(BaseSTT):
     def close(self):
         """Закрывает ресурсы"""
         if self.audio:
-            self.audio.terminate()
+            try:
+                self.audio.terminate()
+            except Exception:
+                pass
+            self.audio = None
         logger.info("🛑 WhisperSTT закрыт")

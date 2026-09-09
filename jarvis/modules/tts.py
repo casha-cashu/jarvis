@@ -4,6 +4,7 @@ Text-to-Speech module using Piper TTS
 Синтез речи (офлайн, быстрый)
 """
 
+import json
 import queue
 import shutil
 import subprocess
@@ -34,6 +35,7 @@ def _player_commands(path: str) -> list:
         ["ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet", path],
         ["aplay", path],
         ["paplay", path],
+        ["afplay", path],
     ]
 
 
@@ -148,7 +150,7 @@ def _auto_detect_piper_lib_path(
             )
             for line in res.stdout.splitlines():
                 # Format: "libpiper.so (libc6,x86-64) => /usr/lib/libpiper.so"
-                if "libpiper" in line or "libonnxruntime" in line:
+                if "libpiper_phonemize" in line or "libpiper" in line:
                     if "=>" in line:
                         so_path = line.split("=>", 1)[1].strip()
                         parent = str(Path(so_path).parent)
@@ -175,8 +177,7 @@ def _auto_detect_piper_lib_path(
         if not d.is_dir():
             continue
         if any(
-            (d / name).exists()
-            for name in ("libpiper.so", "libonnxruntime.so", "libonnxruntime.so.1")
+            (d / name).exists() for name in ("libpiper_phonemize.so", "libpiper.so")
         ):
             logger.info(f"🔍 piper lib found in standard path: {d}")
             return str(d)
@@ -187,13 +188,36 @@ def _auto_detect_piper_lib_path(
         logger.info(f"🔍 piper lib falling back to Steam path: {steam}")
         return str(steam)
 
+    # Сканируем альтернативные пути Proton только если _STEAM_PIPER_PATH не был переопределён тестом
+    if _STEAM_PIPER_PATH == _DEFAULT_STEAM_PIPER_PATH:
+        for sroot in (
+            Path.home() / ".local/share/Steam/compatibilitytools.d",
+            Path("/usr/share/steam/compatibilitytools.d"),
+        ):
+            if not sroot.is_dir():
+                continue
+            for sub in sorted(sroot.glob("*/files/lib/x86_64-linux-gnu"), reverse=True):
+                if any(
+                    (sub / name).exists()
+                    for name in (
+                        "libpiper.so",
+                        "libpiper_phonemize.so",
+                        "libonnxruntime.so",
+                    )
+                ):
+                    logger.info(
+                        f"🔍 piper lib falling back to Steam Proton path: {sub}"
+                    )
+                    return str(sub)
+
     return None
 
 
 # Hardcoded Steam Proton fallback — историческая совместимость (Arch/CachyOS)
-_STEAM_PIPER_PATH = Path(
+_DEFAULT_STEAM_PIPER_PATH = Path(
     "/usr/share/steam/compatibilitytools.d/proton-ge-custom/files/lib/x86_64-linux-gnu"
 )
+_STEAM_PIPER_PATH = _DEFAULT_STEAM_PIPER_PATH
 
 
 class PiperTTS:
@@ -207,6 +231,7 @@ class PiperTTS:
         lib_path: Optional[str] = None,
         speaker_id: int = 0,
         length_scale: float = 1.0,
+        use_coprocess: bool = True,
     ):
         """
         Args:
@@ -216,11 +241,17 @@ class PiperTTS:
             lib_path: Путь к библиотекам для LD_LIBRARY_PATH
             speaker_id: ID голоса (для мультиголосовых моделей)
             length_scale: Скорость речи (1.0 = норма, <1 = быстрее, >1 = медленнее)
+            use_coprocess: Использовать долгоживущий процесс piper с --json-input
         """
-        self.model_path = Path(model_path)
-        self.binary_path = binary_path
+        import os
+
+        self.model_path = Path(os.path.expandvars(os.path.expanduser(model_path)))
+        self.binary_path = os.path.expandvars(os.path.expanduser(binary_path))
         self.speaker_id = speaker_id
         self.length_scale = length_scale
+        self.use_coprocess = use_coprocess
+        self._proc: Optional[subprocess.Popen] = None
+        self._proc_lock = threading.Lock()
 
         # P13: lib_path может быть не задан или указывать на несуществующий
         # путь (как старый Steam Proton в дефолтном config.yaml). Пробуем
@@ -241,7 +272,24 @@ class PiperTTS:
                     )
                 self.lib_path = None
 
-        # Проверяем модель
+        # Проверяем модель с авто-поиском по известным каталогам
+        if not self.model_path.exists():
+            name = self.model_path.name
+            fallbacks = [
+                Path.home() / ".local/share/piper/voices" / name,
+                Path.home() / "models/piper" / name,
+                Path.home() / "models" / name,
+                Path.cwd() / "models/piper" / name,
+                Path.cwd() / "models" / name,
+            ]
+            for fb in fallbacks:
+                if fb.exists():
+                    logger.info(
+                        "🔍 Piper модель найдена по альтернативному пути: %s", fb
+                    )
+                    self.model_path = fb
+                    break
+
         if not self.model_path.exists():
             raise FileNotFoundError(f"Модель Piper не найдена: {model_path}")
 
@@ -279,7 +327,7 @@ class PiperTTS:
         """Возвращает sanitized env + LD_LIBRARY_PATH для piper.
 
         ``sanitized_env`` гарантирует, что API ключи (ANTHROPIC_API_KEY,
-        OPENROUTER_API_KEY, …) НЕ попадают в окружение piper-процесса.
+        OPENROUTER_API_KEY, ...) НЕ попадают в окружение piper-процесса.
         """
         import os
 
@@ -290,6 +338,67 @@ class PiperTTS:
                 f"{self.lib_path}:{current_ld}" if current_ld else self.lib_path
             )
         return sanitized_env(extra=extra)
+
+    def _get_proc(self) -> Optional[subprocess.Popen]:
+        if not getattr(self, "use_coprocess", True):
+            return None
+        with self._proc_lock:
+            if self._proc is not None:
+                if self._proc.poll() is None and self._proc.stdin and self._proc.stdout:
+                    return self._proc
+                try:
+                    self._proc.kill()
+                except Exception:
+                    pass
+                self._proc = None
+
+            try:
+                cmd = [
+                    self.binary_path,
+                    "--model",
+                    str(self.model_path),
+                    "--json-input",
+                    "--length_scale",
+                    str(self.length_scale),
+                ]
+                if self.config_path:
+                    cmd.extend(["--config", str(self.config_path)])
+                if self.speaker_id >= 0:
+                    cmd.extend(["--speaker", str(self.speaker_id)])
+
+                env = self._get_env()
+                self._proc = subprocess.Popen(
+                    cmd,
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL,
+                    text=True,
+                    bufsize=1,
+                    env=env,
+                )
+                return self._proc
+            except Exception as e:
+                logger.warning("Не удалось запустить persistent piper: %s", e)
+                return None
+
+    def close(self) -> None:
+        """Останавливает persistent piper процесс."""
+        lock = getattr(self, "_proc_lock", None)
+        if lock is not None:
+            with lock:
+                proc = getattr(self, "_proc", None)
+                if proc is not None:
+                    try:
+                        if proc.stdin:
+                            proc.stdin.close()
+                        proc.terminate()
+                        proc.wait(timeout=2.0)
+                    except Exception:
+                        try:
+                            proc.kill()
+                        except Exception:
+                            pass
+                    self._proc = None
 
     def speak(
         self, text: str, output_file: Optional[str] = None, play: bool = True
@@ -308,21 +417,67 @@ class PiperTTS:
         if not text.strip():
             return False
 
+        if output_file:
+            wav_file = Path(output_file)
+        else:
+            temp_dir = Path("/tmp/jarvis")
+            temp_dir.mkdir(parents=True, exist_ok=True)
+
+            temp_file = tempfile.NamedTemporaryFile(
+                suffix=".wav", delete=False, dir=temp_dir
+            )
+            wav_file = Path(temp_file.name)
+            temp_file.close()
+
+        # 1. Попытка через persistent coprocess
+        if (
+            getattr(self, "use_coprocess", True)
+            and hasattr(self, "_proc_lock")
+            and self.model_path.exists()
+        ):
+            proc = self._get_proc()
+            if proc is not None and proc.stdin is not None and proc.stdout is not None:
+                try:
+                    payload = (
+                        json.dumps(
+                            {"text": text, "output_file": str(wav_file)},
+                            ensure_ascii=False,
+                        )
+                        + "\n"
+                    )
+                    proc.stdin.write(payload)
+                    proc.stdin.flush()
+                    out_line = proc.stdout.readline().strip()
+                    if out_line and Path(out_line).exists():
+                        if play:
+                            self._play_audio(wav_file)
+                        if not output_file:
+                            try:
+                                wav_file.unlink()
+                            except OSError:
+                                pass
+                        return True
+                except Exception as e:
+                    logger.warning("Ошибка persistent piper, откат к oneshot: %s", e)
+                    with self._proc_lock:
+                        if self._proc:
+                            try:
+                                self._proc.kill()
+                            except Exception:
+                                pass
+                            self._proc = None
+
+        # 2. Fallback: classic oneshot via subprocess.Popen (нужен также для тестов с моками)
+        return self._speak_oneshot(text, wav_file, output_file=output_file, play=play)
+
+    def _speak_oneshot(
+        self,
+        text: str,
+        wav_file: Path,
+        output_file: Optional[str] = None,
+        play: bool = True,
+    ) -> bool:
         try:
-            # Создаём временный файл если не указан
-            if output_file:
-                wav_file = Path(output_file)
-            else:
-                # Создаём директорию если не существует
-                temp_dir = Path("/tmp/jarvis")
-                temp_dir.mkdir(parents=True, exist_ok=True)
-
-                temp_file = tempfile.NamedTemporaryFile(
-                    suffix=".wav", delete=False, dir=temp_dir
-                )
-                wav_file = Path(temp_file.name)
-                temp_file.close()
-
             # Команда piper
             cmd = [
                 self.binary_path,
@@ -352,7 +507,18 @@ class PiperTTS:
                 env=env,
             )
 
-            process.communicate(input=text)
+            try:
+                process.communicate(input=text, timeout=30)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.communicate()
+                logger.error("❌ Piper процесс превысил таймаут 30s")
+                if not output_file:
+                    try:
+                        wav_file.unlink()
+                    except OSError:
+                        pass
+                return False
 
             if process.returncode != 0:
                 logger.error(f"❌ Piper вернул код {process.returncode}")
@@ -372,7 +538,12 @@ class PiperTTS:
             return True
 
         except Exception as e:
-            logger.error(f"❌ Ошибка TTS: {e}")
+            logger.error(f"❌ Ошибка Piper TTS: {e}")
+            if not output_file:
+                try:
+                    wav_file.unlink()
+                except OSError:
+                    pass
             return False
 
     def _play_audio(self, audio_file: Path):
@@ -534,14 +705,15 @@ class SpeechT5TTS:
             temp_dir.mkdir(parents=True, exist_ok=True)
 
             tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False, dir=temp_dir)
-            sf.write(tmp.name, speech, samplerate=16000)
-            tmp.close()
+            try:
+                sf.write(tmp.name, speech, samplerate=16000)
+                tmp.close()
 
-            if play:
-                _play_audio_file(tmp.name)
-
-            Path(tmp.name).unlink(missing_ok=True)
-            return True
+                if play:
+                    _play_audio_file(tmp.name)
+                return True
+            finally:
+                Path(tmp.name).unlink(missing_ok=True)
 
         except Exception as e:
             self.logger.error(f"❌ SpeechT5: {e}")
@@ -651,6 +823,7 @@ class TTSWorker:
         self._queue: "queue.Queue[str]" = queue.Queue()
         self._stopped = False
         self._busy = False
+        self._lock = threading.Lock()
         self._thread = threading.Thread(
             target=self._run, name="jarvis-tts-worker", daemon=True
         )
@@ -659,7 +832,8 @@ class TTSWorker:
     @property
     def busy(self) -> bool:
         """True пока проигрывается очередная фраза."""
-        return self._busy
+        with self._lock:
+            return self._busy
 
     @property
     def pending(self) -> int:
@@ -702,11 +876,13 @@ class TTSWorker:
             True если worker простаивает, False по таймауту.
         """
         deadline = None if timeout is None else time.monotonic() + timeout
-        while self._busy or not self._queue.empty():
+        while True:
+            with self._lock:
+                if not self._busy and self._queue.empty():
+                    return True
             if deadline is not None and time.monotonic() >= deadline:
                 return False
             time.sleep(0.02)
-        return True
 
     def close(self, timeout: float = 10.0) -> None:
         """Останавливает поток. Уже поставленные фразы доиграют (в пределах
@@ -736,7 +912,8 @@ class TTSWorker:
                     break
                 continue
 
-            self._busy = True
+            with self._lock:
+                self._busy = True
             _reset_playback_cancel()
             try:
                 if self.tts is not None and text.strip():
@@ -744,7 +921,8 @@ class TTSWorker:
             except Exception as e:
                 logger.error(f"❌ TTS worker: {e}")
             finally:
-                self._busy = False
+                with self._lock:
+                    self._busy = False
 
             # После close() доигрываем уже поставленные фразы и выходим.
             if self._stopped and self._queue.empty():

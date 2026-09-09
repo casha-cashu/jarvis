@@ -517,6 +517,23 @@ class TestAnthropicChatWithTools:
         assert tool["description"] == "Execute bash command"
         assert "input_schema" in tool
 
+    def test_stream_callback_supported(self, client):
+        """stream_callback is accepted without TypeError and called with final text."""
+        resp = _FakeAnthropicResponse([_FakeAnthropicTextBlock("streamed answer")])
+        client.client = MagicMock()
+        client.client.messages.create.return_value = resp
+
+        chunks = []
+        result = client.chat_with_tools(
+            "test",
+            tools=[],
+            on_tool_call=lambda n, a: "x",
+            max_iterations=2,
+            stream_callback=chunks.append,
+        )
+        assert result == "streamed answer"
+        assert chunks == ["streamed answer"]
+
 
 class TestOpenAIClient:
     def test_init_missing_key(self):
@@ -577,9 +594,11 @@ class TestHistoryPersistence:
         c.add_to_history("assistant", "1r")
         c.add_to_history("user", "2")
         c.add_to_history("assistant", "2r")
-        c.add_to_history("user", "3")  # теперь 5, обрезаем до 4
-        assert len(c.history) == 4
-        assert c.history[0]["content"] == "1r"  # первое выкинуто
+        c.add_to_history(
+            "user", "3"
+        )  # теперь 5, обрезаем до 4 (начинается с assistant, поэтому срезается до 3)
+        assert len(c.history) == 3
+        assert c.history[0]["content"] == "2"
         assert c.history[-1]["content"] == "3"
 
     def test_clear_history_persists(self):

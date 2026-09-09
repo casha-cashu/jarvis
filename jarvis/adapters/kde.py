@@ -3,7 +3,19 @@
 KDE adapter - commands for KDE Plasma (KWin)
 """
 
+import logging
+import shutil
+
 from .base import BaseAdapter
+
+logger = logging.getLogger(__name__)
+
+
+def _resolve_qdbus() -> str:
+    for cmd in ("qdbus", "qdbus6", "qdbus-qt6"):
+        if shutil.which(cmd):
+            return cmd
+    return "qdbus"
 
 
 class KDEAdapter(BaseAdapter):
@@ -13,41 +25,46 @@ class KDEAdapter(BaseAdapter):
         super().__init__()
         self.name = "kde"
 
+    @property
+    def _qdbus(self) -> str:
+        return _resolve_qdbus()
+
     # Workspace management
     def workspace_switch(self, number: int) -> str:
-        return f"qdbus org.kde.KWin /KWin setCurrentDesktop {number}"
+        return f"{self._qdbus} org.kde.KWin /KWin setCurrentDesktop {number}"
 
     def workspace_next(self) -> str:
-        return "qdbus org.kde.KWin /KWin nextDesktop"
+        return f"{self._qdbus} org.kde.KWin /KWin nextDesktop"
 
     def workspace_prev(self) -> str:
-        return "qdbus org.kde.KWin /KWin previousDesktop"
+        return f"{self._qdbus} org.kde.KWin /KWin previousDesktop"
 
     # Window management
     def window_close(self) -> str:
-        return "qdbus org.kde.KWin /KWin killWindow"
+        return f"{self._qdbus} org.kde.KWin /KWin killWindow"
 
     def window_fullscreen(self) -> str:
-        return "qdbus org.kde.kglobalaccel /component/kwin invokeShortcut 'Window Fullscreen'"
+        return f"{self._qdbus} org.kde.kglobalaccel /component/kwin invokeShortcut 'Window Fullscreen'"
 
     def window_minimize(self) -> str:
-        return "qdbus org.kde.kglobalaccel /component/kwin invokeShortcut 'Window Minimize'"
+        return f"{self._qdbus} org.kde.kglobalaccel /component/kwin invokeShortcut 'Window Minimize'"
 
     def window_maximize(self) -> str:
-        return "qdbus org.kde.kglobalaccel /component/kwin invokeShortcut 'Window Maximize'"
+        return f"{self._qdbus} org.kde.kglobalaccel /component/kwin invokeShortcut 'Window Maximize'"
 
     def window_floating(self) -> str:
         # В KWin нет шортката «untile/float»: Window Quick Tile Bottom
         # только half-тайлит окно. Честно сообщаем о неподдержке.
-        return "echo 'Floating windows not supported on KDE'"
+        logger.warning("Floating windows not supported on KDE")
+        return "false"
 
     def window_next(self) -> str:
         # org.kde.KWin /KWin nextWindow/previousWindow не существуют ни в
         # одной версии Plasma — реальный свитчер живёт в kglobalaccel.
-        return "qdbus org.kde.kglobalaccel /component/kwin invokeShortcut 'Walk Through Windows'"
+        return f"{self._qdbus} org.kde.kglobalaccel /component/kwin invokeShortcut 'Walk Through Windows'"
 
     def window_prev(self) -> str:
-        return "qdbus org.kde.kglobalaccel /component/kwin invokeShortcut 'Walk Through Windows (Reverse)'"
+        return f"{self._qdbus} org.kde.kglobalaccel /component/kwin invokeShortcut 'Walk Through Windows (Reverse)'"
 
     # Screenshots
     def screenshot_screen(self) -> str:

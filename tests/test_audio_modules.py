@@ -191,6 +191,21 @@ class TestVoskSTT:
         assert hasattr(stt, "close")
         stt.close()  # not raise
 
+    def test_recognize_from_mic_cleans_up_on_stop_stream_error(self):
+        stt = self._make_stt()
+        mock_stream = MagicMock()
+        mock_stream.is_active.return_value = False
+        mock_stream.stop_stream.side_effect = RuntimeError("stop stream failed")
+        stt.audio.open.return_value = mock_stream
+        stt.vad_iterator = MagicMock()
+        stt.recognizer.FinalResult.return_value = "{}"
+
+        # Should safely close stream and reset vad iterator despite stop_stream failure
+        stt.recognize_from_mic(phrase_time_limit=1)
+
+        mock_stream.close.assert_called_once()
+        stt.vad_iterator.reset.assert_called_once()
+
 
 # ──────────────────────────────────────────────────────────
 # Whisper STT
@@ -227,6 +242,28 @@ class TestWhisperSTT:
                 model_size="tiny", sample_rate=16000, device_name=None, use_vad=False
             )
             assert hasattr(stt, "recognize_from_mic")
+
+    def test_whisper_recognize_from_mic_cleans_up_on_stop_stream_error(self):
+        with (
+            patch("faster_whisper.WhisperModel") as mock_wm,
+            patch("jarvis.modules.stt_whisper.pyaudio.PyAudio"),
+        ):
+            mock_wm.return_value = MagicMock()
+            from jarvis.modules.stt_whisper import WhisperSTT
+
+            stt = WhisperSTT(
+                model_size="tiny", sample_rate=16000, device_name=None, use_vad=False
+            )
+            mock_stream = MagicMock()
+            mock_stream.is_active.return_value = False
+            mock_stream.stop_stream.side_effect = RuntimeError("whisper stop failed")
+            stt.audio.open.return_value = mock_stream
+            stt.vad_iterator = MagicMock()
+
+            stt.recognize_from_mic(phrase_time_limit=1)
+
+            mock_stream.close.assert_called_once()
+            stt.vad_iterator.reset.assert_called_once()
 
 
 # ──────────────────────────────────────────────────────────
@@ -341,6 +378,18 @@ class TestGTTSTempFile:
         leaked = after - before
         assert result is True
         assert not leaked, f"Leaked when play=False: {leaked}"
+
+
+class TestTTSWorkerLock:
+    def test_worker_has_lock_and_safe_idle(self):
+        import threading
+        from jarvis.modules.tts import TTSWorker
+
+        w = TTSWorker(None)
+        assert hasattr(w, "_lock")
+        assert isinstance(w._lock, type(threading.Lock()))
+        assert w.wait_idle(timeout=1) is True
+        w.close(timeout=1)
 
 
 # ──────────────────────────────────────────────────────────
@@ -648,6 +697,27 @@ class TestWhisperPartials:
         assert partials == []
         assert stt.model.transcribe.call_count == 1  # только финальный
 
+    def test_recognize_from_mic_vad_disabled(self):
+        stt = self._make_stt(use_vad=False)
+        stt.vad_iterator = None
+
+        seg = MagicMock()
+        seg.text = "распознанный текст"
+        stt.model = MagicMock()
+        stt.model.transcribe.return_value = ([seg], None)
+
+        pump = _PumpStream([b"\x00" * 4096] * 4)
+
+        def fake_open(**kwargs):
+            pump.cb = kwargs["stream_callback"]
+            return pump
+
+        stt.audio.open.side_effect = fake_open
+
+        result = stt.recognize_from_mic(phrase_time_limit=1)
+        assert result == "распознанный текст"
+        assert stt.model.transcribe.call_count == 1
+
 
 # ──────────────────────────────────────────────────────────
 # Dictation: голосовая остановка (stop_phrase_check)
@@ -765,3 +835,30 @@ class TestVoskEngineFriendlyError:
         monkeypatch.setitem(sys.modules, "jarvis.modules.stt", None)
         with pytest.raises(RuntimeError, match="whisper"):
             pipeline.start()
+
+
+class TestPiperTTSTimeout:
+    """PiperTTS.speak timeout handling."""
+
+    def test_piper_speak_timeout(self, monkeypatch, tmp_path):
+        import subprocess
+        from jarvis.modules import tts
+
+        piper = tts.PiperTTS.__new__(tts.PiperTTS)
+        piper.binary_path = "/usr/bin/piper"
+        piper.model_path = tmp_path / "model.onnx"
+        piper.config_path = None
+        piper.speaker_id = -1
+        piper.length_scale = 1.0
+        piper.lib_path = None
+
+        mock_proc = MagicMock()
+        mock_proc.communicate.side_effect = subprocess.TimeoutExpired(
+            cmd="piper", timeout=30
+        )
+        monkeypatch.setattr(subprocess, "Popen", lambda *a, **kw: mock_proc)
+
+        res = piper.speak("Привет мир", play=False)
+        assert res is False
+        mock_proc.kill.assert_called_once()
+        assert mock_proc.communicate.call_count == 2

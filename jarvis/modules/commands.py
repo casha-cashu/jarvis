@@ -12,12 +12,14 @@ Pipeline (строгий порядок):
 """
 
 import json
+import logging
 import re
 import shlex
 import subprocess
-import logging
+import sys
+import threading
 import urllib.parse
-from typing import Optional, Protocol, Tuple
+from typing import Callable, Optional, Protocol, Tuple
 
 # P12: rapidfuzz — C-extension, ~10-100x быстрее SequenceMatcher
 # на типичных размерах словарей команд. Используем fuzz.ratio (0-100)
@@ -61,6 +63,8 @@ class CommandExecutor:
         execution_timeout: int = 30,
         nlu_router: "Optional[_NluRouter]" = None,
         nlu_confidence_threshold: float = 0.65,
+        scenarios_path: Optional[str] = None,
+        speak_fn: Optional[Callable[[str], None]] = None,
     ):
         self.fuzzy_threshold = fuzzy_threshold
         self.platform = platform_adapter or PlatformAdapter()
@@ -75,6 +79,20 @@ class CommandExecutor:
         # directly; otherwise falls through to existing pipeline.
         self.nlu: "Optional[_NluRouter]" = nlu_router
         self.nlu_confidence_threshold = nlu_confidence_threshold
+        self._detached_procs: list[subprocess.Popen] = []
+        self._detached_lock = threading.Lock()
+        self._speak: Optional[Callable[[str], None]] = speak_fn
+
+        # Сценарии и макросы
+        if scenarios_path == "data/scenarios.json":
+            scenarios_path = None
+        try:
+            from jarvis.modules.scenarios import ScenarioManager
+
+            self.scenarios: Optional[ScenarioManager] = ScenarioManager(scenarios_path)
+        except Exception as e:
+            logger.warning(f"Failed to initialize ScenarioManager: {e}")
+            self.scenarios = None
 
         # Загружаем словари
         json_data = self._load_json(commands_file)
@@ -263,16 +281,15 @@ class CommandExecutor:
     def _find_app_cmd(self, name: str) -> Optional[str]:
         """Ищет команду запуска приложения по любому имени/алиасу."""
         apps = self.apps.get("apps", {})
-        name_lower = name.lower()
+        name_lower = name.lower().strip()
 
-        # 1. Точное или частичное совпадение
+        # 1. Точное совпадение или сопоставление по границам целых слов
         for app_id, app_data in apps.items():
             for alias in app_data.get("names", []):
-                if (
-                    name_lower == alias.lower()
-                    or name_lower in alias.lower()
-                    or alias.lower() in name_lower
-                ):
+                alias_lower = alias.lower().strip()
+                if name_lower == alias_lower:
+                    return app_data.get("cmd")
+                if re.search(rf"\b{re.escape(name_lower)}\b", alias_lower):
                     return app_data.get("cmd")
 
         # 2. Fuzzy
@@ -376,6 +393,16 @@ class CommandExecutor:
             if self._run(app_cmd) is _RUN_FAILED:
                 return f"Не удалось запустить {q}"
             return f"Запускаю {q}"
+
+        # ── Шаг 4.5: Сценарии и макросы ──
+        if self.scenarios:
+            match = self.scenarios.find_matching_scenario(q)
+            if match:
+                sc_id, sc_data = match
+                logger.info(f"⚡ Scenario match: '{q}' → '{sc_id}'")
+                self.scenarios.execute_scenario(sc_data, self, speak_fn=self._speak)
+                sc_name = sc_data.get("name") or sc_id
+                return f"Сценарий «{sc_name}» выполнен."
 
         # ── Шаг 5: Voice commands (маркеры для main loop) ──
         voice_marker = self.parse_voice_command(q)
@@ -485,11 +512,13 @@ class CommandExecutor:
                     env=sanitized_env(),
                 )
                 return (proc.stdout or "").strip()
+            self._reap_detached()
             launcher = subprocess.Popen(
                 shlex.split(cmd),
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 env=sanitized_env(),
+                start_new_session=True,
             )
             # Short-lived commands (notify-send, xdotool) finish quickly and
             # are reaped here. Long-lived launchers (firefox, telegram) are
@@ -497,12 +526,40 @@ class CommandExecutor:
             # to SIGTERM every GUI app 30s after opening it.
             try:
                 launcher.wait(timeout=2)
+                if launcher.returncode != 0:
+                    logger.warning(
+                        f"⚠️ Команда завершилась с ошибкой (код {launcher.returncode}): {cmd}"
+                    )
+                    return _RUN_FAILED
             except subprocess.TimeoutExpired:
                 logger.debug(f"🚀 Detached long-running process: {cmd}")
+                lock = getattr(self, "_detached_lock", None)
+                if lock is not None:
+                    with lock:
+                        self._detached_procs.append(launcher)
+                else:
+                    self._detached_procs.append(launcher)
             return None
         except Exception as e:
             logger.error(f"❌ Ошибка выполнения: {e}")
             return _RUN_FAILED
+
+    def _reap_detached(self) -> None:
+        """Сборка завершившихся отсоединённых процессов (предотвращение зомби)."""
+        with self._detached_lock:
+            procs = getattr(self, "_detached_procs", None)
+            if procs is None:
+                self._detached_procs = []
+                return
+            still_running = []
+            for p in procs:
+                if p.poll() is None:
+                    still_running.append(p)
+            self._detached_procs = still_running
+
+    def cleanup(self) -> None:
+        """Очищает завершившиеся процессы."""
+        self._reap_detached()
 
     @staticmethod
     def _compose_say(entry: dict, output) -> str:
@@ -514,7 +571,8 @@ class CommandExecutor:
 
     def _web_search(self, query: str):
         encoded = urllib.parse.quote_plus(query)
-        self._run(f"xdg-open 'https://www.google.com/search?q={encoded}'")
+        opener = "open" if sys.platform == "darwin" else "xdg-open"
+        self._run(f"{opener} 'https://www.google.com/search?q={encoded}'")
 
     # ── Voice command markers ─────────────────────────────────
 
@@ -552,6 +610,26 @@ class CommandExecutor:
         ):
             return "__UNMUTE__"
 
+        # Continuous mode toggles
+        if q in (
+            "режим диалога",
+            "постоянная прослушка",
+            "слушай постоянно",
+            "непрерывный режим",
+            "включи режим диалога",
+            "включи постоянную прослушку",
+        ):
+            return "__CONTINUOUS_ON__"
+
+        if q in (
+            "обычный режим",
+            "выключи постоянную прослушку",
+            "только по имени",
+            "выключи режим диалога",
+            "стандартный режим",
+        ):
+            return "__CONTINUOUS_OFF__"
+
         # Диктовка
         if (
             q.startswith("диктовк")
@@ -570,14 +648,18 @@ class CommandExecutor:
         # Напоминания — только явные интенты или голая длительность.
         # Иначе "подожди пять минут и скажи анекдот" перехватится как
         # reminder "...и скажи анекдот" и не дойдёт до LLM.
-        from .reminder import parse_time
+        from .reminder import NUM_WORDS, parse_time
 
+        num_pattern = r"(?:\d+|" + "|".join(NUM_WORDS.keys()) + r")"
         explicit_intent = bool(
             re.match(
-                r"^(напомни|напоминание|таймер|будильник|поставь таймер|через\s+\d)", q
+                rf"^(напомни|напоминание|таймер|будильник|поставь таймер|через\s+{num_pattern}\b)",
+                q,
             )
         )
-        bare_duration = re.fullmatch(r"(через\s+)?\d+\s*(секунд\w*|минут\w*|час\S*)", q)
+        bare_duration = re.fullmatch(
+            rf"(через\s+)?{num_pattern}\s*(секунд\w*|минут\w*|час\S*)", q
+        )
         parsed = parse_time(q) if (explicit_intent or bare_duration) else None
         if parsed:
             seconds, text = parsed
@@ -613,7 +695,12 @@ class CommandExecutor:
 class CommandManager:
     """Главный менеджер команд — владеет CommandExecutor."""
 
-    def __init__(self, config: dict, nlu_router: "Optional[_NluRouter]" = None):
+    def __init__(
+        self,
+        config: dict,
+        nlu_router: "Optional[_NluRouter]" = None,
+        speak_fn: Optional[Callable[[str], None]] = None,
+    ):
         commands_cfg = config.get("commands", {})
         self.platform = PlatformAdapter()
 
@@ -644,8 +731,29 @@ class CommandManager:
             execution_timeout=commands_cfg.get("execution_timeout", 30),
             nlu_router=nlu_router,
             nlu_confidence_threshold=commands_cfg.get("nlu_confidence_threshold", 0.65),
+            scenarios_path=(
+                None
+                if commands_cfg.get("scenarios_path") == "data/scenarios.json"
+                else commands_cfg.get("scenarios_path")
+            ),
+            speak_fn=speak_fn,
         )
+
+        self._running = True
+        self._reaper_thread = threading.Thread(target=self._periodic_reap, daemon=True)
+        self._reaper_thread.start()
+
         logger.info("✅ CommandManager инициализирован")
+
+    def _periodic_reap(self):
+        import time
+
+        while self._running:
+            time.sleep(5)
+            try:
+                self.executor.cleanup()
+            except Exception:
+                pass
 
     @staticmethod
     def _maybe_init_nlu(
@@ -672,3 +780,8 @@ class CommandManager:
     def commands_list(self) -> list:
         """Возвращает список всех известных команд (для справки)."""
         return list(self.executor.commands.get("commands", {}).keys())
+
+    def cleanup(self) -> None:
+        """Очищает завершившиеся отсоединённые процессы."""
+        self._running = False
+        self.executor.cleanup()

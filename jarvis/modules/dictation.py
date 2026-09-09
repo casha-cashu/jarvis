@@ -16,36 +16,42 @@ from jarvis._env import sanitized_env
 logger = logging.getLogger(__name__)
 
 
-def _type_text(text: str):
+def _type_text(text: str) -> bool:
     """
     Печатает текст в активное окно.
     Wayland: wtype
     X11: xdotool
     """
     if not text.strip():
-        return
+        return True
 
     # wtype reads stdin as RAW text (no shell involved) — pass as-is.
     if os.environ.get("WAYLAND_DISPLAY"):
         # Wayland
         try:
-            subprocess.run(
+            res = subprocess.run(
                 ["wtype", "-"], input=text.encode(), timeout=5, env=sanitized_env()
             )
+            return res.returncode == 0
         except FileNotFoundError:
             logger.warning("⚠️ wtype не найден. Установи: pacman -S wtype")
+            return False
         except Exception as e:
             logger.error(f"❌ wtype: {e}")
+            return False
     else:
         # X11
         try:
-            subprocess.run(
+            res = subprocess.run(
                 ["xdotool", "type", "--", text], timeout=5, env=sanitized_env()
             )
+            return res.returncode == 0
         except FileNotFoundError:
             logger.warning("⚠️ xdotool не найден. Установи: pacman -S xdotool")
+            return False
         except Exception as e:
             logger.error(f"❌ xdotool: {e}")
+            return False
 
 
 def dictation_loop(
@@ -54,6 +60,7 @@ def dictation_loop(
     silence_timeout: float = 1.5,
     max_duration: int = 60,
     stop_phrase_check: Optional[Callable[[str], bool]] = None,
+    stop_event: Optional[Callable[[], bool]] = None,
 ) -> str:
     """
     Цикл диктовки:
@@ -87,99 +94,121 @@ def dictation_loop(
     mic_rate = stt.mic_sample_rate if hasattr(stt, "mic_sample_rate") else 16000
     mic_channels = stt.mic_channels if hasattr(stt, "mic_channels") else 1
 
-    # Открываем поток сразу с правильным числом каналов (без fallback)
-    stream = audio.open(
-        format=pyaudio.paInt16,
-        channels=mic_channels,
-        rate=mic_rate,
-        input=True,
-        input_device_index=device_index,
-        frames_per_buffer=2048,
-    )
-
-    stream.start_stream()
-
-    # VAD
-    vad = SileroVAD(threshold=0.3, sampling_rate=16000)
-    vad_iter = VADIteratorWrapper(vad)
-
-    full_text = []
-    current_segment = []
-    need_resample = mic_rate != 16000
-    speech_detected = False
-    silence_timer = 0.0
-    start_time = time.time()
-
     try:
-        while stream.is_active():
-            if time.time() - start_time > max_duration:
-                logger.info("⏱️ Макс. время диктовки")
-                break
+        # Открываем поток сразу с правильным числом каналов (без fallback)
+        stream = audio.open(
+            format=pyaudio.paInt16,
+            channels=mic_channels,
+            rate=mic_rate,
+            input=True,
+            input_device_index=device_index,
+            frames_per_buffer=2048,
+        )
 
-            data = stream.read(2048, exception_on_overflow=False)
-
-            # Стерео → моно + ресемплинг (общие помощники STT)
-            audio_int16 = BaseSTT._stereo_to_mono(data, mic_channels)
-            if need_resample:
-                audio_int16 = BaseSTT._resample_pcm16(
-                    audio_int16.tobytes(), mic_rate, 16000
-                )
+        try:
+            stream.start_stream()
 
             # VAD
-            audio_float = audio_int16.astype(np.float32) / 32768.0
-            vad_result = vad_iter.process_chunk(audio_float)
+            vad = SileroVAD(threshold=0.3, sampling_rate=16000)
+            vad_iter = VADIteratorWrapper(vad)
 
-            if vad_result["start"]:
-                speech_detected = True
-                silence_timer = 0
-                print("\r🎤 [[говорит]]", end="", flush=True)
+            full_text = []
+            current_segment = []
+            need_resample = mic_rate != 16000
+            speech_detected = False
+            silence_timer = 0.0
+            start_time = time.time()
 
-            if vad_result["end"]:
-                silence_timer = time.time()
-                print("\r⏳ [[жду]]", end="", flush=True)
+            while stream.is_active():
+                if stop_event is not None and stop_event():
+                    logger.info("🛑 stop_event сработал — завершаю диктовку")
+                    break
 
-            if speech_detected:
-                current_segment.append(audio_float)
+                if time.time() - start_time > max_duration:
+                    logger.info("⏱️ Макс. время диктовки")
+                    break
 
-            # Транскрибация при паузе
-            if speech_detected and silence_timer > 0:
-                if time.time() - silence_timer > silence_timeout:
-                    if current_segment:
-                        segment = np.concatenate(current_segment)
-                        current_segment = []
-                        silence_timer = 0
-                        speech_detected = False
+                data = stream.read(2048, exception_on_overflow=False)
 
-                        # Транскрибация через Vosk или Whisper
-                        if (
-                            hasattr(stt, "model")
-                            and "whisper" in type(stt).__name__.lower()
-                        ):
-                            text = _transcribe_whisper(stt, segment)
-                        else:
-                            text = _transcribe_vosk(stt, segment)
+                # Стерео → моно + ресемплинг (общие помощники STT)
+                audio_int16 = BaseSTT._stereo_to_mono(data, mic_channels)
+                if need_resample:
+                    audio_int16 = BaseSTT._resample_pcm16(
+                        audio_int16.tobytes(), mic_rate, 16000
+                    )
 
-                        if text:
-                            # Голосовая команда остановки — выходим,
-                            # не печатая саму стоп-фразу
-                            if stop_phrase_check is not None and stop_phrase_check(
-                                text
+                # VAD
+                audio_float = audio_int16.astype(np.float32) / 32768.0
+                vad_result = vad_iter.process_chunk(audio_float)
+
+                if vad_result["start"]:
+                    speech_detected = True
+                    silence_timer = 0
+                    print("\r🎤 [[говорит]]", end="", flush=True)
+
+                if vad_result["end"]:
+                    silence_timer = time.time()
+                    print("\r⏳ [[жду]]", end="", flush=True)
+
+                if speech_detected:
+                    current_segment.append(audio_float)
+
+                # Транскрибация при паузе
+                if speech_detected and silence_timer > 0:
+                    if time.time() - silence_timer > silence_timeout:
+                        if current_segment:
+                            segment = np.concatenate(current_segment)
+                            current_segment = []
+                            silence_timer = 0
+                            speech_detected = False
+
+                            # Транскрибация через Vosk или Whisper
+                            if (
+                                hasattr(stt, "model")
+                                and "whisper" in type(stt).__name__.lower()
                             ):
-                                logger.info("🛑 Стоп-фраза — завершаю диктовку")
-                                break
-                            full_text.append(text)
-                            print(f"\r📝 {text}")
-                            if on_text:
-                                on_text(text)
-                            _type_text(text + " ")
+                                text = _transcribe_whisper(stt, segment)
+                            else:
+                                text = _transcribe_vosk(stt, segment)
 
-            # Небольшая пауза для снижения нагрузки
-            time.sleep(0.01)
+                            if text:
+                                # Голосовая команда остановки — выходим,
+                                # не печатая саму стоп-фразу
+                                if stop_phrase_check is not None and stop_phrase_check(
+                                    text
+                                ):
+                                    logger.info("🛑 Стоп-фраза — завершаю диктовку")
+                                    break
+                                full_text.append(text)
+                                print(f"\r📝 {text}")
+                                if on_text:
+                                    on_text(text)
+                                if not _type_text(text + " "):
+                                    logger.warning(
+                                        "⚠️ Ошибка ввода текста — завершаю диктовку"
+                                    )
+                                    break
+
+                # Небольшая пауза для снижения нагрузки
+                time.sleep(0.01)
+
+        finally:
+            try:
+                try:
+                    stream.stop_stream()
+                except Exception as e:
+                    logger.debug(f"stop_stream error: {e}")
+            finally:
+                try:
+                    stream.close()
+                except Exception as e:
+                    logger.debug(f"stream.close error: {e}")
 
     finally:
-        stream.stop_stream()
-        stream.close()
-        audio.terminate()
+        try:
+            audio.terminate()
+        except Exception:
+            pass
 
     # Финальный сегмент (например, по max_duration)
     if current_segment:

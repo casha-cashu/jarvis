@@ -9,6 +9,7 @@ import { useTheme } from "./hooks/useTheme";
 
 export default function App() {
   const { tab, setTab } = useTab();
+  const activeTab = tab;
   // useTheme сам применяет resolved-тему (system -> light/dark) в своём
   // эффекте; дублирующий effect здесь перетирал dataset.theme сырым
   // "system", для которого нет CSS-правил — ломалась светлая тема.
@@ -23,12 +24,12 @@ export default function App() {
           {/* ChatTab живёт постоянно и прячется CSS'ом: unmount при смене
               таба терял стримящийся ответ (setSessions на размонтированном
               компоненте — no-op), чат расходился с памятью модели. */}
-          <div className={tab === "chat" ? "h-full" : "hidden"}>
+          <div className={activeTab === "chat" ? "h-full" : "hidden"}>
             <ChatTab />
           </div>
-          {tab === "settings" && <SettingsTab />}
-          {tab === "status" && <StatusTab />}
-          {tab === "history" && <HistoryTab />}
+          {activeTab === "settings" && <SettingsTab />}
+          {activeTab === "status" && <StatusTab isActive={activeTab === "status"} />}
+          {activeTab === "history" && <HistoryTab />}
         </main>
       </div>
     </div>

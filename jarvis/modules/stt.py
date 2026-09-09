@@ -119,12 +119,22 @@ class VoskSTT(BaseSTT):
         Returns:
             Распознанный текст
         """
-        audio_queue: "queue.Queue[bytes]" = queue.Queue()
+        audio_queue: "queue.Queue[bytes]" = queue.Queue(maxsize=100)
 
         def audio_callback(in_data, frame_count, time_info, status):
             if status and status != 2:  # Игнорируем input overflow (2)
                 logger.warning(f"⚠️ Audio status: {status}")
-            audio_queue.put(in_data)
+            try:
+                audio_queue.put_nowait(in_data)
+            except queue.Full:
+                try:
+                    audio_queue.get_nowait()
+                except queue.Empty:
+                    pass
+                try:
+                    audio_queue.put_nowait(in_data)
+                except queue.Full:
+                    pass
             return (in_data, pyaudio.paContinue)
 
         # Открываем поток — channels уже известен (определён при init)
@@ -141,9 +151,6 @@ class VoskSTT(BaseSTT):
 
         need_resample = self.mic_sample_rate != self.sample_rate
 
-        stream.start_stream()
-        logger.debug("🎤 Слушаю...")
-
         start_time = time.time()
         speech_detected = False
         speech_start_time = None
@@ -151,6 +158,8 @@ class VoskSTT(BaseSTT):
         min_phrase_duration = 0.5  # минимальная длительность речи (сек)
 
         try:
+            stream.start_stream()
+            logger.debug("🎤 Слушаю...")
             while stream.is_active():
                 if time.time() - start_time > phrase_time_limit:
                     logger.debug("⏱️ Таймаут")
@@ -212,10 +221,16 @@ class VoskSTT(BaseSTT):
                         callback(partial_text)
 
         finally:
-            stream.stop_stream()
-            stream.close()
-            if self.vad_iterator:
-                self.vad_iterator.reset()
+            try:
+                try:
+                    stream.stop_stream()
+                except Exception as e:
+                    logger.debug(f"stop_stream error: {e}")
+                finally:
+                    stream.close()
+            finally:
+                if self.vad_iterator:
+                    self.vad_iterator.reset()
 
         final = json.loads(self.recognizer.FinalResult())
         text = final.get("text", "").strip()

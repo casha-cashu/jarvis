@@ -110,7 +110,11 @@ def fake_apps_file(tmp_path) -> Path:
             "testapp": {
                 "cmd": "testapp-gui",
                 "names": ["testapp", "тестовая программа", "тестовое приложение"],
-            }
+            },
+            "vscode": {
+                "cmd": "code",
+                "names": ["vscode", "code", "код", "visual studio code"],
+            },
         }
     }
     p = tmp_path / "apps.json"
@@ -160,6 +164,36 @@ class TestCommandExecutor:
     def test_app_by_name_standalone(self, executor):
         result = executor.execute("testapp")
         assert result == "Запускаю testapp"
+
+    def test_app_word_boundary_does_not_intercept_phrases(self, executor):
+        # Фразы вроде "напиши код на питоне" не должны перехватываться как VS Code
+        assert executor.execute("напиши код на питоне") is None
+        # Но точные и словесные совпадения работают
+        assert executor.execute("код") == "Запускаю код"
+        assert executor.execute("открой код") == "Запускаю код"
+        assert executor.execute("открой visual studio") == "Запускаю visual studio"
+
+    def test_scenario_speak_executed(self, executor):
+        mock_speak = MagicMock()
+        executor._speak = mock_speak
+        scenario_data = {
+            "name": "Тест Сценарий",
+            "phrases": ["запусти тест сценарий"],
+            "actions": [{"type": "speak", "text": "Озвучка сценария"}],
+        }
+        executor.scenarios = MagicMock()
+        executor.scenarios.find_matching_scenario.return_value = (
+            "test_id",
+            scenario_data,
+        )
+
+        from jarvis.modules.scenarios import ScenarioManager
+
+        executor.scenarios.execute_scenario = ScenarioManager().execute_scenario
+
+        result = executor.execute("запусти тест сценарий")
+        assert "выполнен" in result
+        mock_speak.assert_called_once_with("Озвучка сценария")
 
     def test_web_search(self, executor):
         result = executor.execute("найди python")
@@ -243,14 +277,17 @@ class TestExecutionTimeout:
 
     def _make_executor(self, monkeypatch, execution_timeout=1):
         from jarvis.modules.commands import CommandExecutor
+        import threading
 
         # Создаём executor через __new__ чтобы не читать JSON-файлы.
         ex = CommandExecutor.__new__(CommandExecutor)
         ex.execution_timeout = execution_timeout
+        ex._detached_lock = threading.Lock()
+        ex._detached_procs = []
         return ex
 
-    def test_fast_command_completes(self, monkeypatch):
-        """Команда завершившаяся до 2с — выполняется без детача."""
+    def test_fast_command_completes(self, monkeypatch, check_sanitized_env):
+        """Команда завершившаяся до 2с — выполняется без детача и передаёт sanitized_env."""
         ex = self._make_executor(monkeypatch, execution_timeout=5)
         with patch("subprocess.Popen") as mock_popen:
             proc = MagicMock()
@@ -259,6 +296,23 @@ class TestExecutionTimeout:
             ex._run("echo test")
             proc.wait.assert_called_once_with(timeout=2)
             proc.terminate.assert_not_called()
+            # Проверяем, что Popen получил правильный env
+            _, kwargs = mock_popen.call_args
+            assert check_sanitized_env(kwargs.get("env"))
+
+    def test_capture_command_passes_sanitized_env(
+        self, monkeypatch, check_sanitized_env
+    ):
+        """capture=True вызывает subprocess.run с sanitized_env."""
+        ex = self._make_executor(monkeypatch, execution_timeout=5)
+        with patch("subprocess.run") as mock_run:
+            mock_proc = MagicMock()
+            mock_proc.stdout = "12:34\n"
+            mock_run.return_value = mock_proc
+            res = ex._run("date '+%H:%M'", capture=True)
+            assert res == "12:34"
+            _, kwargs = mock_run.call_args
+            assert check_sanitized_env(kwargs.get("env"))
 
     def test_long_running_detached_not_killed(self, monkeypatch):
         """GUI-launcher (firefox) живёт дольше 2с — detach, БЕЗ kill."""
@@ -372,3 +426,62 @@ class TestRunFailureSurfacing:
             lambda self, cmd, capture=False: commands_mod._RUN_FAILED,
         )
         assert executor.execute("открой testapp") == "Не удалось запустить testapp"
+
+    def test_run_returns_run_failed_on_nonzero_returncode(
+        self, fake_commands_file, fake_apps_file
+    ):
+        from jarvis.modules import commands as commands_mod
+
+        ce = commands_mod.CommandExecutor(
+            commands_file=str(fake_commands_file),
+            apps_file=str(fake_apps_file),
+            fuzzy_threshold=0.8,
+            platform_adapter=FakeAdapter(),
+        )
+
+        with patch("subprocess.Popen") as mock_popen:
+            proc = MagicMock()
+            proc.wait.return_value = 1
+            proc.returncode = 1
+            mock_popen.return_value = proc
+
+            result = ce._run("some_failing_cmd", capture=False)
+            assert result is commands_mod._RUN_FAILED
+
+
+class TestParseVoiceCommandWordNumbers:
+    """Проверка распознавания словесных числительных в parse_voice_command."""
+
+    def test_explicit_intent_word_numbers(self, executor):
+        res = executor.parse_voice_command("напомни через десять минут позвонить")
+        assert res is not None
+        assert res.startswith("__REMINDER__:600:")
+
+        res2 = executor.parse_voice_command("через пять минут")
+        assert res2 is not None
+        assert res2.startswith("__REMINDER__:300:")
+
+        res3 = executor.parse_voice_command("таймер на двадцать секунд")
+        assert res3 is not None
+        assert res3.startswith("__REMINDER__:20:")
+
+        res4 = executor.parse_voice_command("поставь таймер на тридцать минут")
+        assert res4 is not None
+        assert res4.startswith("__REMINDER__:1800:")
+
+    def test_bare_duration_word_numbers(self, executor):
+        res = executor.parse_voice_command("пять минут")
+        assert res is not None
+        assert res.startswith("__REMINDER__:300:")
+
+        res2 = executor.parse_voice_command("две минуты")
+        assert res2 is not None
+        assert res2.startswith("__REMINDER__:120:")
+
+        res3 = executor.parse_voice_command("одна минута")
+        assert res3 is not None
+        assert res3.startswith("__REMINDER__:60:")
+
+        res4 = executor.parse_voice_command("тридцать секунд")
+        assert res4 is not None
+        assert res4.startswith("__REMINDER__:30:")

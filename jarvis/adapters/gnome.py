@@ -17,7 +17,11 @@ org.gnome.Shell.Eval закрыт с GNOME 41 ("unsafe mode"), поэтому в
 окно из стека).
 """
 
+import logging
+
 from .base import BaseAdapter
+
+logger = logging.getLogger(__name__)
 
 
 class GNOMEAdapter(BaseAdapter):
@@ -57,7 +61,8 @@ class GNOMEAdapter(BaseAdapter):
 
     def window_floating(self) -> str:
         # В GNOME нет концепции floating-окон (это тайлинг-WM термин)
-        return "echo 'Floating windows not supported on GNOME'"
+        logger.warning("Floating windows not supported on GNOME")
+        return "false"
 
     def window_next(self) -> str:
         # GNOME default: "Switch windows directly" = Alt+Esc

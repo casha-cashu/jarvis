@@ -328,6 +328,21 @@ class TestNluCache:
         # Default CACHE_DIR untouched — no file written there for this key
         importlib.reload(nlu_mod)
 
+    @pytest.mark.parametrize("val", ["0", "false", "False", "no", "off", ""])
+    def test_cache_env_disabled_values(self, monkeypatch, val):
+        """Setting JARVIS_NLU_CACHE to 0/false/no/off/'' sets _NLU_CACHE_DISABLED=True and preserves valid CACHE_DIR."""
+        import importlib
+        from pathlib import Path
+        import jarvis.modules.nlu as nlu_mod
+
+        monkeypatch.setenv("JARVIS_NLU_CACHE", val)
+        importlib.reload(nlu_mod)
+        try:
+            assert nlu_mod._NLU_CACHE_DISABLED is True
+            assert nlu_mod.CACHE_DIR != Path(val)
+        finally:
+            importlib.reload(nlu_mod)
+
 
 @pytest.fixture(autouse=True)
 def _isolated_nlu_cache(tmp_path, monkeypatch):
@@ -340,3 +355,76 @@ def _isolated_nlu_cache(tmp_path, monkeypatch):
     monkeypatch.setattr(nlu_mod, "CACHE_DIR", tmp_path / "nlu-cache")
     monkeypatch.setattr(nlu_mod, "_NLU_CACHE_DISABLED", False)
     yield
+
+
+class TestUtteranceNormalizationAndFuzzyFallback:
+    def test_normalize_utterance(self):
+        from jarvis.modules.nlu import normalize_utterance
+
+        assert (
+            normalize_utterance("джарвис пожалуйста открой браузер") == "открой браузер"
+        )
+        assert normalize_utterance("сделай погромче") == "громче"
+        assert normalize_utterance("сделай звук потише") == "тише"
+        assert (
+            normalize_utterance("ну-ка а запусти калькулятор") == "запусти калькулятор"
+        )
+        assert normalize_utterance("пожалуйста сделай погромче на 20") == "громче на 20"
+
+    def test_slot_extraction_with_normalization_and_volume(self):
+        from jarvis.modules.nlu import extract_slots, normalize_utterance
+
+        norm = normalize_utterance("пожалуйста открой фаерфокс")
+        slots = extract_slots(norm)
+        assert slots.get("app") == "фаерфокс"
+
+        norm_vol = normalize_utterance("сделай погромче на 15")
+        slots_vol = extract_slots(norm_vol)
+        assert slots_vol.get("volume_amount") == "15"
+
+        slots_direct_vol = extract_slots("громкость на 50")
+        assert slots_direct_vol.get("volume_amount") == "50"
+
+    @pytest.fixture
+    def tmp_data_dir(self, tmp_path):
+        cmds = tmp_path / "commands.json"
+        apps = tmp_path / "apps.json"
+        cmds.write_text(
+            json.dumps(
+                {
+                    "commands": {
+                        "закрой окно": {"cmd": "...", "category": "system"},
+                        "какое время": {"cmd": "date", "category": "info"},
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        apps.write_text(
+            json.dumps(
+                {
+                    "apps": {
+                        "firefox": {"cmd": "firefox", "names": ["фаерфокс", "браузер"]},
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        return {"cmds": str(cmds), "apps": str(apps)}
+
+    def test_router_normalization_and_fuzzy_fallback(self, tmp_data_dir):
+        from jarvis.modules.nlu import IntentRouter
+
+        r = IntentRouter(
+            commands_file=tmp_data_dir["cmds"],
+            apps_file=tmp_data_dir["apps"],
+        )
+        # 1. Normalization allows polite utterance to match open_app and extract slot
+        res = r.parse("пожалуйста открой фаерфокс")
+        assert res.get("intent") == "open_app"
+        assert res.get("slots", {}).get("app") == "фаерфокс"
+
+        # 2. Slight typo triggers fuzzy fallback when classifier is uncertain
+        res_fuzzy = r.parse("открой фаерфок")
+        assert res_fuzzy.get("intent") == "open_app"
+        assert res_fuzzy.get("intent_confidence", 0.0) >= 0.75

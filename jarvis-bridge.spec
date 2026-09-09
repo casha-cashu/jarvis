@@ -20,20 +20,26 @@ a = Analysis(
     datas=[
         (str(REPO_ROOT / "data" / "commands.json"), "data"),
         (str(REPO_ROOT / "data" / "apps.json"), "data"),
+        (str(REPO_ROOT / "data" / "scenarios.json"), "data"),
+        (str(REPO_ROOT / "data" / "silero_vad.onnx"), "data"),
+        (str(REPO_ROOT / "config.example.yaml"), "."),
     ],
-    hiddenimports=[],
+    hiddenimports=[
+        "pyaudio",
+        "faster_whisper",
+        "ctranslate2",
+        "onnxruntime",
+        "silero_vad",
+        "gtts",
+    ],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
     excludes=[
-        # audio / ML heavies
+        # PyTorch excluded (3+ GB and pybind11 conflict; faster-whisper + ONNX VAD don't need it)
         "torch",
         "torchvision",
         "torchaudio",
-        "faster_whisper",
-        "ctranslate2",
-        "pyaudio",
-        "silero_vad",
         "vosk",
         # plotting / data / GUI
         "matplotlib",

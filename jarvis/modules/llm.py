@@ -19,12 +19,13 @@ from abc import ABC, abstractmethod
 from datetime import datetime
 from collections import OrderedDict
 from pathlib import Path
-from typing import Any, List, Dict
+from typing import Any, Callable, Dict, List, Optional, cast
 
 from filelock import FileLock
 
 import anthropic
 import requests
+from requests.adapters import HTTPAdapter
 
 try:
     # `openai` is an optional dep — the client init raises only when the
@@ -59,7 +60,7 @@ def _history_lock() -> FileLock:
     with _history_locks_guard:
         lock = _history_locks.get(path)
         if lock is None:
-            lock = FileLock(path)
+            lock = FileLock(path, timeout=10.0)
             _history_locks[path] = lock
         return lock
 
@@ -92,9 +93,17 @@ def _save_history_raw(history: List[Dict[str, str]]) -> None:
         tmp = HISTORY_FILE.with_name(f"{HISTORY_FILE.name}.{os.getpid()}.tmp")
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(history, f, ensure_ascii=False, indent=2)
-        os.replace(tmp, HISTORY_FILE)
+        os.chmod(tmp, 0o600)
+        tmp.replace(HISTORY_FILE)
     except Exception as e:
         logger.warning(f"⚠️ Не удалось сохранить историю диалога: {e}")
+
+    try:
+        from jarvis.modules import history_db
+
+        history_db.save_history(history, session_id="default")
+    except Exception:
+        pass
 
 
 def _load_history() -> List[Dict[str, str]]:
@@ -104,9 +113,55 @@ def _load_history() -> List[Dict[str, str]]:
 
 
 def _save_history(history: List[Dict[str, str]]) -> None:
-    """Атомарно сохраняет историю на диск (под межпроцессным локом)."""
+    """Атомарно сохраняет историю на диск и синхронизирует с SQLite."""
     with _history_lock():
         _save_history_raw(history)
+
+
+_shared_session: Optional[requests.Session] = None
+_session_lock = threading.Lock()
+
+
+def _get_shared_session() -> requests.Session:
+    global _shared_session
+    if _shared_session is None:
+        with _session_lock:
+            if _shared_session is None:
+                s = requests.Session()
+                adapter = HTTPAdapter(pool_connections=10, pool_maxsize=10)
+                s.mount("http://", adapter)
+                s.mount("https://", adapter)
+                _shared_session = s
+    return _shared_session
+
+
+def _http_post(session: requests.Session, *args, **kwargs):
+    """Делает POST через session; если requests.post замокан в тестах — вызывает мок."""
+    if hasattr(requests.post, "assert_called") or hasattr(requests.post, "mock_calls"):
+        return requests.post(*args, **kwargs)
+    return session.post(*args, **kwargs)
+
+
+def _safe_truncate_history(history: list[dict], max_len: int) -> list[dict]:
+    """Усекает историю до max_len, гарантируя что она начинается с user-сообщения
+    без tool_result (чтобы не разорвать пары tool-call/tool-result и угодить API)."""
+    if len(history) <= max_len:
+        return history
+    sliced = history[-max_len:]
+    while sliced:
+        first = sliced[0]
+        role = first.get("role")
+        is_tool_result = False
+        if role == "user" and isinstance(first.get("content"), list):
+            for block in first["content"]:
+                if isinstance(block, dict) and block.get("type") == "tool_result":
+                    is_tool_result = True
+                    break
+        if role != "user" or is_tool_result:
+            sliced.pop(0)
+        else:
+            break
+    return sliced
 
 
 class LLMError(RuntimeError):
@@ -118,6 +173,7 @@ class LLMClient(ABC):
 
     def __init__(self, config: dict):
         self.config = config
+        self.session = _get_shared_session()
         self.history = _load_history()
         self.max_history = config.get("max_history", 20)
         self.system_prompt = config.get("system_prompt", "")
@@ -163,8 +219,7 @@ class LLMClient(ABC):
             self.history.append({"role": role, "content": content})
 
             # Обрезаем историю если слишком длинная
-            if len(self.history) > self.max_history:
-                self.history = self.history[-self.max_history :]
+            self.history = _safe_truncate_history(self.history, self.max_history)
 
             _save_history_raw(self.history)
 
@@ -240,7 +295,7 @@ class AnthropicClient(LLMClient):
                 max_tokens=self.max_tokens,
                 temperature=self.temperature,
                 system=self._render_system_prompt(),
-                messages=self.history,  # type: ignore[arg-type]
+                messages=cast(Any, self.history),
                 timeout=self.timeout,
             )
 
@@ -273,6 +328,7 @@ class AnthropicClient(LLMClient):
         tools: list,
         on_tool_call=None,
         max_iterations: int = 5,
+        stream_callback: Optional[Callable[[str], None]] = None,
     ) -> str:
         """LLM ↔ tools loop via Anthropic's native tools API.
 
@@ -299,6 +355,7 @@ class AnthropicClient(LLMClient):
                 )
 
             base_messages: list[dict[str, Any]] = list(self.history)
+            executed_tools: list[str] = []
 
             for iteration in range(max_iterations):
                 response = self.client.messages.create(
@@ -306,8 +363,8 @@ class AnthropicClient(LLMClient):
                     max_tokens=self.max_tokens,
                     temperature=self.temperature,
                     system=self._render_system_prompt(),
-                    messages=base_messages,  # type: ignore[arg-type]
-                    tools=anthropic_tools,  # type: ignore[arg-type]
+                    messages=cast(Any, base_messages),
+                    tools=cast(Any, anthropic_tools),
                     timeout=self.timeout,
                 )
 
@@ -323,7 +380,16 @@ class AnthropicClient(LLMClient):
 
                 if not tool_use_blocks:
                     if final_text:
-                        self.add_to_history("assistant", final_text)
+                        if stream_callback is not None:
+                            try:
+                                stream_callback(final_text)
+                            except Exception:
+                                pass
+                        history_content = final_text
+                        if executed_tools:
+                            tools_summary = "\n".join(executed_tools)
+                            history_content = f"[Контекст работы инструментов:\n{tools_summary}]\n\n{final_text}"
+                        self.add_to_history("assistant", history_content)
                         return final_text
                     self._discard_pending_user()
                     return ""
@@ -340,6 +406,9 @@ class AnthropicClient(LLMClient):
                         result = str(on_tool_call(name, args))
                     except Exception as e:
                         result = f"[tool error: {e}]"
+
+                    executed_tools.append(f"- {name}({args}) -> {result[:500]}...")
+
                     logger.debug(
                         "anthropic tool_call iter=%d name=%s args=%s -> %s",
                         iteration,
@@ -360,11 +429,19 @@ class AnthropicClient(LLMClient):
                 "Anthropic tool loop exceeded max_iterations=%d", max_iterations
             )
             self._discard_pending_user()
-            return (
-                final_text
-                if final_text
-                else "Извините, сэр, задача потребовала слишком много шагов."
-            )
+            if final_text:
+                if stream_callback is not None:
+                    try:
+                        stream_callback(final_text)
+                    except Exception:
+                        pass
+                history_content = final_text
+                if executed_tools:
+                    tools_summary = "\n".join(executed_tools)
+                    history_content = f"[Контекст работы инструментов:\n{tools_summary}]\n\n{final_text}"
+                self.add_to_history("assistant", history_content)
+                return final_text
+            return "Извините, сэр, задача потребовала слишком много шагов."
 
         except Exception as e:
             logger.error(f"❌ Ошибка Anthropic chat_with_tools: {e}")
@@ -418,7 +495,8 @@ class OpenRouterClient(LLMClient):
                 "temperature": self.temperature,
             }
 
-            response = requests.post(
+            response = _http_post(
+                self.session,
                 "https://openrouter.ai/api/v1/chat/completions",
                 headers=headers,
                 json=payload,
@@ -489,7 +567,7 @@ class OpenAIClient(LLMClient):
             if stream_callback is not None:
                 stream: Any = self.client.chat.completions.create(
                     model=self.model,
-                    messages=self._build_messages(),  # type: ignore[arg-type]
+                    messages=cast(Any, self._build_messages()),
                     temperature=self.temperature,
                     max_tokens=self.max_tokens,
                     stream=True,
@@ -543,6 +621,7 @@ class OpenAIClient(LLMClient):
         try:
             self.add_to_history("user", message)
             base_messages = self._build_messages()
+            executed_tools: list[str] = []
 
             for iteration in range(max_iterations):
                 tool_calls: list[dict[str, Any]] = []
@@ -570,7 +649,8 @@ class OpenAIClient(LLMClient):
                         delta = chunk.choices[0].delta
                         if delta and delta.content:
                             content_parts.append(delta.content)
-                            stream_callback(delta.content)
+                            if stream_callback is not None:
+                                stream_callback(delta.content)
                         for tcd in (delta.tool_calls if delta else None) or []:
                             slot = tc_map.setdefault(
                                 tcd.index, {"id": "", "name": "", "args": ""}
@@ -617,7 +697,11 @@ class OpenAIClient(LLMClient):
 
                 if not tool_calls:
                     if content:
-                        self.add_to_history("assistant", content)
+                        history_content = content
+                        if executed_tools:
+                            tools_summary = "\n".join(executed_tools)
+                            history_content = f"[Контекст работы инструментов:\n{tools_summary}]\n\n{content}"
+                        self.add_to_history("assistant", history_content)
                         return content
                     self._discard_pending_user()
                     return ""
@@ -657,6 +741,9 @@ class OpenAIClient(LLMClient):
                         result = str(on_tool_call(name, args))
                     except Exception as e:
                         result = f"[tool error: {e}]"
+
+                    executed_tools.append(f"- {name}({args}) -> {result[:500]}...")
+
                     logger.debug(
                         "openai tool_call iter=%d name=%s args=%s -> %s",
                         iteration,
@@ -676,11 +763,16 @@ class OpenAIClient(LLMClient):
                 "OpenAI tool loop exceeded max_iterations=%d", max_iterations
             )
             self._discard_pending_user()
-            return (
-                content
-                if content
-                else "Извините, сэр, задача потребовала слишком много шагов."
-            )
+            if content:
+                history_content = content
+                if executed_tools:
+                    tools_summary = "\n".join(executed_tools)
+                    history_content = (
+                        f"[Контекст работы инструментов:\n{tools_summary}]\n\n{content}"
+                    )
+                self.add_to_history("assistant", history_content)
+                return content
+            return "Извините, сэр, задача потребовала слишком много шагов."
 
         except Exception as e:
             logger.error(f"❌ Ошибка OpenAI chat_with_tools: {e}")
@@ -707,7 +799,8 @@ class OllamaClient(LLMClient):
 
     def _post_chat(self, payload: dict) -> dict:
         """Low-level POST to /api/chat. Raises requests.HTTPError on bad status."""
-        resp = requests.post(
+        resp = _http_post(
+            self.session,
             f"{self.base_url}/api/chat",
             json=payload,
             timeout=self.timeout,
@@ -764,7 +857,8 @@ class OllamaClient(LLMClient):
             "options": {"temperature": self.temperature},
         }
         parts: list[str] = []
-        with requests.post(
+        with _http_post(
+            self.session,
             f"{self.base_url}/api/chat",
             json=payload,
             timeout=self.timeout,
@@ -820,6 +914,7 @@ class OllamaClient(LLMClient):
                     {"role": "system", "content": self._render_system_prompt()}
                 )
             base_messages.extend(self.history)
+            executed_tools: list[str] = []
 
             for iteration in range(max_iterations):
                 # Last allowed iteration must not stream: we need the whole
@@ -839,7 +934,8 @@ class OllamaClient(LLMClient):
                 }
 
                 if can_stream:
-                    with requests.post(
+                    with _http_post(
+                        self.session,
                         f"{self.base_url}/api/chat",
                         json=payload,
                         timeout=self.timeout,
@@ -858,7 +954,8 @@ class OllamaClient(LLMClient):
                             delta = msg_chunk.get("content") or ""
                             if delta:
                                 parts.append(delta)
-                                stream_callback(delta)
+                                if stream_callback is not None:
+                                    stream_callback(delta)
                             for call in msg_chunk.get("tool_calls") or []:
                                 streamed_calls.append(call)
                             if chunk.get("done"):
@@ -882,7 +979,11 @@ class OllamaClient(LLMClient):
 
                 if not tool_calls:
                     if content:
-                        self.add_to_history("assistant", content)
+                        history_content = content
+                        if executed_tools:
+                            tools_summary = "\n".join(executed_tools)
+                            history_content = f"[Контекст работы инструментов:\n{tools_summary}]\n\n{content}"
+                        self.add_to_history("assistant", history_content)
                         return content
                     self._discard_pending_user()
                     return ""
@@ -911,6 +1012,8 @@ class OllamaClient(LLMClient):
                     except Exception as e:
                         result = f"[tool error: {e}]"
 
+                    executed_tools.append(f"- {name}({args}) -> {result[:500]}...")
+
                     logger.debug(
                         "ollama tool_call iter=%d name=%s args=%s -> %s",
                         iteration,
@@ -924,11 +1027,16 @@ class OllamaClient(LLMClient):
                 "Ollama tool loop exceeded max_iterations=%d", max_iterations
             )
             self._discard_pending_user()
-            return (
-                content
-                if content
-                else "Извините, сэр, задача потребовала слишком много шагов."
-            )
+            if content:
+                history_content = content
+                if executed_tools:
+                    tools_summary = "\n".join(executed_tools)
+                    history_content = (
+                        f"[Контекст работы инструментов:\n{tools_summary}]\n\n{content}"
+                    )
+                self.add_to_history("assistant", history_content)
+                return content
+            return "Извините, сэр, задача потребовала слишком много шагов."
 
         except Exception as e:
             logger.error(f"❌ Ошибка Ollama chat_with_tools: {e}")

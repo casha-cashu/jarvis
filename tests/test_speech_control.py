@@ -464,3 +464,30 @@ class TestSystemPromptWiring:
                 assert llm_cfg["system_prompt"] == "База"
             finally:
                 p.stop()
+
+
+class TestBeep:
+    def test_beep_runs_subprocess_with_timeout(self, tmp_path, monkeypatch):
+        from jarvis import beep
+
+        sound_file = tmp_path / "wake.wav"
+        sound_file.write_bytes(b"RIFF")
+        monkeypatch.setenv("JARVIS_WAKE_SOUND", str(sound_file))
+
+        with patch("subprocess.run") as mock_run:
+            beep()
+            mock_run.assert_called_once()
+            args, kwargs = mock_run.call_args
+            assert args[0] == ["paplay", str(sound_file)]
+            assert kwargs.get("timeout") == 2
+
+    def test_beep_ignores_subprocess_error(self, tmp_path, monkeypatch):
+        import subprocess
+        from jarvis import beep
+
+        sound_file = tmp_path / "wake.wav"
+        sound_file.write_bytes(b"RIFF")
+        monkeypatch.setenv("JARVIS_WAKE_SOUND", str(sound_file))
+
+        with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("cmd", 2)):
+            beep()  # must not raise

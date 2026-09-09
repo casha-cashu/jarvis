@@ -28,6 +28,7 @@ class AudioConfig(BaseModel):
 class VoskConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")  # опечатка в ключе = ошибка валидации
     model_path: str = "auto"
+    model_size: str = "small-ru"
 
 
 class WhisperConfig(BaseModel):
@@ -36,6 +37,7 @@ class WhisperConfig(BaseModel):
     model_size: str = "tiny"
     # Интервал промежуточных гипотез (мс); 0 = выключить
     partial_interval_ms: int = Field(default=1000, ge=0)
+    initial_prompt: Optional[str] = None
 
 
 class STTConfig(BaseModel):
@@ -49,6 +51,7 @@ class STTConfig(BaseModel):
     phrase_time_limit: int = 10
     multi_turn_timeout: int = 10
     wake_mode: str = "classic"
+    continuous: bool = False
     # Секунд тишины для завершения фразы; None → дефолт движка
     # (vosk 2.0, whisper 1.0)
     silence_threshold: Optional[float] = None
@@ -188,6 +191,8 @@ class LLMConfig(BaseModel):
     system_prompt_tools: Optional[str] = None
     max_history: int = 20
     system_prompt: Optional[str] = None
+    temperature: Optional[float] = None
+    max_tokens: Optional[int] = None
 
     @field_validator("provider")
     @classmethod
@@ -222,6 +227,7 @@ class CommandsConfig(BaseModel):
     apps_dictionary_path: str = "data/apps.json"
     fuzzy_threshold: float = 0.8
     execution_timeout: int = 30
+    scenarios_path: Optional[str] = None
     # NLU (jarvis.modules.nlu) — см. CommandManager._maybe_init_nlu
     nlu_enabled: bool = True
     nlu_confidence_threshold: float = 0.65
@@ -243,6 +249,23 @@ class LoggingConfig(BaseModel):
         return v
 
 
+class WebSearchConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    enabled: bool = True
+    provider: str = "duckduckgo"  # duckduckgo | brave | tavily
+    brave_api_key: Optional[str] = None
+    tavily_api_key: Optional[str] = None
+    max_results: int = 5
+
+    @field_validator("provider")
+    @classmethod
+    def validate_provider(cls, v: str) -> str:
+        allowed = ("duckduckgo", "brave", "tavily")
+        if v not in allowed:
+            raise ValueError(f"Web search provider must be one of {allowed}, got '{v}'")
+        return v
+
+
 class MiscConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")  # опечатка в ключе = ошибка валидации
     temp_dir: str = "/tmp/jarvis"
@@ -260,6 +283,7 @@ class JarvisConfig(BaseModel):
     llm: LLMConfig = Field(default_factory=LLMConfig)
     commands: CommandsConfig = Field(default_factory=CommandsConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
+    web_search: WebSearchConfig = Field(default_factory=WebSearchConfig)
     misc: MiscConfig = Field(default_factory=MiscConfig)
     telegram: TelegramConfig = Field(default_factory=TelegramConfig)
 

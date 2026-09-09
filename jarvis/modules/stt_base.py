@@ -9,7 +9,7 @@
 
 import audioop
 import logging
-from typing import Optional, Tuple
+from typing import Any, Optional, Tuple
 
 import numpy as np
 import pyaudio
@@ -30,7 +30,9 @@ class BaseSTT:
         self.device_name = device_name
 
         # Единый экземпляр PyAudio для всех методов
-        self.audio = pyaudio.PyAudio()
+        self.audio: Any = pyaudio.PyAudio()
+        self._default_device_info: Optional[dict] = None
+        self._device_queried: bool = False
 
         # Находим микрофон
         self.device_index = self._find_device()
@@ -43,19 +45,41 @@ class BaseSTT:
 
     # ── Устройства ───────────────────────────────────────────────
 
+    def _get_default_input_info(self) -> Optional[dict]:
+        """Возвращает информацию о дефолтном микрофоне с однократным запросом."""
+        if not getattr(self, "_device_queried", False):
+            self._device_queried = True
+            try:
+                self._default_device_info = self.audio.get_default_input_device_info()
+            except Exception as e:
+                logger.warning(f"⚠️ Дефолтный микрофон не определён: {e}")
+                self._default_device_info = None
+        return getattr(self, "_default_device_info", None)
+
     def _find_device(self) -> Optional[int]:
         """Находит микрофон по имени (использует self.audio)."""
         if not self.device_name:
-            default_device = self.audio.get_default_input_device_info()
-            logger.info(f"Используется дефолтный микрофон: {default_device['name']}")
+            default_device = self._get_default_input_info()
+            if default_device:
+                logger.info(
+                    f"Используется дефолтный микрофон: {default_device['name']}"
+                )
             return None
 
-        for i in range(self.audio.get_device_count()):
-            info = self.audio.get_device_info_by_index(i)
-            if info["maxInputChannels"] > 0:
-                if self.device_name.lower() in info["name"].lower():
-                    logger.info(f"✅ Найден микрофон: {info['name']} (index={i})")
-                    return i
+        try:
+            device_count = self.audio.get_device_count()
+        except Exception:
+            device_count = 0
+
+        for i in range(device_count):
+            try:
+                info = self.audio.get_device_info_by_index(i)
+                if info["maxInputChannels"] > 0:
+                    if self.device_name.lower() in info["name"].lower():
+                        logger.info(f"✅ Найден микрофон: {info['name']} (index={i})")
+                        return i
+            except Exception:
+                continue
 
         logger.warning(
             f"⚠️ Микрофон '{self.device_name}' не найден, используется дефолтный"
@@ -64,27 +88,44 @@ class BaseSTT:
 
     def _get_device_sample_rate(self) -> int:
         """Получает частоту дискретизации микрофона."""
-        if self.device_index is not None:
-            info = self.audio.get_device_info_by_index(self.device_index)
-        else:
-            info = self.audio.get_default_input_device_info()
+        try:
+            if self.device_index is not None:
+                info = self.audio.get_device_info_by_index(self.device_index)
+            else:
+                info = self._get_default_input_info()
 
-        rate = int(info["defaultSampleRate"])
-        logger.info(f"📊 Частота микрофона: {rate}Hz, цель: {self.sample_rate}Hz")
-        return rate
+            if not info:
+                return self.sample_rate
+
+            rate = int(info["defaultSampleRate"])
+            logger.info(f"📊 Частота микрофона: {rate}Hz, цель: {self.sample_rate}Hz")
+            return rate
+        except Exception as e:
+            logger.warning(
+                f"⚠️ Не удалось определить частоту микрофона: {e}, fallback {self.sample_rate}Hz"
+            )
+            return self.sample_rate
 
     def _get_device_channels(self) -> int:
         """Определяет количество входных каналов микрофона (однократно)."""
-        if self.device_index is not None:
-            info = self.audio.get_device_info_by_index(self.device_index)
-        else:
-            info = self.audio.get_default_input_device_info()
-        channels = int(info.get("maxInputChannels", 1))
-        # Каналы выше 2 — виртуальные устройства; движки работают со стерео
-        if channels > 2:
-            channels = 2
-        logger.info(f"🎤 Каналов микрофона: {channels}")
-        return channels
+        try:
+            if self.device_index is not None:
+                info = self.audio.get_device_info_by_index(self.device_index)
+            else:
+                info = self._get_default_input_info()
+
+            if not info:
+                return 1
+
+            channels = int(info.get("maxInputChannels", 1))
+            # Каналы выше 2 — виртуальные устройства; движки работают со стерео
+            if channels > 2:
+                channels = 2
+            logger.info(f"🎤 Каналов микрофона: {channels}")
+            return max(1, channels)
+        except Exception as e:
+            logger.warning(f"⚠️ Не удалось определить каналы микрофона: {e}, fallback 1")
+            return 1
 
     def list_devices(self):
         """Выводит список всех аудио устройств."""

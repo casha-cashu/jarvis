@@ -76,14 +76,15 @@ def beep() -> None:
         import subprocess
 
         try:
-            subprocess.Popen(
+            subprocess.run(
                 ["paplay", sound],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
+                timeout=2,
                 env=sanitized_env(),
             )
-        except OSError:
-            pass  # плеера нет — тихий beep уже прозвучал через \a
+        except (OSError, subprocess.SubprocessError):
+            pass  # плеера нет или таймаут — тихий beep уже прозвучал через \a
 
 
 class Jarvis:
@@ -107,6 +108,9 @@ class Jarvis:
         self.dry_run = dry_run
 
         self.config = self._load_config(config_path)
+        self.continuous = continuous or bool(
+            self.config.get("stt", {}).get("continuous", False)
+        )
         setup_logging(self.config, verbose)
         self.logger = logging.getLogger(__name__)
 
@@ -144,7 +148,6 @@ class Jarvis:
         self.dictation_stop_phrases = ("стоп диктовку", "закончить диктовку")
 
         # Аттрибуты, на которые опираются тесты / public API
-        self.stt: Any = None
         self.tts: Any = None
         self.llm: Any = None
         self.commands: Any = None
@@ -165,6 +168,15 @@ class Jarvis:
 
         self.lifecycle.install_signal_handlers(self._on_signal)
 
+    @property
+    def stt(self) -> Any:
+        return self.audio.stt if self.audio else None
+
+    @stt.setter
+    def stt(self, value: Any) -> None:
+        if self.audio:
+            self.audio.stt = value
+
     # ── Public API хвостовые методы (для тестов и обратной совместимости) ──
 
     def _load_config(self, config_path: str) -> dict:
@@ -177,7 +189,6 @@ class Jarvis:
         try:
             self.logger.info("🎤 Инициализация STT...")
             self.audio.start()
-            self.stt = self.audio.stt
 
             self.logger.info("🔊 Инициализация TTS/LLM/Commands...")
             self.response.start()
@@ -299,9 +310,18 @@ class Jarvis:
             if not follow_up:
                 return
             if self.conversation.has_wake_in_follow_up(follow_up):
-                self.logger.debug("⏭️ Follow-up прерван — новый wake word")
-                return
+                detected, stripped_query = self.conversation.detect_wake(follow_up)
+                if stripped_query:
+                    follow_up = stripped_query
+                else:
+                    self.logger.debug("⏭️ Follow-up прерван — новый wake word")
+                    return
             self.logger.info(f"👤 Follow-up: {follow_up}")
+            special_resp = self._process_special(follow_up)
+            if special_resp is not None:
+                if special_resp:
+                    self._speak(special_resp)
+                return
             resp = self.process_query(follow_up)
             if not resp:
                 return
@@ -331,6 +351,12 @@ class Jarvis:
             self.conversation.is_muted = False
             self.is_muted = False
             return "Я снова слушаю, сэр."
+        if parsed == "__CONTINUOUS_ON__":
+            self.continuous = True
+            return "Режим непрерывного диалога включён, сэр."
+        if parsed == "__CONTINUOUS_OFF__":
+            self.continuous = False
+            return "Возвращаюсь к обычному режиму по ключевому слову, сэр."
         if parsed == "__EXIT__":
             self.running = False
             return "Завершаю работу, сэр."
@@ -380,8 +406,9 @@ class Jarvis:
             import shlex
             import subprocess
 
-            subprocess.Popen(
+            subprocess.run(
                 shlex.split(self.platform.notify("🔔 Напоминание JARVIS", text)),
+                timeout=5,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 env=sanitized_env(),

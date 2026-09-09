@@ -34,9 +34,12 @@ class LifecycleManager:
         дальше повторные сигналы игнорируются — это не Ctrl-C-spam-friendly,
         но защищает от частичного shutdown'а на агрессивный сигнал."""
         self._on_stop = on_stop
-        signal.signal(signal.SIGINT, self._handle)
-        signal.signal(signal.SIGTERM, self._handle)
-        self._installed = True
+        try:
+            signal.signal(signal.SIGINT, self._handle)
+            signal.signal(signal.SIGTERM, self._handle)
+            self._installed = True
+        except (ValueError, OSError) as e:
+            logger.debug(f"Could not install signal handlers: {e}")
 
     def _handle(self, signum, _frame) -> None:
         logger.info(f"\n🛑 Получен сигнал {signum}")
