@@ -141,6 +141,19 @@ def cmd_doctor(args):
     sys.exit(exit_code(checks))
 
 
+def cmd_bugreport(args):
+    """Сборка диагностического отчета для багрепортов."""
+    from jarvis.modules.diagnostics import create_bugreport
+
+    print("🔍 Сборка диагностического пакета...")
+    zip_path = create_bugreport(
+        config_path=getattr(args, "config", None),
+        output_dir=getattr(args, "output", None),
+    )
+    print(f"📦 Диагностический отчет сформирован:\n   {zip_path}")
+    print("   (Все пароли, токены и API-ключи автоматически удалены)")
+
+
 def cmd_setup(args):
     """Мастер настройки ассистента"""
     from jarvis.setup import setup_wizard
@@ -493,6 +506,17 @@ def main():
         "--config", type=str, default="config.yaml", help="Путь к конфигу"
     )
 
+    # ── bugreport ──
+    p_bug = sub.add_parser(
+        "bugreport", help="Сформировать zip-архив диагностики для отчета об ошибке"
+    )
+    p_bug.add_argument(
+        "--config", type=str, default="config.yaml", help="Путь к конфигу"
+    )
+    p_bug.add_argument(
+        "--output", type=str, default=None, help="Директория для сохранения отчета"
+    )
+
     # ── service ──
     p_svc = sub.add_parser("service", help="Управление systemd-сервисом")
     p_svc.add_argument(
@@ -516,6 +540,7 @@ def main():
         "voice": cmd_voice,
         "dictation": cmd_dictation,
         "doctor": cmd_doctor,
+        "bugreport": cmd_bugreport,
         "telegram": cmd_telegram,
         "update": cmd_update,
         "service": cmd_service,
