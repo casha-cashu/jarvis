@@ -31,35 +31,52 @@ T = TypeVar("T")
 ANTHROPIC_VERSION = "2023-06-01"
 
 
-def _setup_runtime_paths() -> None:
-    """If running inside a PyInstaller frozen bundle, make system and local
-    site-packages available so optional hardware/audio packages (pyaudio,
+def should_setup_runtime_paths() -> bool:
+    """Returns True if runtime path extension is needed (frozen bundle or explicit env override)."""
+    return bool(
+        getattr(sys, "frozen", False)
+        or os.environ.get("JARVIS_ENABLE_RUNTIME_PATHS") == "1"
+    )
+
+
+_CANDIDATE_PATHS: Optional[list[str]] = None
+
+
+def _setup_runtime_paths(force: bool = False) -> None:
+    """If running inside a PyInstaller frozen bundle (or explicitly forced), make system
+    and local site-packages available so optional hardware/audio packages (pyaudio,
     faster-whisper, torch) can be loaded dynamically on demand.
     """
-    candidates = [
-        os.path.expanduser("~/.local/lib/python3.14/site-packages"),
-        os.path.expanduser("~/.local/lib/python3.13/site-packages"),
-        "/usr/lib/python3.14/site-packages",
-        "/usr/lib/python3.13/site-packages",
-        "/usr/local/lib/python3.14/site-packages",
-        "/usr/local/lib/python3.13/site-packages",
-    ]
-    for p in ["./venv", "../venv", os.path.expanduser("~/Projects/jarvis-py/venv")]:
-        d = os.path.join(p, "lib")
-        if os.path.isdir(d):
-            try:
-                for py_dir in os.listdir(d):
-                    sp = os.path.join(d, py_dir, "site-packages")
-                    if os.path.isdir(sp):
-                        candidates.append(os.path.abspath(sp))
-            except Exception:
-                pass
+    if not force and not should_setup_runtime_paths():
+        return
+
+    candidates = _CANDIDATE_PATHS
+    if candidates is None:
+        candidates = [
+            os.path.expanduser("~/.local/lib/python3.14/site-packages"),
+            os.path.expanduser("~/.local/lib/python3.13/site-packages"),
+            "/usr/lib/python3.14/site-packages",
+            "/usr/lib/python3.13/site-packages",
+            "/usr/local/lib/python3.14/site-packages",
+            "/usr/local/lib/python3.13/site-packages",
+        ]
+        for p in ["./venv", "../venv", os.path.expanduser("~/Projects/jarvis-py/venv")]:
+            d = os.path.join(p, "lib")
+            if os.path.isdir(d):
+                try:
+                    for py_dir in os.listdir(d):
+                        sp = os.path.join(d, py_dir, "site-packages")
+                        if os.path.isdir(sp):
+                            candidates.append(os.path.abspath(sp))
+                except Exception:
+                    pass
     for c in candidates:
         if os.path.isdir(c) and c not in sys.path:
             sys.path.append(c)
 
 
-_setup_runtime_paths()
+if should_setup_runtime_paths():
+    _setup_runtime_paths()
 
 if getattr(sys, "frozen", False):
     # PyInstaller сайдкар работает в чистом ONNX/CTranslate2 режиме.
