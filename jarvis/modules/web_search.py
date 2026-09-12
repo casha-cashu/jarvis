@@ -10,9 +10,11 @@ Supports:
 from __future__ import annotations
 
 import html
+import ipaddress
 import json
 import logging
 import re
+import socket
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -269,10 +271,101 @@ def search_web(
     return duckduckgo_search(query, max_results)
 
 
+def validate_public_http_url(url: str) -> tuple[bool, str]:
+    """Validates that a URL points to a public, routable HTTP/HTTPS service.
+
+    Blocks SSRF attacks targeting loopback, private RFC1918 subnets,
+    link-local / cloud metadata (169.254.169.254), multicast, and reserved addresses.
+    Returns (is_valid, error_reason).
+    """
+    if not url or not isinstance(url, str):
+        return False, "URL не может быть пустым"
+
+    try:
+        parsed = urllib.parse.urlsplit(url.strip())
+    except Exception as e:
+        return False, f"Некорректный синтаксис URL: {e}"
+
+    scheme = (parsed.scheme or "").lower()
+    if scheme not in ("http", "https"):
+        return False, f"Недопустимая схема '{scheme}' (разрешены только http и https)"
+
+    hostname = parsed.hostname
+    if not hostname:
+        return False, "Отсутствует имя хоста в URL"
+
+    hostname_lower = hostname.lower().strip(".")
+    if hostname_lower in ("localhost", "localhost.localdomain", "broadcasthost"):
+        return False, f"Запрещён доступ к локальному хосту '{hostname}'"
+    if hostname_lower.endswith((".local", ".localhost", ".internal", ".lan", ".home")):
+        return False, f"Запрещён доступ к домену локальной сети '{hostname}'"
+
+    try:
+        addr_info = socket.getaddrinfo(hostname, None, proto=socket.IPPROTO_TCP)
+    except socket.gaierror as e:
+        return False, f"Ошибка разрешения DNS для хоста '{hostname}': {e}"
+    except Exception as e:
+        return False, f"Не удалось разрешить адрес хоста '{hostname}': {e}"
+
+    if not addr_info:
+        return False, f"Не удалось получить IP-адреса для хоста '{hostname}'"
+
+    for entry in addr_info:
+        sockaddr = entry[4]
+        ip_str = sockaddr[0]
+        try:
+            ip = ipaddress.ip_address(ip_str)
+        except ValueError:
+            return False, f"Некорректный IP-адрес: {ip_str}"
+
+        if ip.is_loopback:
+            return False, f"Запрещён доступ к loopback адресу ({ip_str})"
+        if ip.is_private:
+            return False, f"Запрещён доступ к приватному IP-адресу ({ip_str})"
+        if ip.is_link_local:
+            return (
+                False,
+                f"Запрещён доступ к link-local / cloud metadata адресу ({ip_str})",
+            )
+        if ip.is_multicast:
+            return False, f"Запрещён доступ к multicast адресу ({ip_str})"
+        if ip.is_reserved:
+            return False, f"Запрещён доступ к зарезервированному адресу ({ip_str})"
+        if ip.is_unspecified:
+            return False, f"Запрещён доступ к неопределённому адресу ({ip_str})"
+
+    return True, ""
+
+
+class _SSRFSafeRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Prevents HTTP redirects from escaping to private or local networks."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        ok, reason = validate_public_http_url(newurl)
+        if not ok:
+            logger.warning(f"Blocked SSRF redirect to {newurl}: {reason}")
+            raise urllib.error.HTTPError(
+                newurl,
+                403,
+                f"[BLOCKED] SSRF protection: redirect to forbidden target ({reason})",
+                headers,
+                fp,
+            )
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+_SAFE_OPENER = urllib.request.build_opener(_SSRFSafeRedirectHandler())
+
+
 def fetch_webpage(url: str, max_chars: int = 4000, timeout: int = 8) -> str:
-    """Fetches a webpage and extracts clean, readable text content."""
-    if not url.startswith(("http://", "https://")):
+    """Fetches a webpage and extracts clean, readable text content with SSRF protection."""
+    if not (url and (url.startswith("http://") or url.startswith("https://"))):
         return "Ошибка: некорректный URL (должен начинаться с http:// или https://)"
+
+    ok, reason = validate_public_http_url(url)
+    if not ok:
+        logger.warning(f"SSRF guard blocked fetch_webpage target '{url}': {reason}")
+        return f"[BLOCKED] Запрос заблокирован политикой безопасности сети: {reason}"
 
     req = urllib.request.Request(
         url,
@@ -282,10 +375,16 @@ def fetch_webpage(url: str, max_chars: int = 4000, timeout: int = 8) -> str:
         },
     )
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with _SAFE_OPENER.open(req, timeout=timeout) as resp:
             raw = resp.read(500_000)  # limit download to 500 KB
             charset = resp.headers.get_content_charset() or "utf-8"
             html_text = raw.decode(charset, errors="replace")
+    except urllib.error.HTTPError as e:
+        if "[BLOCKED]" in str(e) or (e.reason and "[BLOCKED]" in str(e.reason)):
+            return (
+                f"[BLOCKED] Запрос заблокирован политикой безопасности сети: {e.reason}"
+            )
+        return f"Ошибка при загрузке страницы: {e}"
     except Exception as e:
         return f"Ошибка при загрузке страницы: {e}"
 

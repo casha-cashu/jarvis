@@ -1,199 +1,66 @@
 # JARVIS — agent guide
 
-Russian-language voice assistant for Linux/macOS. Detects DE/WM (i3 / Sway /
-Hyprland / KDE / GNOME / macOS), transcribes (Vosk / faster-whisper) with
-Silero VAD, routes to commands or LLM (Ollama / Kiro / Anthropic /
-OpenRouter), speaks back via TTS (Piper / gTTS / SpeechT5).
+Russian voice assistant for Linux/macOS. DE/WM adapters (`i3`/`sway`/`hyprland`/`kde`/`gnome`/`macos`),
+STT (Vosk / faster-whisper) + Silero VAD, commands-or-LLM routing (Ollama / Kiro / Anthropic / OpenRouter), TTS (Piper / gTTS / SpeechT5).
 
-## Workspace layout (single repo since v2.5.0+)
+## Layout
 
-One repository = one working directory:
+- `jarvis/` — Python backend (`cli.py` entry, `jarvis.cli:main`). `Jarvis` in `jarvis/__init__.py` is a thin orchestrator only.
+- `jarvis/modules/` — `config_loader`, `audio_pipeline` (STT/VAD), `response_pipeline` (commands→LLM→TTS), `conversation_manager` (wake/mute/multi-turn), `lifecycle`, `nlu`, `bash_agent`, `commands`, `llm`, `reminder`, `dictation`, STT/TTS/VAD.
+- `jarvis/adapters/` — one per platform. `jarvis/ui_bridge.py` — stdin/stdout JSON bridge spawned by the Tauri UI.
+- `tests/` (+ `tests/integration/`), `data/commands.json` + `data/apps.json` (NLU training data), `docker/`, `jarvis-ui/` (Tauri 2 + React 19), `dist/arch/PKGBUILD`.
+- `venv/` is the shared venv. `config.yaml` + `.env` are personal and gitignored (templates: `config.example.yaml`, `.env.example`). `HANDOFF.md` is gitignored session state — read it for in-progress context, never commit it.
 
-```
-jarvis-py/                ← repo root (git remote → casha-cashu/jarvis)
-├── jarvis/               # Python package (backend)
-├── tests/                # pytest suite
-├── data/ docker/ docs?   # assets & infra
-├── jarvis-ui/            # GUI (Tauri 2 + React 19 + TS)
-│   └── src-tauri/        # Rust bridge (spawn ./venv/bin/python)
-├── venv/                 # shared venv (Python 3.14)
-├── config.yaml           # personal, gitignored (template: config.example.yaml)
-├── .env                  # secrets, gitignored
-└── AGENTS.md HANDOFF.md  # agent instructions / state (HANDOFF gitignored)
-```
+## Commands (repo root)
 
-- Run backend tests: `PYTHONPATH=. ./venv/bin/python -m pytest -m "not slow and not integration" -q`
-- GUI dev: `cd jarvis-ui && npm run tauri dev` (Rust bridge spawns `./venv/bin/python jarvis/ui_bridge.py`)
-- Lint/types: ruff + mypy installed in venv; gate before done:
-  `./venv/bin/ruff check jarvis/ tests/ && ./venv/bin/ruff format --check jarvis/ui_bridge.py`
-- Release = plain `git push origin main --tags` from root (no more mirror sync).
-- Old dirs `jarvis-claude/ jarvis-new/ jarvis-github/` are DELETED; history
-  lives in this single .git.
+- Unit tests: `PYTHONPATH=. ./venv/bin/python -m pytest -m "not slow and not integration" -q` (`make test` is the same with system `python3`; prefer the venv binary).
+- Single test: `PYTHONPATH=. ./venv/bin/python -m pytest tests/test_env.py -v`.
+- **Never run bare `pytest tests/`** — `tests/integration/` opens real audio/display devices and hangs. macOS CI uses the same `-m "not slow and not integration"` filter.
+- Gate before done: `./venv/bin/ruff check jarvis/ tests/ && ./venv/bin/ruff format --check jarvis/ tests/ && env -u APPIMAGE -u ARGV0 -u APPDIR ./venv/bin/python -m mypy jarvis/ && cargo check --manifest-path jarvis-ui/src-tauri/Cargo.toml` (mypy scope is `jarvis/` only — pre-commit excludes `tests/`/`venv/`/`build/`).
+- Frontend: `cd jarvis-ui && npm run build` (tsc+vite) + `npm run lint` (oxlint) + `npm run test` (vitest).
+- Docker unit tests (install everything; what CI runs): `make docker-test-arch` / `docker-test-debian` / `docker-test-fedora`.
+- Docker integration: `make docker-integration-i3` (needs `--cap-add=SYS_PTRACE --security-opt seccomp=unconfined`) / `make docker-integration-sway` (needs `--privileged`).
+- Run: `source venv/bin/activate && jarvis run`; `jarvis run --dry-run` skips STT/TTS/VAD model loads. GUI dev: `cd jarvis-ui && npm run tauri dev`.
 
 ## Architecture
 
-`Jarvis` (`jarvis/__init__.py`, ~374 lines) is a thin orchestrator. Real work
-lives in:
-
-- `jarvis/config_loader.py` — yaml load + `${VAR}` expansion (warns on
-  missing) + pydantic validation
-- `jarvis/audio_pipeline.py` — STT/VAD lifecycle, skips model load when
-  `dry_run=True`
-- `jarvis/response_pipeline.py` — commands → LLM → TTS routing
-- `jarvis/conversation_manager.py` — wake word, mute, multi-turn state
-- `jarvis/lifecycle.py` — SIGINT/SIGTERM + ordered shutdown
-- `jarvis/_env.py` — `sanitized_env()` allowlist for all subprocess calls
-- `jarvis/modules/nlu.py` — **NLU**: TF-IDF + LogisticRegression intent
-  classifier (trained at startup from `data/commands.json` + `data/apps.json`,
-  cacheable via `JARVIS_NLU_CACHE`) + regex slot extractor
-  (`app` / `search` / `workspace` / `volume_amount`). `IntentRouter.parse()`
-  returns `{raw, intent, intent_confidence, slots}`. Replaces steps 2–3
-  (fuzzy/pattern) of the old CommandExecutor pipeline; old path kept as
-  fallback. **Depends on `scikit-learn`** (installed in shared venv).
-- `jarvis/modules/bash_agent.py` — **LLM-driven automation** with 3-layer
-  approval: hardline blocklist (`rm -rf /`, `mkfs`, `dd of=/dev/`, fork
-  bombs, etc.) → dangerous-pattern detector (~20 patterns: `curl|sh`,
-  `git push -f`, `iptables -F`, `kill -9 -1`, etc.) → approval gate
-  (`auto` / `strict` / `yolo`). Tools: `bash` / `read` / `write` (write
-  blocks `/etc`, `/usr`, `/boot`, `/sys`, `/proc`, `/dev`). All commands
-  pass through `sanitized_env()` and `subprocess.run(timeout=...)`.
-- `jarvis/modules/` — STT (`stt.py`, `stt_whisper.py`), TTS (`tts.py`),
-  VAD (`vad.py`), LLM (`llm.py`), commands (`commands.py`), reminders,
-  dictation
-- `jarvis/adapters/` — one per platform: `i3`, `sway`, `hyprland`, `kde`,
-  `gnome`, `macos`
-
-`Jarvis._load_config` is kept as a thin delegating method because
-`tests/conftest.py` patches it.
+- `config_loader.py` — YAML load + `${VAR}` expansion (missing var → warning + empty string) + pydantic validation (`config_schema.py`).
+- `audio_pipeline.py` — STT/VAD lifecycle; `dry_run=True` skips model loads.
+- `response_pipeline.py` — commands → LLM → TTS routing. `conversation_manager.py` — wake word, mute, multi-turn. `lifecycle.py` — SIGINT/SIGTERM + ordered shutdown.
+- `modules/nlu.py` — `IntentRouter.parse()` → `{raw, intent, intent_confidence, slots}`; TF-IDF + LogisticRegression trained at startup from `data/*.json`, cacheable via `JARVIS_NLU_CACHE` (cache dir `0700`, files `0600`). Old fuzzy/pattern path in `commands.py` is fallback only.
+- `modules/bash_agent.py` — LLM automation with 3 layers: hardline blocklist → dangerous-pattern detector → approval gate (`auto`/`strict`/`yolo`). Tools `bash`/`read`/`write` (write blocks `/etc` `/usr` `/boot` `/sys` `/proc` `/dev`).
+- `modules/llm.py` — all providers share one history file (`HISTORY_FILE`, default `~/.local/share/jarvis/history.json`, override `JARVIS_HISTORY_FILE`), clamped to `llm.max_history`; `clear_history()` is atomic temp+rename. `LLMClient` is `ABC` with abstract `chat()` — never instantiate raw.
+- `modules/commands.py` — `CommandExecutor._run`: `cmd` may be a string or a **callable returning str** (evaluated at execute time); blocks for `commands.execution_timeout` (default 30s), then SIGTERM → SIGKILL after 2s grace.
 
 ## Hard rules
 
-- **CI/infra: код возврата тестируемого не глотается.** `|| true`,
-  `set +e`, пайпы без `pipefail`, skip-on-empty — только для cleanup,
-  best-effort демонов и косметики. Команда, которую CI проверяет,
-  обязана ронять джобу. Любой бинарь, вызываемый тестами/энтрипоинтами,
-  должен быть установлен в соответствующем образе (класс бага: pgrep/
-  pactl/xrandr отсутствовали в контейнерах, а `--timeout` — в deps).
-- **docker: зависимости до исходников.** Сначала копируются манифесты
-  зависимостей и ставятся пакеты, потом `COPY . .` — иначе любой чих
-  репо перекачивает torch. CPU-сборка torch (--index-url
-  .../whl/cpu) во всех образах: PyPI тянет CUDA-бандл.
-
-- **No `shell=True`** anywhere in `jarvis/`. Adapter command strings go
-  through `shlex.split` and `subprocess.Popen(env=sanitized_env())`. If a
-  command needs runtime expansion (timestamp, slurp geometry), pass a
-  callable as `cmd` — `CommandExecutor._run` invokes it.
-- **No API keys in `os.environ` leaks to subprocesses.** API keys flow as
-  kwargs into LLM clients via `config.yaml` → `provider_config` →
-  `LLMManager`. `cli_helpers` must NOT write to `os.environ`.
-- **Every `subprocess.*` call passes `env=sanitized_env()`** (from
-  `jarvis/_env.py`).
-- **`SESSION.md` and real API keys never get committed** — they are in
-  `.gitignore`; keep it that way.
-
-## Commands
-
-All commands assume you are at the **repo root** (`jarvis-py/`) — it is the
-single working directory; the shared venv lives at `venv/` there.
-
-- Tests: `PYTHONPATH=. ./venv/bin/python -m pytest -m "not slow and not integration" -q`
-  (or `make test` — same thing).
-- Coverage: `make test-cov`.
-- Lint/format/types (the pre-commit gate): `./venv/bin/ruff check jarvis/ tests/ &&
-  ./venv/bin/ruff format --check jarvis/ tests/ && ./venv/bin/python -m mypy jarvis/ &&
-  cargo check --manifest-path jarvis-ui/src-tauri/Cargo.toml` (run python/mypy
-  with `env -u APPIMAGE -u ARGV0 -u APPDIR` when invoked from ZCode's shell).
-- **Don't run `pytest tests/` without markers** — `tests/integration/`
-  opens real audio/display devices and will hang. Always combine with
-  `-m "not slow and not integration"` for unit suites (`make test` already
-  does; bare `pytest tests/` is the hang trap).
-- Single test: `./venv/bin/python -m pytest tests/test_env.py -v`.
-- Docker unit tests (CI uses these; install everything): `make docker-test-arch`
-  / `docker-test-debian` / `docker-test-fedora`. NOTE: docker bridge network
-  has no internet on this machine — `docker run --network host`.
-- Integration: `make docker-integration-i3` / `docker-integration-sway` —
-  Sway needs `--privileged`, i3 uses `--cap-add=SYS_PTRACE --security-opt
-  seccomp=unconfined`.
-- Run app: `source venv/bin/activate && jarvis run`. Dry run:
-  `jarvis run --dry-run` — skips STT/TTS/VAD model loads.
-- GUI dev: `cd jarvis-ui && npm run tauri dev`; frontend gates:
-  `npm run build` (tsc+vite) and `npm run lint` (oxlint).
-- Packages: `npx tauri build --bundles deb,rpm,appimage` (from jarvis-ui,
-  needs ubuntu-22.04 for portable glibc — locally Arch glibc is newer),
-  Arch pkg: `cd dist/arch && makepkg -f` (repacks the deb).
+- **No `shell=True`** in `jarvis/`. Adapter command strings go through `shlex.split` + `subprocess.*(env=sanitized_env())`.
+- **Every `subprocess.*` passes `env=sanitized_env()`** (`jarvis/_env.py` allowlist). API keys flow as kwargs via `config.yaml` → `provider_config` → `LLMManager`; never put them in `os.environ` (`cli_helpers` must not write there either).
+- **CI: never swallow the tested command's exit code** (`|| true`, `set +e`, pipes without `pipefail`, skip-on-empty are for cleanup/best-effort daemons only). Any binary used by tests/entrypoints must be installed in that image. macOS `test.yml` needs `set -o pipefail` before `pytest … | tail`.
+- **Docker: manifests before sources** — `COPY pyproject/requirements` + install first, then `COPY . .`; torch always CPU (`--index-url …/whl/cpu`), PyPI default pulls a CUDA bundle.
+- Never commit secrets or session state: `.env`, `config.yaml`, `SESSION.md`, `HANDOFF.md` are gitignored — keep them that way.
 
 ## Python / test gotchas
 
-- Python 3.10–3.12 is the sweet spot. On 3.13/3.14: no `vosk` wheel; `pyaudio`
-  needs `brew install portaudio` (macOS); `audioop` removed (`audioop-lts`
-  shim in `requirements.txt` / `pyproject.toml`, gated on
-  `python_version >= '3.13'`).
-  - On Python 3.14 this repo's venv has a working `vosk 0.3.45`; new venvs
-    on 3.14 should not expect vosk to install from PyPI.
-- `jarvis` package import pulls heavy deps transitively (STT/TTS/sklearn
-  import lazily inside `start()`/factories, but `jarvis.modules.nlu` and
-  `jarvis.modules.llm` import `sklearn`/`anthropic` at module level), so a
-  bare interpreter missing them will fail. Two ways past it:
-  1. Use Docker (`make docker-test-arch` etc.) — CI relies on these and they
-     install everything.
-  2. Stub heavy deps before import — pattern used in
-     `tests/test_audio_modules.py`:
+- `requires-python >=3.10`; sweet spot 3.10–3.12 (macOS CI pins 3.11). `vosk` wheels exist only for ≤3.12 — install via `pip install -e ".[vosk]"`; on 3.13+ STT falls back to whisper and `audioop-lts` shim kicks in (`python_version >= '3.13'`). This repo's venv happens to have a working `vosk 0.3.45` on 3.14 — new venvs should not expect that.
+- Importing `jarvis` needs heavy deps (`sklearn`/`anthropic` imported at module level in `nlu.py`/`llm.py`). Without them, either use Docker or stub before import (pattern in `tests/test_audio_modules.py`: `sys.modules.setdefault(n, ModuleType(n))` for `vosk torch faster_whisper silero_vad pyaudio audioop numpy anthropic requests gtts yaml`).
+- Markers (`pyproject.toml`): `slow`, `integration`, `i3`, `sway`, `x11`, `wayland`, `ollama`, `llm`.
+- `tests/conftest.py` isolates every test via `JARVIS_DATA_DIR` / `JARVIS_HISTORY_FILE` / `JARVIS_NLU_CACHE` / `JARVIS_CONFIG_PATH` (points at `config.test.yaml`) and patches `llm.HISTORY_FILE` / `nlu.CACHE_DIR`. `jarvis_instance` fixture patches `Jarvis._load_config` — keep that method a thin hook. `check_sanitized_env` fixture asserts no secret leaks into subprocess env.
 
-     ```python
-     import sys, types
-     for n in ['vosk','torch','faster_whisper','silero_vad','pyaudio',
-               'audioop','numpy','anthropic','requests','gtts','yaml']:
-         sys.modules.setdefault(n, types.ModuleType(n))
-     ```
-- Integration tests are marked `integration`, `i3`, `sway`, `x11`, `wayland`;
-  slow tests are marked `slow`. See `pyproject.toml [tool.pytest.ini_options]`.
-- `tests/conftest.py` patches `Jarvis._load_config` and references a
-  `config.test.yaml` at the package root — keep that fixture updated if you
-  move config files.
-- `clang`-style markers exist; CI macOS job runs `-m "not slow"`.
+## Editing pitfalls
 
-## Pitfalls when editing
+- Time-sensitive / interactive commands (timestamps, `slurp` geometry): pass the **method reference** as `cmd`, never the call result — `_run` invokes callables at execute time (see screenshot commands in `commands.py`).
+- Screenshots: `i3`/`gnome`/`macos`/`sway` adapters resolve `~` + `datetime.now()` in Python; `kde` (spectacle) and `hyprland` (grimblast) own their naming — leave those alone.
+- `ReminderManager.timers` is touched from multiple threads — hold `self._lock` around append/iterate/clear.
+- `adapters/base.py::input_text` returns a shell-style `wtype || xdotool` string but is effectively dead (live dictation is `modules/dictation.py::_type_text`); two adapter tests assert its return type, so don't "fix" the string without updating them.
+- LLM default provider is `ollama` (local, no keys). Kiro key `${KIRO_API_KEY}`, OpenRouter `${OPENROUTER_API_KEY}` — expand via `config_loader`, never `os.environ`.
+- `lifecycle.py` must tolerate `signal.signal` raising `(ValueError, OSError)` when called off-main-thread (`telegram_bot`, `ui_bridge`).
 
-- `_add_platform_commands` builds the command table at `__init__` time. For
-  time-sensitive commands (timestamps, interactive geometry via `slurp`),
-  pass the **method reference** (not the call result) — `_run` invokes
-  callable values at execute time.
-- Screenshot adapters: `i3.py`, `gnome.py`, `macos.py`, `sway.py` resolve
-  `~` and `datetime.now()` in Python. `kde.py` and `hyprland.py` use tools
-  (spectacle / grimblast) that own their own naming — leave those alone.
-- `ReminderManager.timers` is mutated from multiple threads. Take
-  `self._lock` around any `append` / iteration / clear.
-- **LLM history persists to `~/.local/share/jarvis/history.json`** via
-  `jarvis/modules/llm.HISTORY_FILE` (overridable via `JARVIS_HISTORY_FILE`
-  env var). All LLM clients (Kiro/Anthropic/OpenRouter/Ollama) share one
-  file, so switching providers preserves the conversation. History clamps
-  to `max_history` per `config.yaml::llm.max_history`. `clear_history()`
-  writes back an empty list atomically (temp+rename).
-- `input_text` in `base.py` still uses shell-style `wtype || xdotool` in its
-  returned string; effectively dead (live dictation goes through
-  `jarvis/modules/dictation.py:_type_text`). Two adapter tests assert its
-  return type — watch them if you touch it.
-- LLM default `provider: ollama` (local, no keys). Kiro key comes from
-  `${KIRO_API_KEY}` env var; OpenRouter from `${OPENROUTER_API_KEY}`.
-  Missing env var → warning + empty substitution (see `config_loader.py`).
-- **`CommandExecutor._run` blocks for `commands.execution_timeout`** (sec,
-  default 30) then sends SIGTERM (2s grace) → SIGKILL. Previously it was
-  fire-and-forget `Popen` which leaked zombies on interactive commands.
-- The `LLMClient` base class is now `ABC` — `chat()` is `@abstractmethod`.
-  Subclasses must override it. Don't try to instantiate `LLMClient` raw.
+## Release (all versions move together)
 
-## Release / sync flow (single repo — no mirrors since v2.5.0)
+- Bump together: `pyproject.toml` + `jarvis-ui/package.json` + `jarvis-ui/src-tauri/tauri.conf.json` + `jarvis-ui/src-tauri/Cargo.toml` + `dist/arch/PKGBUILD` (currently all `2.8.0`). Tag and push from root: `git push origin main --tags`. `release.yml` (on `v*`) builds the PyInstaller sidecar + deb/rpm/AppImage on ubuntu-22.04 (portable glibc — Arch's is too new) and dmg on macOS; Arch pkg is a local repack (`cd dist/arch && makepkg -f`).
+- **Every release also bumps the site**: versions appear as both `vX.Y.Z` and `X.Y.Z` in `docs/` (`*.html`/`*.txt`/`*.js`, excluding `docs/site/`) plus `FALLBACK_VERSION` in `site/lib/github-release.ts`, then commit `docs/ site/`.
 
-1. Bump the version in **one place per side**: `pyproject.toml` +
-   `jarvis-ui/src-tauri/tauri.conf.json` (+ `Cargo.toml`/`package.json`)
-   + `dist/arch/PKGBUILD` — these must stay equal (as of v2.6.2 they are).
-2. Commit, tag `vX.Y.Z`, push: `git push origin main --tags` from the repo
-   root (HTTPS + `GITHUB_TOKEN` in `~/.zshenv`).
-3. `release.yml` (on `v*` tags) builds the PyInstaller sidecar + deb/rpm/
-   AppImage on ubuntu-22.04 and a dmg on macOS; artifacts are attached
-   manually to the GitHub Release (workflow only uploads run artifacts).
-4. Arch pkg is repacked locally: `cd dist/arch && makepkg -f`
-   (workflow skips it on ubuntu).
+## Skills
 
-Releases so far: v2.1.0 → v2.6.2. Since v2.6.2 python/UI versions are a
-single scheme (2.6.2 everywhere).
+Domain workflows live in `.opencode/skills/` + `.agents/skills/` (`opencode.jsonc: skills.paths`). Load via the `skill` tool when the task matches: `adapter-pattern` (platform adapters), `bash-agent-safety` (tool execution/approval), `stt-tts-pipeline` (audio), `nlu-intent-classifier`, `llm-providers`, `prompt-builder`, plus `systematic-debugging`, `tdd-regression`, `technical-reviewer`, `verification-before-completion`, `subagent-orchestration`.

@@ -6,6 +6,7 @@ from jarvis.modules.web_search import (
     fetch_webpage,
     format_search_results,
     search_web,
+    validate_public_http_url,
 )
 
 
@@ -131,3 +132,84 @@ def test_search_web_response_buffer_limit():
 
         search_web("query", provider="tavily", api_key="fake-key")
         mock_response.read.assert_called_with(500_000)
+
+
+def test_validate_public_http_url_blocks_loopback_and_private():
+    # Loopback
+    ok, reason = validate_public_http_url("http://127.0.0.1:8080/secret")
+    assert not ok and "локальн" in reason or "приватн" in reason or not ok
+
+    ok, reason = validate_public_http_url("http://localhost:3000/")
+    assert not ok
+
+    ok, reason = validate_public_http_url("http://[::1]:8080/")
+    assert not ok
+
+    # Cloud metadata (link-local)
+    ok, reason = validate_public_http_url("http://169.254.169.254/latest/meta-data/")
+    assert not ok
+
+    # Private networks
+    for private_url in [
+        "http://10.0.0.1/admin",
+        "http://192.168.1.1/",
+        "http://172.16.0.1/status",
+        "http://127.0.0.53/",
+    ]:
+        ok, reason = validate_public_http_url(private_url)
+        assert not ok, f"Expected {private_url} to be blocked"
+
+
+def test_validate_public_http_url_blocks_invalid_schemes_and_hosts():
+    for bad_url in [
+        "file:///etc/passwd",
+        "gopher://127.0.0.1/",
+        "ftp://example.com/test",
+        "http:///no-host",
+        "https://my-local-device.local/",
+    ]:
+        ok, reason = validate_public_http_url(bad_url)
+        assert not ok, f"Expected {bad_url} to be blocked"
+
+
+def test_validate_public_http_url_allows_public_ip():
+    with patch("socket.getaddrinfo") as mock_dns:
+        # Mock public IP 93.184.216.34 (example.com)
+        mock_dns.return_value = [(2, 1, 6, "", ("93.184.216.34", 443))]
+        ok, reason = validate_public_http_url("https://example.com/docs")
+        assert ok
+        assert reason == ""
+
+
+def test_fetch_webpage_ssrf_guard_blocks_private():
+    # Direct fetch to private targets should return [BLOCKED]
+    res = fetch_webpage("http://127.0.0.1:8080/metrics")
+    assert res.startswith("[BLOCKED]")
+    assert "безопасности" in res or "локальн" in res or "127.0.0.1" in res
+
+    res = fetch_webpage("http://169.254.169.254/latest/meta-data/")
+    assert res.startswith("[BLOCKED]")
+
+
+def test_fetch_webpage_blocks_redirect_to_private():
+    # Mock redirect to 127.0.0.1
+    import urllib.error
+
+    with patch("socket.getaddrinfo") as mock_dns:
+        # Initial public DNS ok
+        mock_dns.side_effect = lambda host, *args, **kwargs: (
+            [(2, 1, 6, "", ("127.0.0.1", 80))]
+            if host == "127.0.0.1"
+            else [(2, 1, 6, "", ("93.184.216.34", 443))]
+        )
+
+        with patch("jarvis.modules.web_search._SAFE_OPENER.open") as mock_open:
+            mock_open.side_effect = urllib.error.HTTPError(
+                url="http://127.0.0.1/admin",
+                code=403,
+                msg="[BLOCKED] SSRF protection: redirect to forbidden target",
+                hdrs={},
+                fp=None,
+            )
+            res = fetch_webpage("https://example.com/redirect")
+            assert res.startswith("[BLOCKED]")
