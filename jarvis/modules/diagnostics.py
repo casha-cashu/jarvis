@@ -178,3 +178,7 @@ def create_bugreport(
         pass
 
     return zip_path
+
+
+# Alias for compatibility with PR-UI-OBS-1
+generate_diagnostics_bundle = create_bugreport
