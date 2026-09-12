@@ -736,3 +736,51 @@ def test_restart_allowed_while_message_busy(monkeypatch):
     assert res["ok"] is True
     assert res.get("started") is True
     assert bridge._message_busy is False
+
+
+def _stub_diagnostics(monkeypatch, func):
+    """Inject a fake jarvis.modules.diagnostics module (PR-OBS-1 backend)."""
+    import sys
+    import types
+
+    stub = types.ModuleType("jarvis.modules.diagnostics")
+    setattr(stub, "generate_diagnostics_bundle", func)
+    monkeypatch.setitem(sys.modules, "jarvis.modules.diagnostics", stub)
+
+
+class TestExportDiagnostics:
+    def test_export_diagnostics_ok(self, monkeypatch, tmp_path):
+        bundle = tmp_path / "jarvis-diagnostics-2026.zip"
+        bundle.write_bytes(b"PK fake")
+        _stub_diagnostics(monkeypatch, lambda: bundle)
+        res = Bridge().handle({"command": "export_diagnostics"})
+        assert res["ok"] is True
+        assert res["path"] == str(bundle)
+
+    def test_export_diagnostics_generator_error(self, monkeypatch):
+        def _boom():
+            raise RuntimeError("zip failed")
+
+        _stub_diagnostics(monkeypatch, _boom)
+        res = Bridge().handle({"command": "export_diagnostics"})
+        assert res["ok"] is False
+        assert "zip failed" in res["error"]
+
+    def test_export_diagnostics_module_missing(self, monkeypatch):
+        import sys
+
+        monkeypatch.setitem(sys.modules, "jarvis.modules.diagnostics", None)
+        res = Bridge().handle({"command": "export_diagnostics"})
+        assert res["ok"] is False
+        assert "error" in res
+
+    def test_export_diagnostics_allowed_while_message_busy(self, monkeypatch, tmp_path):
+        """Read-only report must not be blocked by an active generation."""
+        bundle = tmp_path / "jarvis-diagnostics-2026.zip"
+        bundle.write_bytes(b"PK fake")
+        _stub_diagnostics(monkeypatch, lambda: bundle)
+        bridge = Bridge()
+        assert bridge._try_begin_message() is True
+        res = bridge.handle({"command": "export_diagnostics"})
+        assert res["ok"] is True
+        assert res["path"] == str(bundle)

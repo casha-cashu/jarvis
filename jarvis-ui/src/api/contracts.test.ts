@@ -74,6 +74,7 @@ import {
   getBackendConfig,
   getBackendTimers,
   clearBackendHistory,
+  exportDiagnostics,
   type ScenarioItem,
   type ApiPresetConfig,
 } from "./backend";
@@ -178,6 +179,12 @@ describe("IPC Protocol Contracts (Tauri Invoke Commands)", () => {
     mockInvoke.mockResolvedValueOnce({ ok: true });
     await clearBackendHistory();
     expect(mockInvoke).toHaveBeenLastCalledWith("backend_clear_history", undefined);
+
+    // 15. backend_export_diagnostics
+    mockInvoke.mockResolvedValueOnce({ ok: true, path: "/tmp/jarvis-diagnostics.zip" });
+    const bundlePath = await exportDiagnostics();
+    expect(bundlePath).toBe("/tmp/jarvis-diagnostics.zip");
+    expect(mockInvoke).toHaveBeenLastCalledWith("backend_export_diagnostics", undefined);
   });
 
   it("sendBackendMessage handles empty session as null", async () => {

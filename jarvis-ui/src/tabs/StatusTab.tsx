@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Activity, Cpu, Clock, AlertCircle, Monitor, RefreshCw, Square, Play, Mic, MicOff } from "lucide-react";
+import { Activity, Cpu, Clock, AlertCircle, Monitor, RefreshCw, Square, Play, Mic, MicOff, Bug } from "lucide-react";
 import { listen } from "@tauri-apps/api/event";
 import {
   getBackendStatus,
@@ -10,6 +10,7 @@ import {
   startBackend,
   stopBackend,
   restartBackend,
+  exportDiagnostics,
   type BackendStatus,
   type BackendTimer,
   type SystemStats,
@@ -44,6 +45,9 @@ export default function StatusTab({ isActive = true }: StatusTabProps) {
   const [voiceStatus, setVoiceStatus] = useState<string>("Отключен");
   const [voiceText, setVoiceText] = useState<string | null>(null);
   const [voiceLoading, setVoiceLoading] = useState(false);
+  const [diagLoading, setDiagLoading] = useState(false);
+  const [diagPath, setDiagPath] = useState<string | null>(null);
+  const [diagError, setDiagError] = useState<string | null>(null);
   const activeModel = getActiveModel();
   const activeProvider = activeModel
     ? loadProviders().find((p) => p.id === activeModel.providerId)
@@ -54,9 +58,10 @@ export default function StatusTab({ isActive = true }: StatusTabProps) {
       ? Math.min(100, Math.max(0, Math.round((system.memoryUsedMb / system.memoryTotalMb) * 100)))
       : 0;
 
-  const cpuPercent = system
-    ? Math.min(100, Math.max(0, Math.round(system.loadAverage * 25)))
-    : 0;
+  const cpuPercent =
+    system && typeof system.loadAverage === "number"
+      ? Math.min(100, Math.max(0, Math.round(system.loadAverage * 25)))
+      : 0;
 
   const stats: StatItem[] = [
     {
@@ -68,7 +73,10 @@ export default function StatusTab({ isActive = true }: StatusTabProps) {
     },
     {
       label: "Нагрузка CPU",
-      value: system ? `${system.loadAverage.toFixed(2)} (${cpuPercent}%)` : "—",
+      value:
+        system && typeof system.loadAverage === "number"
+          ? `${system.loadAverage.toFixed(2)} (${cpuPercent}%)`
+          : "—",
       percent: cpuPercent,
       icon: Cpu,
     },
@@ -80,7 +88,10 @@ export default function StatusTab({ isActive = true }: StatusTabProps) {
     },
     {
       label: "Время работы",
-      value: system ? formatUptime(system.uptimeSeconds) : "—",
+      value:
+        system && typeof system.uptimeSeconds === "number"
+          ? formatUptime(system.uptimeSeconds)
+          : "—",
       percent: 100,
       icon: Clock,
     },
@@ -264,6 +275,21 @@ export default function StatusTab({ isActive = true }: StatusTabProps) {
     }
   };
 
+  const handleExportDiagnostics = async () => {
+    if (!backend.connected) return;
+    setDiagLoading(true);
+    setDiagError(null);
+    setDiagPath(null);
+    try {
+      const bundlePath = await exportDiagnostics();
+      setDiagPath(bundlePath);
+    } catch (error) {
+      setDiagError(error instanceof Error ? error.message : "Не удалось сформировать отчёт");
+    } finally {
+      setDiagLoading(false);
+    }
+  };
+
   return (
     <div className="flex h-full flex-col overflow-y-auto px-6 py-6">
       <div className="mx-auto flex w-full max-w-3xl flex-col gap-6">
@@ -397,6 +423,39 @@ export default function StatusTab({ isActive = true }: StatusTabProps) {
               )}
             </button>
           </div>
+        </div>
+
+        {/* Diagnostics report */}
+        <div className="flex flex-col gap-3 rounded-xl border border-border bg-surface p-4">
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex items-center gap-3">
+              <div className="flex h-9 w-9 items-center justify-center rounded-lg border border-border bg-surface-2 text-text-muted">
+                <Bug size={18} />
+              </div>
+              <div>
+                <span className="text-sm font-semibold text-text">Отчёт об ошибке</span>
+                <p className="text-xs text-text-muted">
+                  Санитизированный zip: системное инфо, замаскированный конфиг, хвост логов. Без переписок.
+                </p>
+              </div>
+            </div>
+
+            <button
+              onClick={handleExportDiagnostics}
+              disabled={diagLoading || !backend.connected}
+              className="flex items-center gap-1.5 rounded-lg border border-border bg-surface-2 px-3 py-1.5 text-xs font-medium text-text-muted hover:text-text disabled:opacity-40"
+              title="Сформировать отчёт об ошибке"
+            >
+              <Bug size={13} className={diagLoading ? "animate-spin" : ""} />
+              {diagLoading ? "Формирую..." : "Сформировать отчёт"}
+            </button>
+          </div>
+          {diagPath && (
+            <p className="truncate font-mono text-xs text-emerald-400" title={diagPath}>
+              Отчёт готов: {diagPath}
+            </p>
+          )}
+          {diagError && <p className="text-xs text-danger">{diagError}</p>}
         </div>
 
         {/* Stats grid with REAL calculated percentages */}

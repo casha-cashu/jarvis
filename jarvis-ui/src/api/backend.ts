@@ -160,6 +160,12 @@ export async function purgeAllBackendSessions(): Promise<void> {
   await unwrap(response);
 }
 
+export async function exportDiagnostics(): Promise<string> {
+  const response = await safeInvoke<{ ok: boolean; path?: string; error?: string }>("backend_export_diagnostics");
+  if (!response.ok || !response.path) throw new Error(response.error ?? "Не удалось сформировать отчёт");
+  return response.path;
+}
+
 export interface BackendConfigTree {
   audio?: {
     microphone?: { device_name?: string | null; sample_rate?: number };

@@ -20,6 +20,7 @@ let nextReply: MockMessageReply | null = null;
 let backendRunning = true;
 let backendConnected = true;
 let failConfigure: string | null = null;
+let failDiagnostics: string | null = null;
 
 export const mockBackend = {
   get invokeCalls() {
@@ -43,6 +44,12 @@ export const mockBackend = {
   set failConfigure(v: string | null) {
     failConfigure = v;
   },
+  get failDiagnostics() {
+    return failDiagnostics;
+  },
+  set failDiagnostics(v: string | null) {
+    failDiagnostics = v;
+  },
 
   reset() {
     invokeCalls.length = 0;
@@ -51,6 +58,7 @@ export const mockBackend = {
     backendRunning = true;
     backendConnected = true;
     failConfigure = null;
+    failDiagnostics = null;
   },
 
   emit(eventName: string, payload: unknown): void {
@@ -101,8 +109,25 @@ async function handleInvoke(cmd: string, args?: Record<string, unknown>): Promis
     return { ok: true, timers: [] };
   }
 
+  if (cmd === "system_stats") {
+    return {
+      uptimeSeconds: 14400,
+      memoryUsedMb: 3200,
+      memoryTotalMb: 16000,
+      loadAverage: 0.85,
+      platform: "linux",
+    };
+  }
+
   if (cmd === "backend_clear_history") {
     return { ok: true };
+  }
+
+  if (cmd === "backend_export_diagnostics") {
+    if (failDiagnostics) {
+      return { ok: false, error: failDiagnostics };
+    }
+    return { ok: true, path: "/tmp/jarvis-diagnostics-test.zip" };
   }
 
   if (cmd === "backend_switch_session" || cmd === "backend_delete_session" || cmd === "backend_purge_session") {

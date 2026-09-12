@@ -918,6 +918,8 @@ class Bridge:
             return self._timers()
         if command == "clear_history":
             return self._clear_history()
+        if command == "export_diagnostics":
+            return self._export_diagnostics()
         return {"ok": False, "error": f"Неизвестная команда: {command}"}
 
     @staticmethod
@@ -1169,6 +1171,22 @@ class Bridge:
         # request would resurrect the "deleted" context from memory.
         self._set_clients_history([])
         return {"ok": True}
+
+    def _export_diagnostics(self) -> dict[str, Any]:
+        """Build a sanitized diagnostics zip (PR-OBS-1 backend, PR-UI-OBS-1 wiring).
+
+        Read-only w.r.t. bridge state, so it stays available while a
+        "message" generation is in flight (not in _MUTATING_COMMANDS).
+        """
+        try:
+            from jarvis.modules.diagnostics import generate_diagnostics_bundle
+
+            bundle = generate_diagnostics_bundle()
+        except ImportError as exc:
+            return {"ok": False, "error": f"Модуль диагностики недоступен: {exc}"}
+        except Exception as exc:
+            return {"ok": False, "error": f"Не удалось сформировать отчёт: {exc}"}
+        return {"ok": True, "path": str(bundle)}
 
 
 def main() -> None:

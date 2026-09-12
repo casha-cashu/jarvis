@@ -638,6 +638,12 @@ async fn backend_restart(state: tauri::State<'_, Arc<AppState>>) -> Result<serde
   run_bridge(state, serde_json::json!({"command":"restart"}), Duration::from_secs(60)).await
 }
 
+#[tauri::command]
+async fn backend_export_diagnostics(state: tauri::State<'_, Arc<AppState>>) -> Result<serde_json::Value, String> {
+  // Read-only report: safe to run while a generation is in flight.
+  run_bridge(state, serde_json::json!({"command":"export_diagnostics"}), Duration::from_secs(60)).await
+}
+
 /// Runs a blocking bridge request off the async runtime so the UI never freezes.
 async fn run_bridge(
   state: tauri::State<'_, Arc<AppState>>,
@@ -869,6 +875,7 @@ pub fn run() {
       backend_get_scenarios,
       backend_save_scenario,
       backend_delete_scenario,
+      backend_export_diagnostics,
       list_microphones,
       set_default_microphone,
       system_stats
