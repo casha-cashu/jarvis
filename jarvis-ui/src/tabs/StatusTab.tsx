@@ -45,6 +45,7 @@ export default function StatusTab({ isActive = true }: StatusTabProps) {
   const [voiceStatus, setVoiceStatus] = useState<string>("Отключен");
   const [voiceText, setVoiceText] = useState<string | null>(null);
   const [voiceLoading, setVoiceLoading] = useState(false);
+  const [audioLevel, setAudioLevel] = useState<number>(0);
   const [diagLoading, setDiagLoading] = useState(false);
   const [diagPath, setDiagPath] = useState<string | null>(null);
   const [diagError, setDiagError] = useState<string | null>(null);
@@ -119,9 +120,9 @@ export default function StatusTab({ isActive = true }: StatusTabProps) {
   useEffect(() => {
     let cancelled = false;
     let unlisten: (() => void) | undefined;
-    listen<string | { status: string; text?: string }>("voice-event", (event) => {
+    listen<string | { status: string; text?: string; level?: number }>("voice-event", (event) => {
       if (cancelled) return;
-      let data: { status: string; text?: string };
+      let data: { status: string; text?: string; level?: number };
       if (typeof event.payload === "string") {
         try {
           data = JSON.parse(event.payload);
@@ -138,6 +139,7 @@ export default function StatusTab({ isActive = true }: StatusTabProps) {
         setVoiceStatus("Отключен");
         setVoiceEnabled(false);
         setVoiceText(null);
+        setAudioLevel(0);
       } else if (data.status === "partial") {
         setVoiceStatus("Слышит речь...");
         if (data.text) setVoiceText(data.text);
@@ -151,6 +153,10 @@ export default function StatusTab({ isActive = true }: StatusTabProps) {
         setVoiceStatus("Озвучивает ответ...");
       } else if (data.status === "finished") {
         setVoiceStatus("Готово");
+      } else if (data.status === "audio_level") {
+        if (typeof data.level === "number" && !Number.isNaN(data.level)) {
+          setAudioLevel(Math.max(0, Math.min(1, data.level)));
+        }
       }
     })
       .then((fn) => {
@@ -267,7 +273,10 @@ export default function StatusTab({ isActive = true }: StatusTabProps) {
       const res = await setVoiceMode(next);
       setVoiceEnabled(res);
       setVoiceStatus(res ? "Слушает микрофон..." : "Отключен");
-      if (!res) setVoiceText(null);
+      if (!res) {
+        setVoiceText(null);
+        setAudioLevel(0);
+      }
     } catch (error) {
       setBackendError(error instanceof Error ? error.message : "Не удалось изменить режим микрофона");
     } finally {
@@ -423,6 +432,39 @@ export default function StatusTab({ isActive = true }: StatusTabProps) {
               )}
             </button>
           </div>
+
+          {/* VU-meter: visual indicator of microphone input level */}
+          {voiceEnabled && (
+            <div
+              className="flex flex-col gap-1.5 rounded-lg border border-border/60 bg-surface-2/60 p-2.5 transition-all"
+              data-testid="vu-meter-container"
+            >
+              <div className="flex items-center justify-between text-[11px] text-text-muted">
+                <span className="flex items-center gap-1 font-medium">
+                  <Activity size={12} className="text-emerald-400" />
+                  Уровень микрофона
+                </span>
+                <span className="font-mono text-text" data-testid="vu-meter-value">
+                  {Math.round(audioLevel * 100)}%
+                </span>
+              </div>
+              <div className="h-2 w-full overflow-hidden rounded-full bg-surface">
+                <div
+                  className="h-full rounded-full transition-[width] duration-75 ease-out"
+                  style={{
+                    width: `${Math.round(audioLevel * 100)}%`,
+                    backgroundColor:
+                      audioLevel > 0.85
+                        ? "#ef4444"
+                        : audioLevel > 0.6
+                        ? "#eab308"
+                        : "#10b981",
+                  }}
+                  data-testid="vu-meter-bar"
+                />
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Diagnostics report */}

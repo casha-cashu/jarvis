@@ -21,6 +21,7 @@ let backendRunning = true;
 let backendConnected = true;
 let failConfigure: string | null = null;
 let failDiagnostics: string | null = null;
+let voiceEnabled = false;
 
 export const mockBackend = {
   get invokeCalls() {
@@ -50,6 +51,12 @@ export const mockBackend = {
   set failDiagnostics(v: string | null) {
     failDiagnostics = v;
   },
+  get voiceEnabled() {
+    return voiceEnabled;
+  },
+  set voiceEnabled(v: boolean) {
+    voiceEnabled = v;
+  },
 
   reset() {
     invokeCalls.length = 0;
@@ -59,6 +66,7 @@ export const mockBackend = {
     backendConnected = true;
     failConfigure = null;
     failDiagnostics = null;
+    voiceEnabled = false;
   },
 
   emit(eventName: string, payload: unknown): void {
@@ -128,6 +136,15 @@ async function handleInvoke(cmd: string, args?: Record<string, unknown>): Promis
       return { ok: false, error: failDiagnostics };
     }
     return { ok: true, path: "/tmp/jarvis-diagnostics-test.zip" };
+  }
+
+  if (cmd === "backend_get_voice_mode") {
+    return { ok: true, voice_enabled: voiceEnabled };
+  }
+
+  if (cmd === "backend_set_voice_mode") {
+    voiceEnabled = Boolean(args?.enabled);
+    return { ok: true, voice_enabled: voiceEnabled };
   }
 
   if (cmd === "backend_switch_session" || cmd === "backend_delete_session" || cmd === "backend_purge_session") {

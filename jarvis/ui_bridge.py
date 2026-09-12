@@ -621,6 +621,18 @@ class Bridge:
             if pt and pt.strip() and not self._voice_stop.is_set():
                 self._emit_voice_event("partial", pt.strip())
 
+        last_level_emit = 0.0
+
+        def _on_level(lvl: float):
+            nonlocal last_level_emit
+            now = time.time()
+            if now - last_level_emit < 0.05:
+                return
+            last_level_emit = now
+            if not self._voice_stop.is_set():
+                safe_lvl = max(0.0, min(1.0, float(lvl)))
+                self._emit_voice_event("audio_level", {"level": round(safe_lvl, 3)})
+
         while self._voice_enabled and not self._voice_stop.is_set():
             try:
                 if not self.jarvis or not getattr(self.jarvis, "audio", None):
@@ -636,7 +648,14 @@ class Bridge:
                 ):
                     self.jarvis.response.wait_for_speech()
 
-                text = self.jarvis.audio.recognize(phrase_limit, on_partial=_on_partial)
+                try:
+                    text = self.jarvis.audio.recognize(
+                        phrase_limit, on_partial=_on_partial, on_level=_on_level
+                    )
+                except TypeError:
+                    text = self.jarvis.audio.recognize(
+                        phrase_limit, on_partial=_on_partial
+                    )
                 if not text or not text.strip():
                     continue
 

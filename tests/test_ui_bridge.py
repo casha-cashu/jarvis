@@ -2,6 +2,7 @@ import json
 import time
 from collections import OrderedDict
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -784,3 +785,94 @@ class TestExportDiagnostics:
         res = bridge.handle({"command": "export_diagnostics"})
         assert res["ok"] is True
         assert res["path"] == str(bundle)
+
+
+class TestVoiceAudioLevel:
+    def test_voice_loop_passes_on_level_and_emits_event(self):
+        bridge = Bridge()
+        events: list[tuple[str, Any]] = []
+        bridge._emit_voice_event = lambda status, payload_data="": events.append(
+            (status, payload_data)
+        )
+
+        captured_kwargs: dict[str, Any] = {}
+
+        class DummyAudio:
+            def recognize(self, phrase_limit, on_partial=None, on_level=None):
+                captured_kwargs["on_level"] = on_level
+                if on_level:
+                    on_level(0.65)
+                bridge._voice_stop.set()
+                return "привет"
+
+        dummy_jarvis = SimpleNamespace(
+            audio=DummyAudio(),
+            config={"stt": {"phrase_time_limit": 5}},
+            continuous=True,
+            conversation=None,
+            response=None,
+        )
+        bridge.jarvis = dummy_jarvis
+        bridge._voice_enabled = True
+
+        bridge._voice_loop()
+
+        assert "on_level" in captured_kwargs
+        assert captured_kwargs["on_level"] is not None
+        level_events = [e for e in events if e[0] == "audio_level"]
+        assert len(level_events) >= 1
+        assert level_events[0][1]["level"] == 0.65
+
+    def test_voice_loop_clamps_audio_level(self):
+        bridge = Bridge()
+        events: list[tuple[str, Any]] = []
+        bridge._emit_voice_event = lambda status, payload_data="": events.append(
+            (status, payload_data)
+        )
+
+        class DummyAudio:
+            def recognize(self, phrase_limit, on_partial=None, on_level=None):
+                if on_level:
+                    on_level(-0.5)
+                    time.sleep(0.06)
+                    on_level(2.5)
+                bridge._voice_stop.set()
+                return None
+
+        dummy_jarvis = SimpleNamespace(
+            audio=DummyAudio(),
+            config={},
+            continuous=True,
+            conversation=None,
+            response=None,
+        )
+        bridge.jarvis = dummy_jarvis
+        bridge._voice_enabled = True
+
+        bridge._voice_loop()
+
+        level_events = [e for e in events if e[0] == "audio_level"]
+        assert len(level_events) == 2
+        assert level_events[0][1]["level"] == 0.0
+        assert level_events[1][1]["level"] == 1.0
+
+    def test_voice_loop_handles_legacy_recognize_type_error(self):
+        bridge = Bridge()
+
+        class LegacyAudio:
+            def recognize(self, phrase_limit, on_partial=None):
+                bridge._voice_stop.set()
+                return "тест"
+
+        dummy_jarvis = SimpleNamespace(
+            audio=LegacyAudio(),
+            config={},
+            continuous=True,
+            conversation=None,
+            response=None,
+        )
+        bridge.jarvis = dummy_jarvis
+        bridge._voice_enabled = True
+
+        # Should not raise TypeError
+        bridge._voice_loop()
