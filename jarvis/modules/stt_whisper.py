@@ -138,6 +138,7 @@ class WhisperSTT(BaseSTT):
         self,
         phrase_time_limit: int = 10,
         callback: Optional[Callable[[str], None]] = None,
+        on_level: Optional[Callable[[float], None]] = None,
     ) -> str:
         """
         Записывает речь в буфер, затем транскрибирует через faster-whisper.
@@ -146,6 +147,8 @@ class WhisperSTT(BaseSTT):
             phrase_time_limit: Макс. время ожидания речи (сек)
             callback: Функция для partial-результатов (промежуточные
                 гипотезы раз в partial_interval_ms)
+            on_level: Функция для RMS-уровня чанка 0.0–1.0 (VU-метр);
+                ошибки колбэка глушатся, распознавание не прерывается
 
         Returns:
             Распознанный текст
@@ -212,6 +215,12 @@ class WhisperSTT(BaseSTT):
                         self.sample_rate,
                     )
                 _audio_int16, audio_float32 = self._normalize_volume(audio_int16)
+
+                if on_level is not None:
+                    try:
+                        on_level(self._rms_level(audio_float32))
+                    except Exception:
+                        pass
 
                 # ── VAD ──
                 if self.use_vad and self.vad_iterator:

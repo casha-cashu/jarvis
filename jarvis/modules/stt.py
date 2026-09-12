@@ -127,6 +127,7 @@ class VoskSTT(BaseSTT):
         self,
         phrase_time_limit: int = 10,
         callback: Optional[Callable[[str], None]] = None,
+        on_level: Optional[Callable[[float], None]] = None,
     ) -> str:
         """
         Распознаёт речь с микрофона
@@ -134,6 +135,8 @@ class VoskSTT(BaseSTT):
         Args:
             phrase_time_limit: Максимальное время записи (секунды)
             callback: Функция для partial результатов
+            on_level: Функция для RMS-уровня чанка 0.0–1.0 (VU-метр);
+                ошибки колбэка глушатся, распознавание не прерывается
 
         Returns:
             Распознанный текст
@@ -199,6 +202,12 @@ class VoskSTT(BaseSTT):
                     )
                 audio_int16, audio_float32 = self._normalize_volume(audio_int16)
                 data = audio_int16.tobytes()
+
+                if on_level is not None:
+                    try:
+                        on_level(self._rms_level(audio_float32))
+                    except Exception:
+                        pass
 
                 # === VAD на правильной частоте (16kHz) ===
                 if self.use_vad and self.vad_iterator:

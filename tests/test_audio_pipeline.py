@@ -140,16 +140,22 @@ class TestAudioPipelineRecognize:
             callback=partial_cb,
         )
 
-    def test_recognize_handles_exception_gracefully(self, sample_config):
+    def test_recognize_handles_exception_gracefully(self, sample_config, monkeypatch):
         pipeline = AudioPipeline(sample_config, dry_run=False)
         mock_stt = MagicMock()
         mock_stt.recognize_from_mic.side_effect = IOError("ALSA device busy")
         pipeline.stt = mock_stt
         pipeline._started = True
+        # Реконнект тоже упирается в отсутствие железа — быстро и hermetic.
+        monkeypatch.setattr(
+            pipeline, "start", MagicMock(side_effect=RuntimeError("no device"))
+        )
+        monkeypatch.setattr(pipeline, "_sleep", lambda s: None)
 
         # Не должно вызывать падение процесса
         res = pipeline.recognize(phrase_time_limit=5)
         assert res is None
+        assert pipeline.stream_healthy is False
 
 
 class TestAudioPipelineStop:

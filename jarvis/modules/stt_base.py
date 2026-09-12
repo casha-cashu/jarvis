@@ -152,6 +152,24 @@ class BaseSTT:
     # ── Аудио-помощники (PCM16 mono pipeline) ────────────────────
 
     @staticmethod
+    def _rms_level(audio_float32: Any) -> float:
+        """RMS-громкость чанка для VU-метра (PR-AUDIO-REC-1).
+
+        Возвращает 0.0–1.0 по пост-нормализованному сигналу (тому, что
+        слышит движок). Пустой чанк и NaN дают 0.0 — колбэк VU-метра
+        никогда не должен ронять распознавание.
+        """
+        try:
+            if audio_float32 is None or audio_float32.size == 0:
+                return 0.0
+            rms = float(np.sqrt(np.mean(audio_float32.astype(np.float64) ** 2)))
+            if rms != rms:  # NaN
+                return 0.0
+            return max(0.0, min(1.0, rms))
+        except Exception:
+            return 0.0
+
+    @staticmethod
     def _stereo_to_mono(data: bytes, channels: int) -> np.ndarray:
         """PCM16-байты → int16-массив; микширует каналы в моно при >1."""
         audio_int16 = np.frombuffer(data, dtype=np.int16)
