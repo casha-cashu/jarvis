@@ -7,8 +7,17 @@ Speech-to-Text module using Vosk
 import json
 import queue
 from pathlib import Path
-import pyaudio
-from vosk import Model, KaldiRecognizer
+
+try:
+    import pyaudio
+except ImportError:
+    pyaudio = None  # type: ignore[assignment]
+
+try:
+    from vosk import KaldiRecognizer, Model
+except ImportError:
+    Model = None  # type: ignore[assignment,misc]
+    KaldiRecognizer = None  # type: ignore[assignment,misc]
 from typing import Optional, Callable
 import logging
 import time
@@ -44,6 +53,16 @@ class VoskSTT(BaseSTT):
             silence_threshold: Секунд тишины для завершения фразы
                 (None → DEFAULT_SILENCE_THRESHOLD)
         """
+        if Model is None or KaldiRecognizer is None:
+            raise RuntimeError(
+                "Vosk is not installed. Please install it with: pip install 'jarvis[vosk]' "
+                "or switch stt.provider to 'whisper' in config.yaml."
+            )
+        if pyaudio is None:
+            raise RuntimeError(
+                "PyAudio is not installed. Please install portaudio and run: pip install pyaudio"
+            )
+
         super().__init__(sample_rate=sample_rate, device_name=device_name)
         self.use_vad = use_vad
         self.silence_threshold = (

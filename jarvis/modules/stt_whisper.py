@@ -5,7 +5,11 @@ Speech-to-Text module using faster-whisper (OpenAI Whisper CTranslate2)
 """
 
 import queue
-import pyaudio
+
+try:
+    import pyaudio
+except ImportError:
+    pyaudio = None  # type: ignore[assignment]
 from typing import Optional, Callable, List
 import logging
 import time
@@ -61,6 +65,11 @@ class WhisperSTT(BaseSTT):
                 (None → DEFAULT_SILENCE_THRESHOLD)
             initial_prompt: Текстовая подсказка для контекста (опционально)
         """
+        if pyaudio is None:
+            raise RuntimeError(
+                "PyAudio is not installed. Please install portaudio and run: pip install pyaudio"
+            )
+
         super().__init__(sample_rate=sample_rate, device_name=device_name)
         self.model_size = model_size if model_size != "auto" else "tiny"
         self.model_path = model_path

@@ -12,7 +12,11 @@ import logging
 from typing import Any, Optional, Tuple
 
 import numpy as np
-import pyaudio
+
+try:
+    import pyaudio
+except ImportError:
+    pyaudio = None  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +30,11 @@ class BaseSTT:
             sample_rate: Целевая частота движка (обычно 16000)
             device_name: Часть имени микрофона (None/пусто = дефолтный)
         """
+        if pyaudio is None:
+            raise RuntimeError(
+                "PyAudio is not installed. Please install portaudio and run: pip install pyaudio"
+            )
+
         self.sample_rate = sample_rate
         self.device_name = device_name
 
