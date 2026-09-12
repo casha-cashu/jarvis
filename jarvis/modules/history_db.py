@@ -29,20 +29,36 @@ def get_db_path() -> Path:
     return DEFAULT_DB_PATH
 
 
+def ensure_db_file_permissions(db_path: Path | str) -> None:
+    """Ensures the SQLite database file and its WAL/SHM companion files are set to 0600 mode."""
+    p_str = str(db_path)
+    if p_str == ":memory:":
+        return
+    base_path = Path(p_str)
+    for suffix in ("", "-wal", "-shm"):
+        target = Path(f"{base_path}{suffix}")
+        if target.exists():
+            try:
+                os.chmod(target, 0o600)
+            except OSError:
+                pass
+
+
 def get_connection(db_path: Optional[Path] = None) -> sqlite3.Connection:
     path = db_path or get_db_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(path), timeout=10.0)
-    if str(path) != ":memory:" and path.exists():
+    if str(path) != ":memory:":
         try:
-            os.chmod(path, 0o600)
+            os.chmod(path.parent, 0o700)
         except OSError:
             pass
+    conn = sqlite3.connect(str(path), timeout=10.0)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL;")
     conn.execute("PRAGMA synchronous=NORMAL;")
     conn.execute("PRAGMA busy_timeout=5000;")
     _init_schema(conn)
+    ensure_db_file_permissions(path)
     return conn
 
 
