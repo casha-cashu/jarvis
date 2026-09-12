@@ -38,12 +38,15 @@ class ResponsePipeline:
         self.commands: "Optional[CommandManager]" = None
         self._started = False
         # Agent loop config — read from llm section
-        self.agent_enabled = bool(config.get("llm", {}).get("agent_enabled", False))
-        self.agent_max_iterations = int(
-            config.get("llm", {}).get("agent_max_iterations", 5)
-        )
-        self.agent_approval_mode = config.get("llm", {}).get(
-            "agent_approval_mode", "auto"
+        llm_cfg = config.get("llm", {})
+        self.agent_enabled = bool(llm_cfg.get("agent_enabled", False))
+        self.agent_max_iterations = int(llm_cfg.get("agent_max_iterations", 5))
+        self.agent_approval_mode = llm_cfg.get("agent_approval_mode", "auto")
+        self.agent_network_tools_enabled = bool(
+            llm_cfg.get(
+                "agent_network_tools_enabled",
+                llm_cfg.get("network_tools_enabled", False),
+            )
         )
         # Определяется в start() из llm.agent_query_prefix_enabled;
         # до start() префикс не применяется.
@@ -222,7 +225,9 @@ class ResponsePipeline:
             enabled=self._agent_query_prefix_enabled,
         )
 
-        tools = bash_agent.get_tool_schemas()
+        tools = bash_agent.get_tool_schemas(
+            include_network=self.agent_network_tools_enabled
+        )
 
         def _on_tool_call(name: str, args: dict) -> str:
             if tool_callback is not None:
@@ -240,7 +245,13 @@ class ResponsePipeline:
                 if block_reason:
                     result = f"[BLOCKED] {block_reason}"
             if not result:
-                result = str(bash_agent.execute_tool(name, args))
+                result = str(
+                    bash_agent.execute_tool(
+                        name,
+                        args,
+                        allow_network=self.agent_network_tools_enabled,
+                    )
+                )
             # Token-budget guard + secret scrubbing before feeding back to LLM.
             from jarvis.prompt_builder import redact_secrets, truncate_tool_output
 

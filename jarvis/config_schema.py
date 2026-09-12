@@ -4,7 +4,7 @@ Pydantic-модели для валидации конфигурации JARVIS.
 """
 
 from typing import Optional
-from pydantic import ConfigDict, BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class AudioMicrophoneConfig(BaseModel):
@@ -184,6 +184,9 @@ class LLMConfig(BaseModel):
     agent_enabled: bool = False
     agent_max_iterations: int = 5
     agent_approval_mode: str = "auto"
+    # Network tools policy (web_search, read_webpage) — disabled by default
+    agent_network_tools_enabled: bool = False
+    network_tools_enabled: Optional[bool] = None
     # Prefix nudge for small Ollama models (see jarvis.prompt_builder)
     agent_query_prefix_enabled: bool = False
     # Секция про инструменты, дописывается к system_prompt при agent_enabled
@@ -193,6 +196,12 @@ class LLMConfig(BaseModel):
     system_prompt: Optional[str] = None
     temperature: Optional[float] = None
     max_tokens: Optional[int] = None
+
+    @model_validator(mode="after")
+    def sync_network_tools(self) -> "LLMConfig":
+        if self.network_tools_enabled is not None:
+            self.agent_network_tools_enabled = bool(self.network_tools_enabled)
+        return self
 
     @field_validator("provider")
     @classmethod
