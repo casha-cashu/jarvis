@@ -154,10 +154,14 @@ def create_bugreport(
     # 5. Doctor summary
     doctor_text = ""
     try:
-        from jarvis.doctor import format_report, run_checks
+        from jarvis.doctor import run_checks
 
-        checks = run_checks(str(conf_path) if conf_path.exists() else None)
-        doctor_text = format_report(checks)
+        cfg_arg = str(conf_path) if conf_path and conf_path.exists() else "config.yaml"
+        checks = run_checks(cfg_arg)
+        lines = [
+            f"[{c.get('status')}] {c.get('name')}: {c.get('detail')}" for c in checks
+        ]
+        doctor_text = "\n".join(lines) + "\n"
     except Exception as e:
         doctor_text = f"Doctor check unavailable: {e}\n"
 
