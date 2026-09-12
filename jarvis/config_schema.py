@@ -3,7 +3,7 @@
 Pydantic-модели для валидации конфигурации JARVIS.
 """
 
-from typing import Optional
+from typing import List, Optional
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
@@ -187,6 +187,10 @@ class LLMConfig(BaseModel):
     # Network tools policy (web_search, read_webpage) — disabled by default
     agent_network_tools_enabled: bool = False
     network_tools_enabled: Optional[bool] = None
+    # Filesystem sandbox for agent read/write tools (PR-FS-1).
+    # Empty = project cwd only (secure default, mirrors network default-false).
+    agent_read_roots: List[str] = Field(default_factory=list)
+    agent_write_roots: List[str] = Field(default_factory=list)
     # Prefix nudge for small Ollama models (see jarvis.prompt_builder)
     agent_query_prefix_enabled: bool = False
     # Секция про инструменты, дописывается к system_prompt при agent_enabled

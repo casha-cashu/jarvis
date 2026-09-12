@@ -141,7 +141,7 @@ class TestWriteToolGuard:
 
     def test_normal_write_ok(self, tmp_path):
         target = tmp_path / "note.txt"
-        result = _tool_write(str(target), "hi")
+        result = _tool_write(str(target), "hi", roots=[str(tmp_path)])
         assert "Written" in result
 
 
@@ -226,7 +226,7 @@ class TestWriteGuardExtended:
 
     def test_normal_write_ok(self, tmp_path):
         target = tmp_path / "note.txt"
-        result = _tool_write(str(target), "hi")
+        result = _tool_write(str(target), "hi", roots=[str(tmp_path)])
         assert "Written" in result
 
 
@@ -246,7 +246,7 @@ class TestReadGuardProcSys:
     def test_regular_file_readable(self, tmp_path):
         f = tmp_path / "notes.txt"
         f.write_text("hello", encoding="utf-8")
-        assert _tool_read(str(f)) == "hello"
+        assert _tool_read(str(f), roots=[str(tmp_path)]) == "hello"
 
 
 class TestExpansionNestingBypasses:
@@ -472,7 +472,7 @@ class TestWave4RegressionBug2ToolBash:
 
 class TestWave4RegressionBug3ToolWrite:
     def test_tool_write_to_directory(self, tmp_path):
-        out = _tool_write(str(tmp_path), "content")
+        out = _tool_write(str(tmp_path), "content", roots=[str(tmp_path)])
         assert "[ERROR] Target exists and is not a regular file" in out
 
     def test_tool_write_to_fifo(self, tmp_path):
@@ -480,5 +480,5 @@ class TestWave4RegressionBug3ToolWrite:
 
         fifo_path = tmp_path / "test_fifo"
         os.mkfifo(str(fifo_path))
-        out = _tool_write(str(fifo_path), "content")
+        out = _tool_write(str(fifo_path), "content", roots=[str(tmp_path)])
         assert "[ERROR] Target exists and is not a regular file" in out

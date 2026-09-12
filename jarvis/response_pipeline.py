@@ -48,6 +48,10 @@ class ResponsePipeline:
                 llm_cfg.get("network_tools_enabled", False),
             )
         )
+        # Filesystem sandbox for agent read/write tools (PR-FS-1).
+        # None/empty = project cwd only (resolved in bash_agent).
+        self.agent_read_roots = llm_cfg.get("agent_read_roots")
+        self.agent_write_roots = llm_cfg.get("agent_write_roots")
         # Определяется в start() из llm.agent_query_prefix_enabled;
         # до start() префикс не применяется.
         self._agent_query_prefix_enabled = False
@@ -250,6 +254,8 @@ class ResponsePipeline:
                         name,
                         args,
                         allow_network=self.agent_network_tools_enabled,
+                        read_roots=self.agent_read_roots,
+                        write_roots=self.agent_write_roots,
                     )
                 )
             # Token-budget guard + secret scrubbing before feeding back to LLM.

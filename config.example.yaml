@@ -104,6 +104,10 @@ llm:
   agent_approval_mode: "auto"  # auto | strict | yolo
   # Сетевые инструменты (web_search, read_webpage): выключены по умолчанию в целях безопасности
   agent_network_tools_enabled: false
+  # Песочница файловых инструментов агента (read/write): пусто = только cwd проекта.
+  # Пути за пределами корней блокируются (включая .. и symlink-escape).
+  agent_read_roots: []
+  agent_write_roots: []
 
   # Ollama (локально, по умолчанию)
   ollama:

@@ -465,11 +465,29 @@ def _tool_bash(cmd: str) -> str:
         return f"Error: {e}"
 
 
-def _tool_read(path: str) -> str:
-    """Read a file. Limited to 4KB; credential paths are refused outright."""
+def _normalize_fs_roots(roots: Optional[List[str]]) -> List[Path]:
+    """Resolve workspace roots. Falsy value → [cwd] (secure default)."""
+    if not roots:
+        return [Path.cwd().resolve()]
+    return [Path(r).expanduser().resolve() for r in roots]
+
+
+def _is_within_roots(path: str, roots: Optional[List[str]]) -> bool:
+    """True if the canonical path lies within any workspace root.
+
+    resolve() neutralizes `..` traversal and symlink escapes before compare.
+    """
+    p = Path(path).expanduser().resolve()
+    return any(p == r or p.is_relative_to(r) for r in _normalize_fs_roots(roots))
+
+
+def _tool_read(path: str, roots: Optional[List[str]] = None) -> str:
+    """Read a file. Limited to 4KB; confined to workspace roots; credential paths are refused outright."""
     try:
         if _is_sensitive_read(path):
             return "[BLOCKED] Reading credential files is forbidden"
+        if not _is_within_roots(path, roots):
+            return "[BLOCKED] Reading outside workspace roots is forbidden"
         p = Path(path).expanduser().resolve()
         if not p.exists():
             return f"File not found: {path}"
@@ -517,8 +535,8 @@ _SENSITIVE_WRITE_PATTERNS: List[str] = [
 _HOME_BIN_DIR = str(Path.home().resolve() / "bin")
 
 
-def _tool_write(path: str, content: str) -> str:
-    """Write content to a file. Blocks system dirs and persistence paths."""
+def _tool_write(path: str, content: str, roots: Optional[List[str]] = None) -> str:
+    """Write content to a file. Blocks system dirs, persistence paths, and anything outside workspace roots."""
     try:
         p = Path(path).expanduser().resolve()
         forbidden = {"/etc", "/usr", "/boot", "/sys", "/proc", "/dev"}
@@ -537,6 +555,8 @@ def _tool_write(path: str, content: str) -> str:
             for pat in _SENSITIVE_WRITE_PATTERNS
         ):
             return f"[BLOCKED] Writing to sensitive path is forbidden: {path}"
+        if not _is_within_roots(path, roots):
+            return "[BLOCKED] Writing outside workspace roots is forbidden"
         if p.exists() and not p.is_file():
             return f"[ERROR] Target exists and is not a regular file (FIFO, socket, or device): {path}"
         p.parent.mkdir(parents=True, exist_ok=True)
@@ -728,15 +748,32 @@ def get_tool_schemas(include_network: bool = True) -> List[dict]:
     return schemas
 
 
-def execute_tool(name: str, arguments: dict, allow_network: bool = True) -> str:
-    """Executes a tool with network access control and argument validation."""
+def execute_tool(
+    name: str,
+    arguments: dict,
+    allow_network: bool = True,
+    read_roots: Optional[List[str]] = None,
+    write_roots: Optional[List[str]] = None,
+) -> str:
+    """Executes a tool with network access control and argument validation.
+
+    read_roots/write_roots confine the read/write tools to workspace roots
+    (None/[] = project cwd only). Roots are server-side policy — any
+    model-supplied "roots" argument is stripped, never trusted.
+    """
     if not allow_network and name in NETWORK_TOOLS:
         return f"[BLOCKED] Сетевой инструмент '{name}' отключен политикой безопасности (network_tools_enabled: false)."
+    args = dict(arguments)
+    args.pop("roots", None)  # never model-controllable
+    if name == "read":
+        args["roots"] = read_roots
+    elif name == "write":
+        args["roots"] = write_roots
     fn = _TABLE.get(name)
     if fn is None:
         return f"Unknown tool: {name}"
     try:
-        result = fn(**arguments)
+        result = fn(**args)
         return str(result)
     except TypeError as e:
         return f"Tool argument error: {e}"
