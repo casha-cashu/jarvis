@@ -11,15 +11,18 @@ Supported providers:
 Kiro was removed — it requires Omniroute which isn't publicly available.
 """
 
+import email.utils
 import json
 import os
 import logging
+import random
 import threading
+import time
 from abc import ABC, abstractmethod
 from datetime import datetime
 from collections import OrderedDict
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, cast
+from typing import Any, Callable, Dict, List, Optional, TypeVar, cast
 
 from filelock import FileLock
 
@@ -142,6 +145,129 @@ def _http_post(session: requests.Session, *args, **kwargs):
     return session.post(*args, **kwargs)
 
 
+_T = TypeVar("_T")
+
+
+def parse_retry_after(header_val: Optional[str], default_delay: float = 1.0) -> float:
+    """Parse HTTP Retry-After header value (seconds or RFC 1123 HTTP-date)."""
+    if not header_val:
+        return default_delay
+    val = str(header_val).strip()
+    try:
+        sec = float(val)
+        return max(0.0, sec)
+    except ValueError:
+        pass
+    try:
+        dt = email.utils.parsedate_to_datetime(val)
+        if dt is not None:
+            now = datetime.now(dt.tzinfo)
+            diff = (dt - now).total_seconds()
+            return max(0.0, diff)
+    except Exception:
+        pass
+    return default_delay
+
+
+def is_rate_limit_error(exc: Exception) -> tuple[bool, Optional[float]]:
+    """Determine if exception represents an HTTP 429 / Rate Limit error.
+
+    Returns (is_rate_limit, retry_after_seconds_or_none).
+    """
+    resp = getattr(exc, "response", None)
+    headers = getattr(resp, "headers", None) if resp is not None else None
+    if headers is None:
+        headers = getattr(exc, "headers", None)
+
+    # 1. requests.HTTPError
+    if isinstance(exc, requests.HTTPError):
+        if resp is not None and getattr(resp, "status_code", None) == 429:
+            hdr = (
+                (headers.get("Retry-After") or headers.get("retry-after"))
+                if headers
+                else None
+            )
+            return True, parse_retry_after(hdr) if hdr else None
+        return False, None
+
+    # 2. openai.RateLimitError
+    if _openai_mod is not None:
+        try:
+            if isinstance(exc, _openai_mod.RateLimitError):
+                hdr = (
+                    (headers.get("retry-after") or headers.get("Retry-After"))
+                    if headers
+                    else None
+                )
+                return True, parse_retry_after(hdr) if hdr else None
+        except Exception:
+            pass
+
+    # 3. anthropic.RateLimitError
+    try:
+        if isinstance(exc, anthropic.RateLimitError):
+            hdr = (
+                (headers.get("retry-after") or headers.get("Retry-After"))
+                if headers
+                else None
+            )
+            return True, parse_retry_after(hdr) if hdr else None
+    except Exception:
+        pass
+
+    # 4. Status code check or type name check (covers mocked or httpx errors)
+    status_code = getattr(exc, "status_code", None)
+    if status_code is None and resp is not None:
+        status_code = getattr(resp, "status_code", None)
+
+    if status_code == 429 or exc.__class__.__name__ == "RateLimitError":
+        hdr = (
+            (headers.get("retry-after") or headers.get("Retry-After"))
+            if headers
+            else None
+        )
+        return True, parse_retry_after(hdr) if hdr else None
+
+    return False, None
+
+
+def with_rate_limit_retry(
+    func: Callable[[], _T],
+    max_retries: int = 3,
+    base_delay: float = 1.0,
+    max_delay: float = 30.0,
+    sleeper: Optional[Callable[[float], None]] = None,
+    jitter: bool = True,
+) -> _T:
+    """Execute func, retrying with backoff if an HTTP 429 RateLimit error occurs."""
+    actual_sleeper = sleeper if sleeper is not None else time.sleep
+    attempt = 0
+    while True:
+        try:
+            return func()
+        except Exception as e:
+            is_rl, retry_after = is_rate_limit_error(e)
+            if not is_rl or attempt >= max_retries:
+                raise
+
+            if retry_after is not None:
+                sleep_duration = min(max_delay, max(0.0, retry_after))
+            else:
+                backoff = min(max_delay, base_delay * (2**attempt))
+                if jitter:
+                    backoff = backoff * random.uniform(0.5, 1.0)
+                sleep_duration = max(0.0, backoff)
+
+            logger.warning(
+                "⚠️ Rate limit (429) encountered. Retrying in %.2fs (attempt %d/%d)...",
+                sleep_duration,
+                attempt + 1,
+                max_retries,
+            )
+            actual_sleeper(sleep_duration)
+            attempt += 1
+
+
 def _safe_truncate_history(history: list[dict], max_len: int) -> list[dict]:
     """Усекает историю до max_len, гарантируя что она начинается с user-сообщения
     без tool_result (чтобы не разорвать пары tool-call/tool-result и угодить API)."""
@@ -177,6 +303,9 @@ class LLMClient(ABC):
         self.history = _load_history()
         self.max_history = config.get("max_history", 20)
         self.system_prompt = config.get("system_prompt", "")
+        self.max_retries = int(config.get("max_retries", 3))
+        self.base_delay = float(config.get("retry_base_delay", 1.0))
+        self.max_delay = float(config.get("retry_max_delay", 30.0))
 
     def _render_system_prompt(self) -> str:
         """System prompt with live placeholders resolved per-request.
@@ -290,13 +419,18 @@ class AnthropicClient(LLMClient):
         try:
             self.add_to_history("user", message)
 
-            response = self.client.messages.create(
-                model=self.model,
-                max_tokens=self.max_tokens,
-                temperature=self.temperature,
-                system=self._render_system_prompt(),
-                messages=cast(Any, self.history),
-                timeout=self.timeout,
+            response = with_rate_limit_retry(
+                lambda: self.client.messages.create(
+                    model=self.model,
+                    max_tokens=self.max_tokens,
+                    temperature=self.temperature,
+                    system=self._render_system_prompt(),
+                    messages=cast(Any, self.history),
+                    timeout=self.timeout,
+                ),
+                max_retries=self.max_retries,
+                base_delay=self.base_delay,
+                max_delay=self.max_delay,
             )
 
             # Empty or tool_use/thinking-only responses have no text block.
@@ -358,14 +492,19 @@ class AnthropicClient(LLMClient):
             executed_tools: list[str] = []
 
             for iteration in range(max_iterations):
-                response = self.client.messages.create(
-                    model=self.model,
-                    max_tokens=self.max_tokens,
-                    temperature=self.temperature,
-                    system=self._render_system_prompt(),
-                    messages=cast(Any, base_messages),
-                    tools=cast(Any, anthropic_tools),
-                    timeout=self.timeout,
+                response = with_rate_limit_retry(
+                    lambda: self.client.messages.create(
+                        model=self.model,
+                        max_tokens=self.max_tokens,
+                        temperature=self.temperature,
+                        system=self._render_system_prompt(),
+                        messages=cast(Any, base_messages),
+                        tools=cast(Any, anthropic_tools),
+                        timeout=self.timeout,
+                    ),
+                    max_retries=self.max_retries,
+                    base_delay=self.base_delay,
+                    max_delay=self.max_delay,
                 )
 
                 # Anthropic returns content as a list of blocks
@@ -495,15 +634,23 @@ class OpenRouterClient(LLMClient):
                 "temperature": self.temperature,
             }
 
-            response = _http_post(
-                self.session,
-                "https://openrouter.ai/api/v1/chat/completions",
-                headers=headers,
-                json=payload,
-                timeout=self.timeout,
-            )
+            def _send():
+                resp = _http_post(
+                    self.session,
+                    "https://openrouter.ai/api/v1/chat/completions",
+                    headers=headers,
+                    json=payload,
+                    timeout=self.timeout,
+                )
+                resp.raise_for_status()
+                return resp
 
-            response.raise_for_status()
+            response = with_rate_limit_retry(
+                _send,
+                max_retries=self.max_retries,
+                base_delay=self.base_delay,
+                max_delay=self.max_delay,
+            )
             data = response.json()
 
             answer = data["choices"][0]["message"]["content"].strip()
@@ -565,12 +712,17 @@ class OpenAIClient(LLMClient):
             self.add_to_history("user", message)
 
             if stream_callback is not None:
-                stream: Any = self.client.chat.completions.create(
-                    model=self.model,
-                    messages=cast(Any, self._build_messages()),
-                    temperature=self.temperature,
-                    max_tokens=self.max_tokens,
-                    stream=True,
+                stream: Any = with_rate_limit_retry(
+                    lambda: self.client.chat.completions.create(
+                        model=self.model,
+                        messages=cast(Any, self._build_messages()),
+                        temperature=self.temperature,
+                        max_tokens=self.max_tokens,
+                        stream=True,
+                    ),
+                    max_retries=self.max_retries,
+                    base_delay=self.base_delay,
+                    max_delay=self.max_delay,
                 )
                 parts: list[str] = []
                 for chunk in stream:
@@ -584,11 +736,16 @@ class OpenAIClient(LLMClient):
                 self.add_to_history("assistant", answer)
                 return answer
 
-            response = self.client.chat.completions.create(  # type: ignore[call-overload]
-                model=self.model,
-                messages=self._build_messages(),  # type: ignore[arg-type]
-                temperature=self.temperature,
-                max_tokens=self.max_tokens,
+            response = with_rate_limit_retry(
+                lambda: self.client.chat.completions.create(  # type: ignore[call-overload]
+                    model=self.model,
+                    messages=self._build_messages(),  # type: ignore[arg-type]
+                    temperature=self.temperature,
+                    max_tokens=self.max_tokens,
+                ),
+                max_retries=self.max_retries,
+                base_delay=self.base_delay,
+                max_delay=self.max_delay,
             )
             answer = (response.choices[0].message.content or "").strip()
             if not answer:
@@ -633,14 +790,19 @@ class OpenAIClient(LLMClient):
                 content_parts: list[str] = []
 
                 if can_stream:
-                    stream = self.client.chat.completions.create(  # type: ignore[call-overload]
-                        model=self.model,
-                        messages=base_messages,  # type: ignore[arg-type]
-                        tools=tools,  # type: ignore[arg-type]
-                        tool_choice="auto",
-                        temperature=self.temperature,
-                        max_tokens=self.max_tokens,
-                        stream=True,
+                    stream = with_rate_limit_retry(
+                        lambda: self.client.chat.completions.create(  # type: ignore[call-overload]
+                            model=self.model,
+                            messages=base_messages,  # type: ignore[arg-type]
+                            tools=tools,  # type: ignore[arg-type]
+                            tool_choice="auto",
+                            temperature=self.temperature,
+                            max_tokens=self.max_tokens,
+                            stream=True,
+                        ),
+                        max_retries=self.max_retries,
+                        base_delay=self.base_delay,
+                        max_delay=self.max_delay,
                     )
                     tc_map: dict = {}
                     for chunk in stream:
@@ -673,13 +835,18 @@ class OpenAIClient(LLMClient):
                         for index, slot in sorted(tc_map.items())
                     ]
                 else:
-                    response = self.client.chat.completions.create(  # type: ignore[call-overload]
-                        model=self.model,
-                        messages=base_messages,  # type: ignore[arg-type]
-                        tools=tools,  # type: ignore[arg-type]
-                        tool_choice="auto",
-                        temperature=self.temperature,
-                        max_tokens=self.max_tokens,
+                    response = with_rate_limit_retry(
+                        lambda: self.client.chat.completions.create(  # type: ignore[call-overload]
+                            model=self.model,
+                            messages=base_messages,  # type: ignore[arg-type]
+                            tools=tools,  # type: ignore[arg-type]
+                            tool_choice="auto",
+                            temperature=self.temperature,
+                            max_tokens=self.max_tokens,
+                        ),
+                        max_retries=self.max_retries,
+                        base_delay=self.base_delay,
+                        max_delay=self.max_delay,
                     )
                     msg = response.choices[0].message
                     content = (msg.content or "").strip()
@@ -799,14 +966,23 @@ class OllamaClient(LLMClient):
 
     def _post_chat(self, payload: dict) -> dict:
         """Low-level POST to /api/chat. Raises requests.HTTPError on bad status."""
-        resp = _http_post(
-            self.session,
-            f"{self.base_url}/api/chat",
-            json=payload,
-            timeout=self.timeout,
+
+        def _send():
+            resp = _http_post(
+                self.session,
+                f"{self.base_url}/api/chat",
+                json=payload,
+                timeout=self.timeout,
+            )
+            resp.raise_for_status()
+            return resp.json()
+
+        return with_rate_limit_retry(
+            _send,
+            max_retries=self.max_retries,
+            base_delay=self.base_delay,
+            max_delay=self.max_delay,
         )
-        resp.raise_for_status()
-        return resp.json()
 
     def chat(self, message: str, stream_callback=None) -> str:
         """Отправляет сообщение в Ollama. Со stream_callback отдаёт дельты."""

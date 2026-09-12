@@ -146,6 +146,11 @@ llm:
   # История диалога
   max_history: 20
 
+  # Повторные попытки при лимитах запросов (HTTP 429 Rate Limit)
+  max_retries: 3
+  retry_base_delay: 1.0
+  retry_max_delay: 30.0
+
   # System prompt
   system_prompt: |
     Ты — JARVIS, персональный ИИ-ассистент, инженер и эксперт по Linux и разработке ПО ({platform}).

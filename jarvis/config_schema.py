@@ -200,6 +200,9 @@ class LLMConfig(BaseModel):
     system_prompt: Optional[str] = None
     temperature: Optional[float] = None
     max_tokens: Optional[int] = None
+    max_retries: int = 3
+    retry_base_delay: float = 1.0
+    retry_max_delay: float = 30.0
 
     @model_validator(mode="after")
     def sync_network_tools(self) -> "LLMConfig":
