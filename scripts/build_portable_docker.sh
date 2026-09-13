@@ -47,7 +47,7 @@ docker run --rm \
     echo "Found deb: ${DEB_PATH}"
     echo "Found AppImage: ${APPIMAGE_PATH}"
 
-    chown -R "${HOST_UID}:${HOST_GID}" /app/jarvis-ui/src-tauri/binaries /app/jarvis-ui/src-tauri/target-ubuntu /app/dist 2>/dev/null || true
+    chown -R "${HOST_UID}:${HOST_GID}" /app/jarvis-ui/src-tauri/binaries /app/jarvis-ui/src-tauri/target-ubuntu /app/dist /app/jarvis-ui/node_modules /app/jarvis-ui/dist 2>/dev/null || true
 '
 
 echo "=== 3. Repacking Arch Package from Portable Deb via Arch Container ==="
