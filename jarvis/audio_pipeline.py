@@ -71,7 +71,7 @@ class AudioPipeline:
             wcfg = stt_cfg.get("whisper", {})
             initial_prompt = wcfg.get("initial_prompt")
             whisper_kwargs: dict[str, Any] = dict(
-                model_size=wcfg.get("model_size", "tiny"),
+                model_size=wcfg.get("model_size", "base"),
                 model_path=wcfg.get("model_path") or None,
                 sample_rate=sample_rate,
                 device_name=device_name,
@@ -80,6 +80,15 @@ class AudioPipeline:
                 partial_interval_ms=wcfg.get("partial_interval_ms", 1000),
                 silence_threshold=silence_threshold,
             )
+            # Round 8: anti-hallucination декода — только явные ключи конфига;
+            # без них действуют дефолты WhisperSTT (temperature=0.0, ...).
+            for key in (
+                "temperature",
+                "no_speech_threshold",
+                "hallucination_silence_threshold",
+            ):
+                if key in wcfg:
+                    whisper_kwargs[key] = wcfg[key]
             if initial_prompt is not None:
                 whisper_kwargs["initial_prompt"] = initial_prompt
             self.stt = WhisperSTT(**whisper_kwargs)

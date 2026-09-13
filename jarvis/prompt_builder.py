@@ -43,11 +43,33 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 
+# Strict Russian language rule for LLM system prompt: prevents LLMs (e.g. Qwen)
+# from mirroring English STT hallucinations or unrecognized audio tokens.
+RUSSIAN_LANGUAGE_RULE = (
+    "ВСЕГДА отвечай исключительно на русском языке, "
+    "независимо от языка ввода пользователя или распознанного текста."
+)
+DEFAULT_RUSSIAN_RULE = RUSSIAN_LANGUAGE_RULE
+
+
+def enforce_russian_language(prompt: Optional[str]) -> Optional[str]:
+    """Ensure that the strict Russian language rule is included in the prompt text."""
+    if prompt is None:
+        return None
+    p = prompt.strip()
+    if not p:
+        return prompt
+    if "на русском языке" in p:
+        return prompt
+    return f"{p}\n\n- {RUSSIAN_LANGUAGE_RULE}"
+
+
 def compose_system_prompt(
     base_prompt: Optional[str],
     agent_enabled: bool,
     tools_prompt: Optional[str] = None,
     platform_str: str = "",
+    enforce_russian: bool = True,
 ) -> str:
     """Build the final system_prompt for the LLM.
 
@@ -61,6 +83,9 @@ def compose_system_prompt(
             expected to have configured llm.system_prompt_tools separately).
         platform_str: e.g. "linux/arch (Hyprland)" — substituted for
             ``{platform}`` if present in base_prompt.
+        enforce_russian: When True, ensures that strict Russian language rule
+            (``RUSSIAN_LANGUAGE_RULE``) is present in the prompt to prevent
+            LLMs from mirroring English recognition artifacts. Defaults to True.
 
     Returns:
         Final system_prompt string. Empty string if both base_prompt and
@@ -82,6 +107,11 @@ def compose_system_prompt(
             if platform_str:
                 tp = tp.replace("{platform}", platform_str)
             parts.append(tp)
+
+    if enforce_russian and parts:
+        combined = "\n\n".join(parts)
+        if "на русском языке" not in combined:
+            parts.append(f"- {RUSSIAN_LANGUAGE_RULE}")
 
     return "\n\n".join(parts)
 

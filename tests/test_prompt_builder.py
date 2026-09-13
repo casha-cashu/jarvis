@@ -3,8 +3,10 @@
 import pytest
 
 from jarvis.prompt_builder import (
+    RUSSIAN_LANGUAGE_RULE,
     agent_query_prefix,
     compose_system_prompt,
+    enforce_russian_language,
     redact_secrets,
     sanitize_for_tts,
     truncate_tool_output,
@@ -13,15 +15,20 @@ from jarvis.prompt_builder import (
 
 class TestComposeSystemPrompt:
     def test_base_only(self):
-        assert compose_system_prompt("База", False) == "База"
+        result = compose_system_prompt("База", False)
+        assert result.startswith("База")
+        assert RUSSIAN_LANGUAGE_RULE in result
 
     def test_base_with_tools(self):
         result = compose_system_prompt("База", True, tools_prompt="Инструменты")
-        assert result == "База\n\nИнструменты"
+        assert result.startswith("База")
+        assert "Инструменты" in result
+        assert RUSSIAN_LANGUAGE_RULE in result
 
     def test_tools_omitted_when_disabled(self):
         result = compose_system_prompt("База", False, tools_prompt="Инструменты")
         assert "Инструменты" not in result
+        assert RUSSIAN_LANGUAGE_RULE in result
 
     def test_platform_substitution(self):
         result = compose_system_prompt(
@@ -29,10 +36,28 @@ class TestComposeSystemPrompt:
         )
         assert "linux/arch (Hyprland)" in result
         assert "{platform}" not in result
+        assert RUSSIAN_LANGUAGE_RULE in result
 
     def test_empty_inputs(self):
         assert compose_system_prompt(None, False) == ""
         assert compose_system_prompt("", True, tools_prompt=None) == ""
+
+    def test_russian_rule_not_duplicated_when_already_in_prompt(self):
+        base = f"Ты — JARVIS.\n- {RUSSIAN_LANGUAGE_RULE}"
+        result = compose_system_prompt(base, False)
+        assert result.count(RUSSIAN_LANGUAGE_RULE) == 1
+
+    def test_enforce_russian_disabled(self):
+        assert compose_system_prompt("База", False, enforce_russian=False) == "База"
+
+    def test_enforce_russian_language_helper(self):
+        assert enforce_russian_language("") == ""
+        assert enforce_russian_language(None) is None
+        prompt = enforce_russian_language("Ты — Джарвис.")
+        assert prompt is not None
+        assert RUSSIAN_LANGUAGE_RULE in prompt
+        # Idempotent
+        assert enforce_russian_language(prompt) == prompt
 
 
 class TestAgentQueryPrefix:

@@ -461,7 +461,8 @@ class TestSystemPromptWiring:
             p.start()
             try:
                 llm_cfg = mock_llm.call_args.args[0]
-                assert llm_cfg["system_prompt"] == "База"
+                assert llm_cfg["system_prompt"].startswith("База")
+                assert "Раздел инструментов" not in llm_cfg["system_prompt"]
             finally:
                 p.stop()
 

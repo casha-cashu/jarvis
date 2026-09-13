@@ -38,9 +38,20 @@ class WhisperSTT(BaseSTT):
     # Дефолт: секунд тишины для завершения фразы (если не задан в конфиге)
     DEFAULT_SILENCE_THRESHOLD = 1.0
 
+    # Round 8: anti-hallucination дефолты декода. tiny + temperature-fallback
+    # галлюцинирует на коротких русских фразах ("Service hello" вместо
+    # "джарвис привет"). Детерминированный декод + пороги тишины режут шум.
+    DEFAULT_TEMPERATURE = 0.0
+    DEFAULT_NO_SPEECH_THRESHOLD = 0.6
+    DEFAULT_HALLUCINATION_SILENCE_THRESHOLD = 2.0
+    DEFAULT_INITIAL_PROMPT = (
+        "Разговор с голосовым ассистентом по имени Джарвис. "
+        "Джарвис, привет, как дела, включи, выключи, открой."
+    )
+
     def __init__(
         self,
-        model_size: str = "tiny",
+        model_size: str = "base",
         model_path: Optional[str] = None,
         sample_rate: int = 16000,
         device_name: Optional[str] = None,
@@ -48,8 +59,11 @@ class WhisperSTT(BaseSTT):
         vad_threshold: float = 0.5,
         partial_interval_ms: int = 1000,
         silence_threshold: Optional[float] = None,
-        initial_prompt: Optional[str] = (
-            "Разговор с голосовым ассистентом по имени Джарвис."
+        initial_prompt: Optional[str] = None,
+        temperature: float = DEFAULT_TEMPERATURE,
+        no_speech_threshold: float = DEFAULT_NO_SPEECH_THRESHOLD,
+        hallucination_silence_threshold: float = (
+            DEFAULT_HALLUCINATION_SILENCE_THRESHOLD
         ),
     ):
         """
@@ -63,7 +77,12 @@ class WhisperSTT(BaseSTT):
             partial_interval_ms: Интервал промежуточных гипотез (мс; 0 = off)
             silence_threshold: Секунд тишины для завершения фразы
                 (None → DEFAULT_SILENCE_THRESHOLD)
-            initial_prompt: Текстовая подсказка для контекста (опционально)
+            initial_prompt: Текстовая подсказка для контекста
+                (None → DEFAULT_INITIAL_PROMPT с русским словарём)
+            temperature: Температура сэмплирования (0.0 = детерминированно,
+                без fallback-лесенки галлюцинаций)
+            no_speech_threshold: Порог отсечения не-речи
+            hallucination_silence_threshold: Тишина для подавления галлюцинаций
         """
         if pyaudio is None:
             raise RuntimeError(
@@ -71,11 +90,18 @@ class WhisperSTT(BaseSTT):
             )
 
         super().__init__(sample_rate=sample_rate, device_name=device_name)
-        self.model_size = model_size if model_size != "auto" else "tiny"
+        self.model_size = model_size if model_size != "auto" else "base"
         self.model_path = model_path
         self.use_vad = use_vad
         self.partial_interval_ms = max(0, partial_interval_ms)
-        self.initial_prompt = initial_prompt
+        self.initial_prompt = (
+            initial_prompt
+            if initial_prompt is not None
+            else self.DEFAULT_INITIAL_PROMPT
+        )
+        self.temperature = temperature
+        self.no_speech_threshold = no_speech_threshold
+        self.hallucination_silence_threshold = hallucination_silence_threshold
         self.silence_threshold = (
             silence_threshold
             if silence_threshold is not None and silence_threshold > 0
@@ -310,6 +336,9 @@ class WhisperSTT(BaseSTT):
                 vad_filter=vad_filter,
                 condition_on_previous_text=False,
                 initial_prompt=prompt,
+                temperature=self.temperature,
+                no_speech_threshold=self.no_speech_threshold,
+                hallucination_silence_threshold=(self.hallucination_silence_threshold),
             )
             return " ".join(seg.text.strip() for seg in segments).strip()
         except Exception as e:

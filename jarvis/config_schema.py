@@ -34,10 +34,14 @@ class VoskConfig(BaseModel):
 class WhisperConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")  # опечатка в ключе = ошибка валидации
     model_path: Optional[str] = None
-    model_size: str = "tiny"
+    model_size: str = "base"
     # Интервал промежуточных гипотез (мс); 0 = выключить
     partial_interval_ms: int = Field(default=1000, ge=0)
     initial_prompt: Optional[str] = None
+    # Round 8: anti-hallucination декода (см. WhisperSTT.DEFAULT_*)
+    temperature: float = 0.0
+    no_speech_threshold: float = 0.6
+    hallucination_silence_threshold: float = 2.0
 
 
 class STTConfig(BaseModel):

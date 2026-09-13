@@ -76,6 +76,10 @@ HANDOFF.md
 
 # ── local tooling ──
 opencode.jsonc
+bridge.md
+data/peer_bridge.json
+data/.peer_bridge*
+tools/peer_bridge*
 
 # ── Arch packaging (dist/arch) — binaries ignored, PKGBUILD/.SRCINFO kept (see Python section) ──
 dist/arch/*.pkg.tar.*

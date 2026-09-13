@@ -154,7 +154,7 @@ def _check_stt(config: dict) -> dict[str, Any]:
                 "status": WARN,
                 "detail": f"локальная модель {model_path} не найдена — скачается из HF при старте",
             }
-        size = wcfg.get("model_size", "tiny")
+        size = wcfg.get("model_size", "base")
         return {"name": "STT (whisper)", "status": OK, "detail": f"model_size={size}"}
 
     try:
