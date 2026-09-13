@@ -5,6 +5,7 @@ Text-to-Speech module using Piper TTS
 """
 
 import json
+import os
 import queue
 import shutil
 import subprocess
@@ -30,6 +31,17 @@ _cancel_event = threading.Event()
 
 
 def _player_commands(path: str) -> list:
+    ext = Path(path).suffix.lower()
+    if ext != ".wav":
+        # aplay и paplay работают ТОЛЬКО с несжатым PCM WAV.
+        # Любые сжатые форматы (mp3, ogg, opus, m4a, aac, flac) они воспроизводят
+        # как сырой PCM-шум/шипение. Для сжатых форматов используем плееры с кодеками.
+        return [
+            ["mpv", "--really-quiet", path],
+            ["ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet", path],
+            ["mpg123", "-q", path],
+            ["afplay", path],
+        ]
     return [
         ["mpv", "--really-quiet", path],
         ["ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet", path],
@@ -118,6 +130,41 @@ def _play_audio_file(audio_file, timeout: float = 30.0) -> bool:
         finally:
             with _active_players_lock:
                 _active_players.discard(proc)
+
+    # Если прямой плеер для сжатого формата (mp3/ogg/opus/...) не найден, но есть ffmpeg и (aplay/paplay),
+    # конвертируем во временный WAV и проигрываем через aplay/paplay без шума.
+    ext = Path(path).suffix.lower()
+    if ext != ".wav" and not _cancel_event.is_set():
+        if shutil.which("ffmpeg") and (shutil.which("aplay") or shutil.which("paplay")):
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as wav_tmp:
+                wav_path = wav_tmp.name
+            try:
+                conv = subprocess.run(
+                    [
+                        "ffmpeg",
+                        "-y",
+                        "-loglevel",
+                        "quiet",
+                        "-i",
+                        path,
+                        "-f",
+                        "wav",
+                        wav_path,
+                    ],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    env=sanitized_env(),
+                    timeout=10.0,
+                )
+                if conv.returncode == 0:
+                    return _play_audio_file(wav_path, timeout=timeout)
+            except Exception as e:
+                logger.debug(f"Конвертация ffmpeg в wav не удалась: {e}")
+            finally:
+                try:
+                    os.unlink(wav_path)
+                except OSError:
+                    pass
 
     logger.error("❌ Не найден аудио плеер (mpv/ffplay/aplay/paplay)")
     return False

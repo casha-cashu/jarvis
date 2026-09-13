@@ -556,9 +556,10 @@ class Bridge:
             except Exception:
                 pass
         if self._voice_thread is not None:
-            if self._voice_thread != threading.current_thread():
-                self._voice_thread.join(timeout=2.0)
+            thread = self._voice_thread
             self._voice_thread = None
+            if thread != threading.current_thread():
+                thread.join(timeout=2.0)
 
     def _set_voice_mode(self, enabled: bool) -> dict[str, Any]:
         if not self.started:

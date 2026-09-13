@@ -81,9 +81,14 @@ export default function ChatTab() {
   const [activeSession, setActiveSession] = useState<string>(() => loadSessions()[0]?.id ?? "");
   const [listening, setListening] = useState(false);
   const [partialVoiceText, setPartialVoiceText] = useState<string | null>(null);
+  const [voiceStatus, setVoiceStatus] = useState<string>("Отключен");
+  const [audioLevel, setAudioLevel] = useState<number>(0);
+  const [voiceLoading, setVoiceLoading] = useState<boolean>(false);
+  const lastRecognizedRef = useRef<string | null>(null);
   const activeSessionRef = useRef(activeSession);
   useEffect(() => {
     activeSessionRef.current = activeSession;
+    lastRecognizedRef.current = null;
   }, [activeSession]);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
@@ -220,7 +225,7 @@ export default function ChatTab() {
       }
     });
     const unlistenVoice = listen<
-      string | { status: string; text?: string; query?: string; response?: string; session?: string }
+      string | { status: string; text?: string; query?: string; response?: string; session?: string; level?: number }
     >("voice-event", (event) => {
       let data: {
         status: string;
@@ -228,6 +233,7 @@ export default function ChatTab() {
         query?: string;
         response?: string;
         session?: string;
+        level?: number;
       };
       if (typeof event.payload === "string") {
         try {
@@ -240,20 +246,37 @@ export default function ChatTab() {
       }
       if (data.status === "listening") {
         setListening(true);
+        setVoiceStatus("Ожидает «Джарвис»");
         setPartialVoiceText(null);
       } else if (data.status === "stopped") {
         setListening(false);
+        setVoiceStatus("Отключен");
         setPartialVoiceText(null);
+        setAudioLevel(0);
+        lastRecognizedRef.current = null;
       } else if (data.status === "partial") {
+        setVoiceStatus("Слышит речь...");
         setPartialVoiceText(data.text || null);
       } else if (data.status === "wake_word_required") {
+        setVoiceStatus("Требуется «Джарвис»");
         setPartialVoiceText(null);
         const heard = data.text ? `«${data.text}»` : "";
         setError(`Услышано ${heard}: скажите «Джарвис ...» перед запросом или включите постоянный режим`);
-      } else if (data.status === "recognized" || data.status === "processing") {
+      } else if (data.status === "audio_level") {
+        const lvl = typeof data.level === "number" ? data.level : 0;
+        if (!Number.isNaN(lvl)) {
+          setAudioLevel(Math.max(0, Math.min(1, lvl)));
+        }
+      } else if (data.status === "status") {
+        if (data.text) setVoiceStatus(data.text);
+      } else if (data.status === "recognized") {
+        setVoiceStatus("Обработка...");
         setPartialVoiceText(null);
-        const queryText = data.query || data.text;
-        if (queryText && queryText.trim()) {
+        const queryText = (data.query || data.text || "").trim();
+        if (queryText) {
+          if (lastRecognizedRef.current === queryText) return;
+          lastRecognizedRef.current = queryText;
+
           const now = new Date().toLocaleTimeString("ru-RU", {
             hour: "2-digit",
             minute: "2-digit",
@@ -261,7 +284,7 @@ export default function ChatTab() {
           const userMessage: Message = {
             id: crypto.randomUUID(),
             role: "user",
-            text: queryText.trim(),
+            text: queryText,
             timestamp: now,
           };
           setSessions((prev) => {
@@ -278,23 +301,35 @@ export default function ChatTab() {
               setActiveSession(newId);
               return [newSession];
             }
-            return prev.map((s) =>
-              s.id === targetId
-                ? {
-                    ...s,
-                    title: s.messages.length === 0 ? queryText.slice(0, 36) : s.title,
-                    lastMessage: queryText,
-                    timestamp: now,
-                    messages: [...s.messages, userMessage],
-                  }
-                : s,
-            );
+            return prev.map((s) => {
+              if (s.id !== targetId) return s;
+              const last = s.messages[s.messages.length - 1];
+              if (last && last.role === "user" && last.text === queryText) {
+                return s;
+              }
+              return {
+                ...s,
+                title: s.messages.length === 0 ? queryText.slice(0, 36) : s.title,
+                lastMessage: queryText,
+                timestamp: now,
+                messages: [...s.messages, userMessage],
+              };
+            });
           });
           setSending(true);
           setLiveSegments([]);
         }
-      } else if (data.status === "speaking" || data.status === "finished") {
+      } else if (data.status === "processing") {
+        setVoiceStatus("Обработка...");
         setPartialVoiceText(null);
+        setSending(true);
+      } else if (data.status === "speaking") {
+        setVoiceStatus("Озвучивает ответ...");
+        setPartialVoiceText(null);
+      } else if (data.status === "finished") {
+        setVoiceStatus("Ожидает «Джарвис»");
+        setPartialVoiceText(null);
+        lastRecognizedRef.current = null;
         if (data.response && data.response.trim()) {
           const now = new Date().toLocaleTimeString("ru-RU", {
             hour: "2-digit",
@@ -324,15 +359,18 @@ export default function ChatTab() {
               setActiveSession(newId);
               return [newSession];
             }
-            return prev.map((s) =>
-              s.id === targetId
-                ? {
-                    ...s,
-                    lastMessage: assistantMessage.text,
-                    messages: [...s.messages, assistantMessage],
-                  }
-                : s,
-            );
+            return prev.map((s) => {
+              if (s.id !== targetId) return s;
+              const last = s.messages[s.messages.length - 1];
+              if (last && last.role === "assistant" && last.text === assistantMessage.text) {
+                return s;
+              }
+              return {
+                ...s,
+                lastMessage: assistantMessage.text,
+                messages: [...s.messages, assistantMessage],
+              };
+            });
           });
           setLiveSegments([]);
           setSending(false);
@@ -343,11 +381,19 @@ export default function ChatTab() {
       }
     });
 
-    getVoiceMode().then((enabled) => setListening(enabled)).catch(() => undefined);
+    getVoiceMode().then((enabled) => {
+      setListening(enabled);
+      setVoiceStatus(enabled ? "Ожидает «Джарвис»" : "Отключен");
+    }).catch(() => undefined);
 
     const onVoiceModeChange = (e: Event) => {
       const customEvent = e as CustomEvent<boolean>;
       setListening(customEvent.detail);
+      setVoiceStatus(customEvent.detail ? "Ожидает «Джарвис»" : "Отключен");
+      if (!customEvent.detail) {
+        setAudioLevel(0);
+        lastRecognizedRef.current = null;
+      }
     };
     window.addEventListener("jarvis:voice-mode-change", onVoiceModeChange);
 
@@ -609,15 +655,25 @@ export default function ChatTab() {
             <span className="text-sm font-medium text-text">
               {current?.title ?? "Новый чат"}
             </span>
+            {listening && (
+              <span className="inline-flex items-center gap-1.5 rounded-full bg-accent/15 px-2.5 py-0.5 text-[11px] font-medium text-accent">
+                <span className="h-1.5 w-1.5 rounded-full bg-accent animate-pulse" />
+                {voiceStatus}
+              </span>
+            )}
           </div>
-          {listening ? (
-            <div className="flex items-center gap-1.5">
-              <div className="flex items-center gap-1">
-                <div className="h-1.5 w-1.5 animate-pulse rounded-full bg-accent" />
-                <span className="text-xs text-accent">Слушает</span>
+          <div className="flex items-center gap-2">
+            {listening && (
+              <div className="flex items-center gap-1.5 rounded-md bg-surface-2 px-2 py-1 border border-border text-[11px]" title={`Уровень микрофона: ${Math.round(audioLevel * 100)}%`}>
+                <Mic size={12} className="text-accent shrink-0 animate-pulse" />
+                <div className="h-1.5 w-14 overflow-hidden rounded bg-surface border border-border/50">
+                  <div
+                    className="h-full bg-accent transition-all duration-75"
+                    style={{ width: `${Math.max(audioLevel > 0.02 ? 8 : 0, Math.round(audioLevel * 100))}%` }}
+                  />
+                </div>
               </div>
-            </div>
-          ) : (
+            )}
             <div className="flex items-center gap-1.5">
               <Volume2 size={12} className="text-text-muted" />
               {providerModels.length > 0 ? (
@@ -679,8 +735,15 @@ export default function ChatTab() {
                   : <RefreshCw size={11} />}
               </button>
             </div>
-          )}
+          </div>
         </div>
+
+        {/* Missing provider banner */}
+        {providers.length === 0 && (
+          <div className="flex items-center justify-between border-b border-amber-500/25 bg-amber-500/10 px-4 py-2.5 text-xs text-amber-500">
+            <span className="font-medium">⚠️ Провайдер LLM не настроен. Добавьте OpenAI-совместимый или Anthropic эндпоинт во вкладке «Настройки».</span>
+          </div>
+        )}
 
         {/* Messages */}
         <div className="flex-1 overflow-y-auto px-4 py-4">
@@ -726,43 +789,82 @@ export default function ChatTab() {
         )}
 
         {/* Input bar */}
-        <div className="flex items-center gap-2 border-t border-border bg-surface/80 px-4 py-3">
-          <button
-            onClick={async () => {
-              try {
-                const next = !listening;
-                const ok = await setVoiceMode(next);
-                setListening(ok);
-              } catch (e) {
-                setError(e instanceof Error ? e.message : String(e));
-              }
-            }}
-            className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border transition-all ${
-              listening
-                ? "border-accent bg-accent text-white shadow-sm shadow-accent/30 animate-pulse"
-                : "border-border bg-surface-2 text-text-muted hover:border-accent/50 hover:text-text"
-            }`}
-            title={listening ? "Отключить голосовой режим" : "Включить голосовой режим (микрофон)"}
-          >
-            <Mic size={16} />
-          </button>
-          <div className="flex flex-1 items-center gap-2 rounded-lg border border-border bg-surface-2 px-3 py-1.5 transition-colors focus-within:border-accent/60 focus-within:ring-2 focus-within:ring-accent/15">
-            <input
-              type="text"
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && handleSend()}
-              placeholder="Написать сообщение..."
-              className="flex-1 bg-transparent text-sm text-text placeholder:text-text-muted focus:outline-none"
-            />
+        <div className="flex flex-col gap-2 border-t border-border bg-surface/80 px-4 py-3">
+          {/* Live voice info bar when mic is active */}
+          {listening && (
+            <div className="flex items-center justify-between rounded-lg bg-surface-2 px-3 py-1.5 text-xs border border-border animate-fade-in">
+              <div className="flex items-center gap-2">
+                <span className="h-2 w-2 rounded-full bg-accent animate-pulse" />
+                <span className="font-medium text-text">{voiceStatus}</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-[10px] text-text-muted">Уровень микрофона:</span>
+                <div
+                  className="h-2 w-24 overflow-hidden rounded bg-surface border border-border"
+                  title={`Громкость микрофона: ${Math.round(audioLevel * 100)}%`}
+                >
+                  <div
+                    className="h-full bg-accent transition-all duration-75"
+                    style={{ width: `${Math.max(audioLevel > 0.02 ? 8 : 0, Math.round(audioLevel * 100))}%` }}
+                  />
+                </div>
+              </div>
+            </div>
+          )}
+
+          <div className="flex items-center gap-2">
             <button
-              onClick={handleSend}
-              disabled={!input.trim()}
-              className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-accent text-white transition-all hover:brightness-110 disabled:bg-transparent disabled:text-text-muted disabled:opacity-50"
-              title="Отправить"
+              onClick={async () => {
+                if (voiceLoading) return;
+                setVoiceLoading(true);
+                try {
+                  const next = !listening;
+                  const ok = await setVoiceMode(next);
+                  setListening(ok);
+                  setVoiceStatus(ok ? "Ожидает «Джарвис»" : "Отключен");
+                  if (!ok) {
+                    setAudioLevel(0);
+                    setPartialVoiceText(null);
+                    lastRecognizedRef.current = null;
+                  }
+                } catch (e) {
+                  setError(e instanceof Error ? e.message : String(e));
+                } finally {
+                  setVoiceLoading(false);
+                }
+              }}
+              disabled={voiceLoading}
+              className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border transition-all ${
+                listening
+                  ? "border-accent bg-accent text-white shadow-sm shadow-accent/30 animate-pulse"
+                  : "border-border bg-surface-2 text-text-muted hover:border-accent/50 hover:text-text"
+              } disabled:opacity-60`}
+              title={listening ? "Отключить голосовой режим" : "Включить голосовой режим (микрофон)"}
             >
-              {sending ? <span className="h-3 w-3 animate-spin rounded-full border-2 border-white/40 border-t-white" /> : <Send size={14} />}
+              {voiceLoading ? (
+                <span className="h-4 w-4 animate-spin rounded-full border-2 border-current/40 border-t-current" />
+              ) : (
+                <Mic size={16} />
+              )}
             </button>
+            <div className="flex flex-1 items-center gap-2 rounded-lg border border-border bg-surface-2 px-3 py-1.5 transition-colors focus-within:border-accent/60 focus-within:ring-2 focus-within:ring-accent/15">
+              <input
+                type="text"
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && handleSend()}
+                placeholder="Написать сообщение..."
+                className="flex-1 bg-transparent text-sm text-text placeholder:text-text-muted focus:outline-none"
+              />
+              <button
+                onClick={handleSend}
+                disabled={!input.trim()}
+                className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-accent text-white transition-all hover:brightness-110 disabled:bg-transparent disabled:text-text-muted disabled:opacity-50"
+                title="Отправить"
+              >
+                {sending ? <span className="h-3 w-3 animate-spin rounded-full border-2 border-white/40 border-t-white" /> : <Send size={14} />}
+              </button>
+            </div>
           </div>
         </div>
       </div>
