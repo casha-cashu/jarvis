@@ -72,7 +72,7 @@ const PLATFORMS: {
   },
 ]
 
-const FALLBACK_VERSION = '2.8.0'
+const FALLBACK_VERSION = '2.9.0'
 
 function normalizeVersion(tag: string): string {
   const v = tag.trim()

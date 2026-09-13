@@ -12,7 +12,7 @@ function normalizeVersion(tag: string): string {
 }
 
 function buildFallback(): ReleaseData {
-  return { version: 'v2.8.0', publishedAt: null, live: false, rows: [] }
+  return { version: 'v2.9.0', publishedAt: null, live: false, rows: [] }
 }
 
 async function fetchRelease(): Promise<ReleaseData> {

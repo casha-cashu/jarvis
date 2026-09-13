@@ -1,7 +1,7 @@
 # JARVIS — agent guide
 
 Russian voice assistant for Linux/macOS. DE/WM adapters (`i3`/`sway`/`hyprland`/`kde`/`gnome`/`macos`),
-STT (Vosk / faster-whisper) + Silero VAD, commands-or-LLM routing (Ollama / Kiro / Anthropic / OpenRouter), TTS (Piper / gTTS / SpeechT5).
+STT (Vosk / faster-whisper) + Silero VAD, commands-or-LLM routing (Ollama / OpenAI / Anthropic / OpenRouter), TTS (Piper / gTTS / SpeechT5).
 
 ## Layout
 
@@ -16,11 +16,11 @@ STT (Vosk / faster-whisper) + Silero VAD, commands-or-LLM routing (Ollama / Kiro
 - Unit tests: `PYTHONPATH=. ./venv/bin/python -m pytest -m "not slow and not integration" -q` (`make test` is the same with system `python3`; prefer the venv binary).
 - Single test: `PYTHONPATH=. ./venv/bin/python -m pytest tests/test_env.py -v`.
 - **Never run bare `pytest tests/`** — `tests/integration/` opens real audio/display devices and hangs. macOS CI uses the same `-m "not slow and not integration"` filter.
-- Gate before done: `./venv/bin/ruff check jarvis/ tests/ && ./venv/bin/ruff format --check jarvis/ tests/ && env -u APPIMAGE -u ARGV0 -u APPDIR ./venv/bin/python -m mypy jarvis/ && cargo check --manifest-path jarvis-ui/src-tauri/Cargo.toml` (mypy scope is `jarvis/` only — pre-commit excludes `tests/`/`venv/`/`build/`).
+- Gate before done: `./venv/bin/ruff check jarvis/ tests/ && ./venv/bin/ruff format --check jarvis/ tests/ && ./venv/bin/python -m mypy jarvis/ && cargo check --manifest-path jarvis-ui/src-tauri/Cargo.toml` (mypy scope is `jarvis/` only — pre-commit excludes `tests/`/`venv/`/`build/`).
 - Frontend: `cd jarvis-ui && npm run build` (tsc+vite) + `npm run lint` (oxlint) + `npm run test` (vitest).
 - Docker unit tests (install everything; what CI runs): `make docker-test-arch` / `docker-test-debian` / `docker-test-fedora`.
-- Docker integration: `make docker-integration-i3` (needs `--cap-add=SYS_PTRACE --security-opt seccomp=unconfined`) / `make docker-integration-sway` (needs `--privileged`).
-- Run: `source venv/bin/activate && jarvis run`; `jarvis run --dry-run` skips STT/TTS/VAD model loads. GUI dev: `cd jarvis-ui && npm run tauri dev`.
+- Docker integration: `make docker-integration-i3` (runs with `--cap-add=SYS_PTRACE --cap-add=SYS_ADMIN --security-opt seccomp=unconfined --security-opt apparmor=unconfined`) / `make docker-integration-sway` (needs `--privileged`).
+- Run: `source venv/bin/activate && jarvis run`; `jarvis run --dry-run` skips STT/TTS/VAD model loads. `jarvis doctor` dumps env/config/audio/models/LLM state — ask for its output when debugging user reports. GUI dev: `cd jarvis-ui && npm run tauri dev`.
 
 ## Architecture
 
@@ -52,15 +52,15 @@ STT (Vosk / faster-whisper) + Silero VAD, commands-or-LLM routing (Ollama / Kiro
 - Time-sensitive / interactive commands (timestamps, `slurp` geometry): pass the **method reference** as `cmd`, never the call result — `_run` invokes callables at execute time (see screenshot commands in `commands.py`).
 - Screenshots: `i3`/`gnome`/`macos`/`sway` adapters resolve `~` + `datetime.now()` in Python; `kde` (spectacle) and `hyprland` (grimblast) own their naming — leave those alone.
 - `ReminderManager.timers` is touched from multiple threads — hold `self._lock` around append/iterate/clear.
-- `adapters/base.py::input_text` returns a shell-style `wtype || xdotool` string but is effectively dead (live dictation is `modules/dictation.py::_type_text`); two adapter tests assert its return type, so don't "fix" the string without updating them.
-- LLM default provider is `ollama` (local, no keys). Kiro key `${KIRO_API_KEY}`, OpenRouter `${OPENROUTER_API_KEY}` — expand via `config_loader`, never `os.environ`.
+- `adapters/base.py::input_text` picks `wtype` (Wayland) vs `xdotool type` (X11) by session — never a `||` fallback chain (`_run` splits via shlex, so shell operators would become literal argv). Live dictation bypasses it (`modules/dictation.py::_type_text` pipes raw text to `wtype -`); adapter tests pin `input_text` output, so update them together.
+- LLM default provider is `ollama` (local, no keys; allowed: `ollama`/`openai`/`openrouter`/`anthropic` per `config_schema.py` — Kiro was removed). API keys (`${OPENAI_API_KEY}`, `${ANTHROPIC_API_KEY}`, `${OPENROUTER_API_KEY}`) expand via `config_loader`, never `os.environ`.
 - `lifecycle.py` must tolerate `signal.signal` raising `(ValueError, OSError)` when called off-main-thread (`telegram_bot`, `ui_bridge`).
 
 ## Release (all versions move together)
 
 - Bump together: `pyproject.toml` + `jarvis-ui/package.json` + `jarvis-ui/src-tauri/tauri.conf.json` + `jarvis-ui/src-tauri/Cargo.toml` + `dist/arch/PKGBUILD` (currently all `2.8.0`). Tag and push from root: `git push origin main --tags`. `release.yml` (on `v*`) builds the PyInstaller sidecar + deb/rpm/AppImage on ubuntu-22.04 (portable glibc — Arch's is too new) and dmg on macOS; Arch pkg is a local repack (`cd dist/arch && makepkg -f`).
-- **Every release also bumps the site**: versions appear as both `vX.Y.Z` and `X.Y.Z` in `docs/` (`*.html`/`*.txt`/`*.js`, excluding `docs/site/`) plus `FALLBACK_VERSION` in `site/lib/github-release.ts`, then commit `docs/ site/`.
+- **Every release also bumps the site**: versions appear as both `vX.Y.Z` and `X.Y.Z` in `docs/` (`*.html`/`*.txt`/`*.js`, excluding `docs/site/`) plus `FALLBACK_VERSION` in `site/lib/github-release.ts` and the `buildFallback()` version in `site/lib/use-release.ts`, then commit `docs/ site/`.
 
 ## Skills
 
-Domain workflows live in `.opencode/skills/` + `.agents/skills/` (`opencode.jsonc: skills.paths`). Load via the `skill` tool when the task matches: `adapter-pattern` (platform adapters), `bash-agent-safety` (tool execution/approval), `stt-tts-pipeline` (audio), `nlu-intent-classifier`, `llm-providers`, `prompt-builder`, plus `systematic-debugging`, `tdd-regression`, `technical-reviewer`, `verification-before-completion`, `subagent-orchestration`.
+Domain workflows live in `.opencode/skills/` + `.agents/skills/` (`opencode.jsonc: skills.paths`). Load via the `skill` tool when the task matches: `jarvis-architecture-rules` (repo conventions — load first for arch changes), `adapter-pattern` (platform adapters), `bash-agent-safety` (tool execution/approval), `stt-tts-pipeline` (audio), `nlu-intent-classifier`, `llm-providers`, `prompt-builder`, plus `systematic-debugging`, `tdd-regression`, `technical-reviewer`, `verification-before-completion`, `subagent-orchestration`.
