@@ -41,11 +41,27 @@
     ],
     "linux": {
       "deb": {
+        "depends": [
+          "libwebkit2gtk-4.1-0 | libwebkit2gtk-4.0-37",
+          "libgtk-3-0",
+          "libportaudio2",
+          "mpv",
+          "wl-clipboard | xclip",
+          "wtype | xdotool"
+        ],
         "files": {
           "/usr/share/man/man1/jarvis.1": "../../docs/jarvis.1"
         }
       },
       "rpm": {
+        "depends": [
+          "webkit2gtk4.1",
+          "gtk3",
+          "portaudio",
+          "mpv",
+          "wl-clipboard",
+          "wtype"
+        ],
         "compression": {
           "type": "none"
         }

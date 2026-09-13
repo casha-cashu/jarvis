@@ -19,24 +19,27 @@ classifiers = [
     "Topic :: Desktop Environment",
 ]
 
+# Pinned to known-good versions (repo venv, 1260 pytest green).
+# Чистая установка ставит это, а не newest. torch — осознанно диапазон
+# (CUDA у разработчиков vs CPU в docker). Бампить после полного гейта.
 dependencies = [
-    "pyyaml>=6.0",
-    "pyaudio>=0.2.14",
-    "numpy>=1.24",
+    "pyyaml==6.0.3",
+    "pyaudio==0.2.14",
+    "numpy==2.4.6",
     "torch>=2.0",
-    "faster-whisper>=1.0",
-    "silero-vad>=0.2",
-    "scikit-learn>=1.3",
-    "joblib>=1.3",
-    "anthropic>=0.30",
-    "openai>=1.40",
-    "requests>=2.30",
-    "gtts>=2.5",
-    "pydantic>=2.0",
-    "filelock>=3.11",
-    "ruamel.yaml>=0.18",
-    "rapidfuzz>=3.0",
-    "audioop-lts>=0.2; python_version >= '3.13'",
+    "faster-whisper==1.2.1",
+    "silero-vad==6.2.1",
+    "scikit-learn==1.9.0",
+    "joblib==1.5.3",
+    "anthropic==0.104.1",
+    "openai==2.46.0",
+    "requests==2.34.2",
+    "gtts==2.5.4",
+    "pydantic==2.13.4",
+    "filelock==3.29.0",
+    "ruamel.yaml==0.19.1",
+    "rapidfuzz==3.14.5",
+    "audioop-lts==0.2.2; python_version >= '3.13'",
 ]
 
 [project.urls]
@@ -54,9 +57,9 @@ include = ["jarvis*"]
 # vosk опционален: wheels есть только для Python 3.10-3.12, на 3.13+
 # установка провалится. Движок STT переключается на whisper (stt.engine).
 # Ставится так: pip install -e ".[vosk]"
-vosk = ["vosk>=0.3.38"]
-telegram = ["aiogram>=3"]
-dev = ["pytest>=7", "pytest-cov>=4", "pytest-mock>=3", "pytest-timeout>=2.1", "pre-commit>=3"]
+vosk = ["vosk==0.3.45"]
+telegram = ["aiogram==3.31.0"]
+dev = ["pytest==9.0.3", "pytest-cov==7.1.0", "pytest-mock==3.15.1", "pytest-timeout>=2.1", "pre-commit>=3"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

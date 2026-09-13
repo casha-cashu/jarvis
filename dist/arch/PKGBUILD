@@ -24,13 +24,12 @@ pkgdesc="JARVIS — голосовой ассистент для Linux/macOS (Ta
 arch=('x86_64')
 url="https://github.com/casha-cashu/jarvis"
 license=('MIT')
-depends=('webkit2gtk-4.1' 'gtk3' 'portaudio')
+depends=('webkit2gtk-4.1' 'gtk3' 'portaudio' 'mpv' 'wl-clipboard' 'wtype')
 optdepends=(
-    'mpv: audio playback for gTTS voice synthesis'
     'grim: Wayland screenshot tool'
     'slurp: Wayland interactive screen area selector'
-    'wl-clipboard: Wayland clipboard integration'
-    'wtype: Wayland simulated keystrokes'
+    'xdotool: X11 simulated keystrokes'
+    'xclip: X11 clipboard integration'
 )
 # Локальная сборка: ожидается JARVIS_${pkgver}_amd64.deb рядом с PKGBUILD (симлинк/копия из jarvis-ui/src-tauri/target/release/bundle/deb/)
 # Для AUR заменить на:
