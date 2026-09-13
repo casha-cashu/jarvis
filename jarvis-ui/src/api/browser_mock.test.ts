@@ -208,7 +208,7 @@ describe("Browser Mock Implementation (when not running in Tauri)", () => {
     // OpenAI models
     const openaiGroups = await listApiModels({
       type: "openai",
-      endpoint: "http://localhost:11434/v1",
+      endpoint: "http://127.0.0.1:59999/v1",
       apiKey: "",
       model: "",
     });

@@ -652,7 +652,9 @@ async function handleBrowserMock<T>(cmd: string, args?: Record<string, unknown>)
       } as T;
     }
 
-    if (typeof fetch !== "undefined") {
+    const isTestEnv = Boolean(import.meta.env?.MODE === "test");
+
+    if (typeof fetch !== "undefined" && !isTestEnv) {
       try {
         const controller = new AbortController();
         const timer = setTimeout(() => controller.abort(), 2500);
