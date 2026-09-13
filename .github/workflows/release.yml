@@ -62,10 +62,18 @@ jobs:
           npx tauri build --bundles deb,rpm,appimage
           ls -lh src-tauri/target/release/bundle/deb/*.deb src-tauri/target/release/bundle/rpm/*.rpm src-tauri/target/release/bundle/appimage/*.AppImage
 
-      - name: Build Arch pkg (repack deb) — skip on ubuntu
+      - name: Build Arch pkg (repack deb via Arch container)
         run: |
-          echo "arch pkg repack skipped on ubuntu — use local dist/arch/jarvis-*.pkg.tar.zst (needs arch host / makepkg)"
-          ls -lh dist/arch/*.pkg.tar.zst 2>&1 | head || echo "no local pkg"
+          mkdir -p dist/arch
+          cp jarvis-ui/src-tauri/target/release/bundle/deb/JARVIS_*.deb dist/arch/
+          docker run --rm -v "$(pwd):/work" -w /work/dist/arch archlinux:base bash -c "
+            pacman -Syu --noconfirm --needed base-devel binutils zstd libarchive sudo >/dev/null 2>&1
+            useradd -m -s /bin/bash builduser 2>/dev/null || true
+            echo 'builduser ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/builduser
+            chown -R builduser:builduser /work/dist/arch
+            su - builduser -c 'cd /work/dist/arch && makepkg -f --nodeps'
+          "
+          ls -lh dist/arch/*.pkg.tar.zst
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v6
@@ -75,6 +83,7 @@ jobs:
             jarvis-ui/src-tauri/target/release/bundle/deb/*.deb
             jarvis-ui/src-tauri/target/release/bundle/rpm/*.rpm
             jarvis-ui/src-tauri/target/release/bundle/appimage/*.AppImage
+            dist/arch/*.pkg.tar.zst
           if-no-files-found: error
           retention-days: 14
 
@@ -225,6 +234,6 @@ jobs:
               --title "${GITHUB_REF_NAME}" \
               --generate-notes \
               --verify-tag
-          find artifacts -type f \( -name "*.deb" -o -name "*.rpm" -o -name "*.AppImage" -o -name "*.dmg" \) \
+          find artifacts -type f \( -name "*.deb" -o -name "*.rpm" -o -name "*.AppImage" -o -name "*.dmg" -o -name "*.pkg.tar.zst" \) \
             -exec gh release upload "${GITHUB_REF_NAME}" {} +
           gh release upload "${GITHUB_REF_NAME}" "jarvis-sbom-${GITHUB_REF_NAME}.spdx.json"

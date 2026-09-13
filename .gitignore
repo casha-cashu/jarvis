@@ -62,9 +62,11 @@ audit-review/
 
 # ── jarvis-ui ──
 node_modules/
-src-tauri/target/
+src-tauri/target*/
 src-tauri/binaries/
+jarvis-ui/src-tauri/target*/
 jarvis-ui/src-tauri/binaries/
+*.AppImage
 jarvis-ui/dist/*
 !jarvis-ui/dist/arch
 !jarvis-ui/dist/arch/*

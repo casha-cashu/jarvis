@@ -55,14 +55,6 @@ package() {
     if [[ -f "$pkgdir/usr/bin/app" ]]; then chmod 755 "$pkgdir/usr/bin/app"; fi
     chmod 755 "$pkgdir/usr/bin/jarvis-bridge"
 
-    # Compatibility: bundle libjxl.so.0.12 to run on live ISOs and distros with older/different libjxl
-    install -d "$pkgdir/usr/lib"
-    if [[ -f /usr/lib/libjxl.so.0.12 ]]; then
-        install -Dm755 /usr/lib/libjxl.so.0.12 "$pkgdir/usr/lib/libjxl.so.0.12"
-    fi
-    if [[ -f /usr/lib/libjxl_cms.so.0.12 ]]; then
-        install -Dm755 /usr/lib/libjxl_cms.so.0.12 "$pkgdir/usr/lib/libjxl_cms.so.0.12"
-    fi
 
     # Контент из deb (для справки, устанавливается автоматически из data.tar.gz):
     #   /usr/bin/jarvis                      — Tauri WebView (11M, ELF) с 0.2.1 (ранее app)
