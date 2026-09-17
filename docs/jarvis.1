@@ -1,4 +1,4 @@
-.TH JARVIS 1 "2026" "JARVIS 2.6" "User Commands"
+.TH JARVIS 1 "2026" "JARVIS 2.9" "User Commands"
 .SH NAME
 jarvis \- голосовой ИИ\-ассистент для Linux и macOS
 .SH SYNOPSIS
@@ -41,6 +41,16 @@ Systemd \-\-user unit: автозапуск и журналы (journalctl --user
 .TP
 .B setup
 Интерактивный мастер настройки (модели Vosk и Piper).
+.TP
+.B update
+Проверка новой версии на GitHub Releases.
+.TP
+.B bugreport
+Zip-архив диагностики для отчёта об ошибке (маскированные конфиг и логи,
+метаданные БД без переписок).
+.TP
+.B telegram
+Telegram-бот: тот же ассистент из мессенджера (нужен токен от @BotFather).
 .SH FILES
 .TP
 .I config.yaml

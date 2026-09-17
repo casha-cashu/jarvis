@@ -3,10 +3,10 @@
 CLI для JARVIS — голосового ассистента
 
 Использование:
-  jarvis run                          # запуск (по умолч.)
+  jarvis run                          # запуск (по умолчанию)
   jarvis run -p ollama                # с конкретным провайдером
   jarvis run --mode continuous        # без wake word
-  jarvis run --mode classic           # с wake word (по умолч.)
+  jarvis run --mode classic           # с wake word (по умолчанию)
   jarvis run --wake-mode vad          # VAD-буфер для wake word
   jarvis run --mute                   # сразу в mute
   jarvis run --dry-run                # проверка без микро
@@ -224,7 +224,7 @@ def cmd_voice(args):
 
     if args.action == "list":
         print("📋 TTS голоса Piper (русские):")
-        print("   • ru_RU-dmitri-medium  — Dmitri (50 MB, по умолч.)")
+        print("   • ru_RU-dmitri-medium  — Dmitri (50 MB, по умолчанию)")
         print("   • ru_RU-irina-medium   — Irina (50 MB)")
         print("   • ru_RU-ruslan-medium  — Ruslan (50 MB)")
         print("   • ru_RU-denis-medium   — Denis (50 MB)")
@@ -279,7 +279,7 @@ def cmd_voice(args):
 
         print(f"\n✅ Голос {name} установлен!")
         print(f"   Путь: {voices_dir}")
-        print(f'   В config.yaml укажи: piper.model_path: "{voices_dir / name}.onnx"')
+        print(f'   В config.yaml укажите: piper.model_path: "{voices_dir / name}.onnx"')
 
 
 def cmd_dictation(args):

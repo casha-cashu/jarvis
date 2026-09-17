@@ -654,5 +654,5 @@ def main(config: dict, config_path: str = "config.yaml") -> None:
     except (KeyboardInterrupt, SystemExit):
         logger.info("🛑 Telegram-бот остановлен")
     except RuntimeError as e:
-        print(f"❌ {e}")
+        logger.info(f"❌ {e}")
         raise SystemExit(1) from e

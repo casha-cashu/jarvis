@@ -57,26 +57,26 @@ npm run tauri dev   # или npm run dev для браузерного режи�
 
 ## Быстрый старт
 
-### Пакеты (рекомендуется) — v2.8.0
+### Пакеты (рекомендуется) — v2.9.0
 
-Скачайте из [Releases](https://github.com/casha-cashu/jarvis/releases/tag/v2.8.0):
+Скачайте из [Releases](https://github.com/casha-cashu/jarvis/releases/tag/v2.9.0):
 
 ```bash
 # Debian/Ubuntu
-sudo apt install ./JARVIS_2.8.0_amd64.deb
+sudo apt install ./JARVIS_2.9.0_amd64.deb
 jarvis   # /usr/bin/jarvis + /usr/bin/jarvis-bridge
 
 # Fedora
-sudo dnf install ./JARVIS-2.8.0-1.x86_64.rpm
+sudo dnf install ./JARVIS-2.9.0-1.x86_64.rpm
 
 # Arch/CachyOS
-sudo pacman -U ./jarvis-2.8.0-1-x86_64.pkg.tar.zst
+sudo pacman -U ./jarvis-2.9.0-1-x86_64.pkg.tar.zst
 
 # Универсально (любой дистр)
-chmod +x JARVIS_2.8.0_amd64.AppImage && ./JARVIS_2.8.0_amd64.AppImage
+chmod +x JARVIS_2.9.0_amd64.AppImage && ./JARVIS_2.9.0_amd64.AppImage
 ```
 
-GUI — `jarvis` в меню, конфиг сидится в `~/.config/jarvis/config.yaml` (из `config.example.yaml`).
+GUI — `jarvis` в меню, конфиг хранится в `~/.config/jarvis/config.yaml` (из `config.example.yaml`).
 
 ### Из исходников
 
@@ -192,14 +192,21 @@ jarvis dictation
 # Управление пресетами
 jarvis presets
 
+# TTS-голоса: список и загрузка
+jarvis voice list
+jarvis voice download ru_RU-irina
+
 # Тест модулей
 jarvis test
 
 # Systemd автозапуск (только Linux)
-jarvis service install
+jarvis service install | remove | status
 
 # Проверка новой версии
 jarvis update
+
+# Отчёт об ошибке (zip с маскированными логами и конфигом)
+jarvis bugreport
 
 # Telegram-бот (нужен токен от @BotFather, см. config.example.yaml)
 jarvis telegram

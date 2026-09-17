@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """Desktop Control MCP Server for Linux / Wayland (Hyprland).
 
+IMPORTANT: This file is an active MCP server used by Antigravity (Gemini)
+for desktop GUI control, window inspection, and visual validation.
+Do NOT delete or mark as dead code during repo cleanup sweeps.
+
 Provides clean, standardized MCP tools for GUI automation:
 - mouse_click: Click at exact screen coordinates (x, y).
 - type_text: Type string using wtype.
@@ -12,7 +16,6 @@ Provides clean, standardized MCP tools for GUI automation:
 
 import subprocess
 import time
-import evdev
 from evdev import UInput, ecodes as e
 from mcp.server.mcpserver import MCPServer
 
@@ -22,6 +25,7 @@ server = MCPServer(
     instructions="Native Linux Desktop / Wayland automation tools: mouse clicking, typing, keys, screenshots.",
 )
 
+
 def _get_cursor_pos() -> tuple[int, int]:
     try:
         out = subprocess.check_output(["hyprctl", "cursorpos"], text=True).strip()
@@ -29,6 +33,7 @@ def _get_cursor_pos() -> tuple[int, int]:
         return parts[0], parts[1]
     except Exception:
         return 0, 0
+
 
 def _move_to(ui: UInput, target_x: int, target_y: int) -> None:
     cur_x, cur_y = _get_cursor_pos()

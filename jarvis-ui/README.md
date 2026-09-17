@@ -1,32 +1,71 @@
-# React + TypeScript + Vite
+# JARVIS Desktop UI
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+> Графический интерфейс голосового и текстового ассистента JARVIS для Linux и macOS.
+> Построен на базе **Tauri v2**, **React 19**, **TypeScript** и **Tailwind CSS v4**.
 
-Currently, two official plugins are available:
+---
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+## 🖥 Архитектура
 
-## React Compiler
+Интерфейс работает в связке с Python-бэкендом ассистента:
+1. **Rust / Tauri Core (`src-tauri/`)**: Управляет жизненным циклом окна, системным треем, глобальными горячими клавишами, спавнит процесс Python-моста (`jarvis/ui_bridge.py`) и обменивается с ним JSON-командами через защищённые IPC-каналы.
+2. **React Frontend (`src/`)**: Отвечает за реактивный интерфейс, живой стриминг токенов моделей, отображение VU-метра микрофона и управление конфигурацией ассистента.
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+---
 
-## Expanding the Oxlint configuration
+## 📑 Вкладки приложения
 
-If you are developing a production application, we recommend enabling type-aware lint rules by installing `oxlint-tsgolint` and editing `.oxlintrc.json`:
+- **Чат (Chat)**:
+  - Текстовый и голосовой ввод запросов.
+  - Потоковый вывод ответов LLM (Server-Sent Events / стриминг токенов).
+  - Быстрое переключение моделей (Ollama, OpenAI, Anthropic, OpenRouter) без перезапуска.
+  - Визуализация вызовов системных инструментов и результатов выполнения bash-агента.
+  - Умный скролл, поддержка копирования фрагментов и форматирование кода.
+- **Статус (Status)**:
+  - Мониторинг соединения с Python-бэкендом и модели.
+  - Живой индикатор уровня звука (VU-метр) и активность детекции голоса (VAD).
+  - Системные метрики (использование памяти, загрузка CPU, время работы).
+  - Быстрое переключение режима микрофона и непрерывного диалога.
+- **Настройки (Settings)**:
+  - Редактирование параметров LLM, STT (Whisper / Vosk), TTS (Piper / SpeechT5), VAD (Silero).
+  - Настройка горячих клавиш вызова и параметров микрофона.
+  - Проверка валидности конфигурации и безопасная запись в `~/.config/jarvis/config.yaml`.
+- **История (History)**:
+  - Просмотр сохранённых сессий диалогов.
+  - Фильтрация по тексту и ролям сообщений.
+  - Экспорт диалогов и точечная очистка истории.
+- **Пресеты (Presets)**:
+  - Управление готовыми конфигурациями моделей для быстрого переключения под разные задачи.
 
-```json
-{
-  "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["react", "typescript", "oxc"],
-  "options": {
-    "typeAware": true
-  },
-  "rules": {
-    "react/rules-of-hooks": "error",
-    "react/only-export-components": ["warn", { "allowConstantExport": true }]
-  }
-}
+---
+
+## 🛠 Разработка и запуск
+
+### Требования
+- **Node.js**: v22+
+- **Rust**: stable toolchain (`cargo`)
+- **Python**: 3.10+ (виртуальное окружение `venv` в корне репозитория)
+- Системные библиотеки Linux: `webkit2gtk-4.1`, `libappindicator-gtk3`
+
+### Команды
+```bash
+# Установка зависимостей фронтенда
+npm ci
+
+# Запуск в режиме разработки (Vite + Tauri)
+npm run tauri dev
+
+# Прогон юнит- и интеграционных тестов (Vitest + React Testing Library)
+npm test
+
+# Проверка линтером (Oxlint)
+npm run lint
+
+# Сборка продакшен-бандла фронтенда
+npm run build
 ```
 
-See the [Oxlint rules documentation](https://oxc.rs/docs/guide/usage/linter/rules) for the full list of rules and categories.
+---
+
+## 🧪 Тестирование
+Фронтенд покрыт сквозными симуляционными тестами (`user_journey.test.tsx`, `browser_mock.test.ts`), проверяющими поведение UI при стриминге, обработке системных ошибок, переключении провайдеров и очистке ресурсов.

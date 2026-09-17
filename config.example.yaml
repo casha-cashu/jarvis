@@ -69,7 +69,7 @@ stt:
 # === ДЕТЕКЦИЯ ГОЛОСА (VAD) ===
 vad:
   enabled: true
-  engine: "silero"  # silero | webrtc
+  engine: "silero"  # единственный движок VAD (webrtc не поддерживается)
 
   silero:
     model_path: "auto"  # auto = поиск в models/, ~/.local/share/silero
@@ -184,7 +184,7 @@ llm:
 # === КОМАНДЫ ===
 commands:
   # Локальный словарь команд (обрабатываются БЕЗ LLM)
-  dictionary_path: "data/commands.json"  # Используй commands_base.json для минимальной версии
+  dictionary_path: "data/commands.json"
   apps_dictionary_path: "data/apps.json"
 
   # Fuzzy matching для команд

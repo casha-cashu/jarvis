@@ -99,7 +99,7 @@ export function SiteHeader() {
               render={<a href={RELEASES} target="_blank" rel="noreferrer" />}
               className="mt-2"
             >
-              Скачать v2.7.0
+              Скачать
             </Button>
           </nav>
         </div>

@@ -17,11 +17,18 @@ export async function copyToClipboard(text: string): Promise<boolean> {
     if (typeof document !== "undefined" && document.createElement) {
       const textarea = document.createElement("textarea");
       textarea.value = text;
+      textarea.setAttribute("readonly", "");
       textarea.style.position = "fixed";
+      textarea.style.left = "-9999px";
       textarea.style.opacity = "0";
       document.body.appendChild(textarea);
       textarea.select();
-      const ok = document.execCommand("copy");
+      let ok = false;
+      try {
+        ok = Boolean(document.execCommand?.("copy"));
+      } catch {
+        ok = false;
+      }
       document.body.removeChild(textarea);
       return ok;
     }

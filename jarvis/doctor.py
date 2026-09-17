@@ -28,9 +28,11 @@ def run_checks(config_path: str = "config.yaml") -> list[dict[str, Any]]:
     checks.append(_check_data_files(config))
     checks.append(_check_platform())
     checks.append(_check_stt(config))
+    checks.append(_check_whisper_antihallucination(config))
     checks.append(_check_tts(config))
     checks.append(_check_players())
     checks.append(_check_llm(config))
+    checks.append(_check_prompt_language(config))
     checks.append(_check_state_dirs())
     return checks
 
@@ -178,6 +180,64 @@ def _check_stt(config: dict) -> dict[str, Any]:
     }
 
 
+def _check_whisper_antihallucination(config: dict[str, Any]) -> dict[str, Any]:
+    """Round 8: детерминированный декод Whisper режет галлюцинации на
+    коротких русских фразах («Service hello» вместо «джарвис привет»).
+    Сверяем конфиг с WhisperSTT.DEFAULT_*; предупреждаем только
+    об отклонениях в рискованную сторону."""
+    if config.get("stt", {}).get("engine") != "whisper":
+        return {
+            "name": "Whisper (анти-галлюцинации)",
+            "status": OK,
+            "detail": "движок не whisper — проверка не требуется",
+        }
+    try:
+        from jarvis.modules.stt_whisper import WhisperSTT  # noqa: PLC0415
+
+        recommended = {
+            "temperature": WhisperSTT.DEFAULT_TEMPERATURE,
+            "no_speech_threshold": WhisperSTT.DEFAULT_NO_SPEECH_THRESHOLD,
+            "hallucination_silence_threshold": (
+                WhisperSTT.DEFAULT_HALLUCINATION_SILENCE_THRESHOLD
+            ),
+        }
+    except Exception:  # noqa: BLE001 — нет faster-whisper: сверяем с известными дефолтами
+        recommended = {
+            "temperature": 0.0,
+            "no_speech_threshold": 0.6,
+            "hallucination_silence_threshold": 2.0,
+        }
+    wcfg = config.get("stt", {}).get("whisper", {})
+    risky = []
+    if wcfg.get("temperature", 0.0) != recommended["temperature"]:
+        risky.append(
+            f"temperature={wcfg.get('temperature')} (нужен {recommended['temperature']}: семплинг галлюцинирует)"
+        )
+    if wcfg.get("no_speech_threshold", 0.6) < recommended["no_speech_threshold"]:
+        risky.append(
+            f"no_speech_threshold={wcfg.get('no_speech_threshold')} (меньше {recommended['no_speech_threshold']}: шум проходит за речь)"
+        )
+    if (
+        wcfg.get("hallucination_silence_threshold", 2.0)
+        < recommended["hallucination_silence_threshold"]
+    ):
+        risky.append(
+            f"hallucination_silence_threshold={wcfg.get('hallucination_silence_threshold')} "
+            f"(меньше {recommended['hallucination_silence_threshold']}: слабее подавление галлюцинаций)"
+        )
+    if risky:
+        return {
+            "name": "Whisper (анти-галлюцинации)",
+            "status": WARN,
+            "detail": "; ".join(risky),
+        }
+    return {
+        "name": "Whisper (анти-галлюцинации)",
+        "status": OK,
+        "detail": "декод детерминирован (temperature=0.0, пороги тишины на месте)",
+    }
+
+
 def _check_tts(config: dict) -> dict[str, Any]:
     tts_cfg = config.get("tts", {})
     engine = tts_cfg.get("engine", "piper")
@@ -259,6 +319,33 @@ def _check_llm(config: dict) -> dict[str, Any]:
         "name": f"LLM ({provider})",
         "status": FAIL,
         "detail": f"нет api_key в конфиге и ${env_var} в окружении",
+    }
+
+
+def _check_prompt_language(config: dict[str, Any]) -> dict[str, Any]:
+    """Строгое правило русского языка в system_prompt: LLM не должен
+    зеркалить английские галлюцинации STT (см. prompt_builder
+    RUSSIAN_LANGUAGE_RULE). Рантайм дописывает правило сам через
+    compose_system_prompt, но в конфиге оно должно быть видно явно."""
+    sp = config.get("llm", {}).get("system_prompt") or ""
+    if "на русском языке" in sp:
+        return {
+            "name": "System prompt (русский язык)",
+            "status": OK,
+            "detail": "правило русского языка на месте",
+        }
+    if not sp.strip():
+        return {
+            "name": "System prompt (русский язык)",
+            "status": WARN,
+            "detail": "system_prompt пуст — правило допишет рантайм, "
+            "но лучше зафиксировать его в конфиге явно",
+        }
+    return {
+        "name": "System prompt (русский язык)",
+        "status": WARN,
+        "detail": "нет правила «отвечай на русском языке» — LLM может "
+        "зеркалить английские галлюцинации STT",
     }
 
 
