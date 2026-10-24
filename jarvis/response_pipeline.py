@@ -104,6 +104,7 @@ class ResponsePipeline:
         from jarvis.modules.commands import CommandManager
 
         self.commands = CommandManager(self.config, speak_fn=self.speak)
+        self.commands.set_llm_chat(self.llm.chat)
 
         self._started = True
 
@@ -121,12 +122,23 @@ class ResponsePipeline:
         # Голосовой путь: перед озвучкой вычищаем markdown/эмодзи, режем
         # длину (TTS-UX) и маскируем секреты. Текстовый чат (ui_bridge)
         # показывает ПОЛНЫЙ ответ — санитайз живёт только здесь.
-        from jarvis.prompt_builder import redact_secrets, sanitize_for_tts
+        from jarvis.prompt_builder import (
+            redact_secrets,
+            sanitize_for_tts,
+            strip_thinking_tags,
+        )
 
         try:
             spoken = redact_secrets(sanitize_for_tts(text))
-        except Exception:
-            spoken = text  # санитайз не должен рвать озвучку
+        except Exception as e:
+            logger.warning(f"⚠️ Ошибка санитайзинга TTS: {e}")
+            spoken = strip_thinking_tags(text)
+
+        # Invariant: strip <think> unconditionally even if sanitize_for_tts failed or bypassed
+        spoken = strip_thinking_tags(spoken)
+        if not spoken:
+            return
+
         print(f"\r🤖 {spoken}")
         if self.tts_worker is not None:
             self.tts_worker.speak(spoken)
@@ -150,32 +162,39 @@ class ResponsePipeline:
     def process_query(
         self,
         query: str,
+        images: Optional[list[str]] = None,
         stream_callback=None,
+        thinking_callback=None,
         tool_callback=None,
         tool_result_callback=None,
+        reasoning_effort: Optional[str] = None,
+        reasoning_budget: Optional[int] = None,
+        **extra_kwargs: Any,
     ) -> str:
         """commands.py first, then LLM (optionally with bash-agent loop), then default."""
-        if self.commands is None:
-            return ""
-        cmd_resp = self.commands.process(query)
-        if cmd_resp is not None:
-            if cmd_resp.startswith("__"):
-                return ""  # special marker — обрабатывается в conversation_manager
-            return cmd_resp if cmd_resp else "Готово, сэр."
+        if not images and self.commands is not None:
+            cmd_resp = self.commands.process(query)
+            if cmd_resp is not None:
+                if cmd_resp.startswith("__"):
+                    return ""  # special marker — обрабатывается в conversation_manager
+                return cmd_resp if cmd_resp else "Готово, сэр."
 
         if self.llm is None:
             return ""
 
         # Agent loop: if agent_enabled and LLM provider supports tools
-        # (currently Ollama), use chat_with_tools → bash_agent.
-        if self.agent_enabled and self._can_use_agent():
+        # (currently Ollama, OpenAI, Anthropic), use chat_with_tools → bash_agent.
+        if not images and self.agent_enabled and self._can_use_agent():
             try:
                 return (
                     self._run_agent_loop(
                         query,
                         stream_callback=stream_callback,
+                        thinking_callback=thinking_callback,
                         tool_callback=tool_callback,
                         tool_result_callback=tool_result_callback,
+                        reasoning_effort=reasoning_effort,
+                        reasoning_budget=reasoning_budget,
                     )
                     or ""
                 )
@@ -183,9 +202,17 @@ class ResponsePipeline:
                 logger.error(f"❌ Agent loop failed: {e} — fallback to plain LLM")
 
         try:
-            kwargs = {}
+            kwargs: dict[str, Any] = dict(extra_kwargs)
+            if images:
+                kwargs["images"] = images
             if stream_callback is not None:
                 kwargs["stream_callback"] = stream_callback
+            if thinking_callback is not None:
+                kwargs["thinking_callback"] = thinking_callback
+            if reasoning_effort is not None:
+                kwargs["reasoning_effort"] = reasoning_effort
+            if reasoning_budget is not None:
+                kwargs["reasoning_budget"] = reasoning_budget
             return self.llm.chat(query, **kwargs) or ""
         except Exception as e:
             logger.error(f"❌ LLM: {e}")
@@ -201,8 +228,11 @@ class ResponsePipeline:
         self,
         query: str,
         stream_callback=None,
+        thinking_callback=None,
         tool_callback=None,
         tool_result_callback=None,
+        reasoning_effort: Optional[str] = None,
+        reasoning_budget: Optional[int] = None,
     ) -> Optional[str]:
         """Invoke chat_with_tools with bash_agent's tools + approval gate.
 
@@ -269,13 +299,19 @@ class ResponsePipeline:
                     pass
             return result
 
-        kwargs = {
+        kwargs: dict[str, Any] = {
             "tools": tools,
             "on_tool_call": _on_tool_call,
             "max_iterations": self.agent_max_iterations,
         }
         if stream_callback is not None:
             kwargs["stream_callback"] = stream_callback
+        if thinking_callback is not None:
+            kwargs["thinking_callback"] = thinking_callback
+        if reasoning_effort is not None:
+            kwargs["reasoning_effort"] = reasoning_effort
+        if reasoning_budget is not None:
+            kwargs["reasoning_budget"] = reasoning_budget
         # Контракт chat_with_tools есть только у agent-способных клиентов;
         # _can_use_agent() уже отфильтровал, cast снимает union ABC.
         return cast("Any", client).chat_with_tools(query, **kwargs)

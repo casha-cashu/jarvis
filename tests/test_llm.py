@@ -412,6 +412,52 @@ class TestOpenAIChatWithTools:
         assert "слишком много шагов" in result
         assert client.client.chat.completions.create.call_count == 4
 
+    def test_chat_with_tools_streaming_reasoning(self, client):
+        """OpenAI chat_with_tools транслирует reasoning chunks и формирует блок think."""
+        fake_chunk1 = MagicMock()
+        fake_chunk1.choices = [
+            MagicMock(
+                delta=MagicMock(
+                    content=None,
+                    reasoning_content="Рассуждаем о задаче",
+                    tool_calls=None,
+                )
+            )
+        ]
+        fake_chunk2 = MagicMock()
+        fake_chunk2.choices = [
+            MagicMock(
+                delta=MagicMock(
+                    content="Итоговый ответ",
+                    reasoning_content=None,
+                    tool_calls=None,
+                )
+            )
+        ]
+        client.client = MagicMock()
+        client.client.chat.completions.create.return_value = [fake_chunk1, fake_chunk2]
+
+        thinking_chunks = []
+        stream_chunks = []
+        result = client.chat_with_tools(
+            "тест",
+            tools=[],
+            on_tool_call=lambda n, a: "ok",
+            stream_callback=stream_chunks.append,
+            thinking_callback=thinking_chunks.append,
+            reasoning_effort="high",
+        )
+        assert thinking_chunks == ["Рассуждаем о задаче"]
+        assert stream_chunks == ["Итоговый ответ"]
+        assert "<think>\nРассуждаем о задаче\n</think>" in result
+        assert "Итоговый ответ" in result
+
+
+class _FakeAnthropicThinkingBlock:
+    def __init__(self, text):
+        self.type = "thinking"
+        self.thinking = text
+
 
 class _FakeAnthropicToolUseBlock:
     def __init__(self, name, args, id_="toolu_x"):
@@ -534,6 +580,33 @@ class TestAnthropicChatWithTools:
         assert result == "streamed answer"
         assert chunks == ["streamed answer"]
 
+    def test_chat_with_tools_thinking_block(self, client):
+        """Anthropic chat_with_tools извлекает thinking block, передает в callback и настраивает thinking budget."""
+        resp = _FakeAnthropicResponse(
+            [
+                _FakeAnthropicThinkingBlock("Размышления модели"),
+                _FakeAnthropicTextBlock("Финальный результат"),
+            ]
+        )
+        client.client = MagicMock()
+        client.client.messages.create.return_value = resp
+
+        thinking_calls = []
+        result = client.chat_with_tools(
+            "сложный запрос",
+            tools=[],
+            on_tool_call=lambda n, a: "ok",
+            thinking_callback=thinking_calls.append,
+            reasoning_effort="high",
+        )
+        assert thinking_calls == ["Размышления модели"]
+        assert "<think>\nРазмышления модели\n</think>" in result
+        assert "Финальный результат" in result
+
+        call_kwargs = client.client.messages.create.call_args.kwargs
+        assert call_kwargs["thinking"] == {"type": "enabled", "budget_tokens": 8192}
+        assert call_kwargs["temperature"] == 1.0
+
 
 class TestOpenAIClient:
     def test_init_missing_key(self):
@@ -552,6 +625,82 @@ class TestOpenAIClient:
             client = OpenAIClient({"openai": {"model": "gpt-4o-mini"}})
             assert client.model == "gpt-4o-mini"
             assert client.max_tokens == 1024
+
+    def test_openai_o_series_parameters(self):
+        """o-серия (o1, o3-mini) использует max_completion_tokens, исключает temperature, маппит max->high."""
+        from jarvis.modules.llm import OpenAIClient
+
+        with patch.dict("os.environ", {"OPENAI_API_KEY": "sk-test"}, clear=True):
+            client = OpenAIClient({"openai": {"model": "o3-mini", "max_tokens": 2048}})
+            fake_chunk1 = MagicMock()
+            fake_chunk1.choices = [
+                MagicMock(
+                    delta=MagicMock(content=None, reasoning_content="Шаг 1: думаем")
+                )
+            ]
+            fake_chunk2 = MagicMock()
+            fake_chunk2.choices = [
+                MagicMock(
+                    delta=MagicMock(content="Решение найдено", reasoning_content=None)
+                )
+            ]
+            mock_create = MagicMock(return_value=[fake_chunk1, fake_chunk2])
+            client.client.chat.completions.create = mock_create
+
+            thinking_cb = MagicMock()
+            answer = client.chat(
+                "проверь теорему",
+                reasoning_effort="max",
+                thinking_callback=thinking_cb,
+            )
+
+            assert "<think>\nШаг 1: думаем\n</think>" in answer
+            assert "Решение найдено" in answer
+            thinking_cb.assert_called_once_with("Шаг 1: думаем")
+
+            mock_create.assert_called_once()
+            _, kwargs = mock_create.call_args
+            assert kwargs["model"] == "o3-mini"
+            assert kwargs["max_completion_tokens"] == 2048
+            assert "temperature" not in kwargs
+            assert "max_tokens" not in kwargs
+            assert kwargs["reasoning_effort"] == "high"
+            assert kwargs["stream"] is True
+
+            # Также проверяем non-streaming вызов (без callbacks)
+            fake_msg = MagicMock(content="Готово", reasoning_content="Подумали")
+            client.client.chat.completions.create = MagicMock(
+                return_value=MagicMock(choices=[MagicMock(message=fake_msg)])
+            )
+            ns_answer = client.chat("простой вопрос", reasoning_effort="low")
+            assert "<think>\nПодумали\n</think>\nГотово" == ns_answer
+
+    def test_openai_retry_on_rejected_reasoning_effort(self):
+        """Если эндпоинт отвергает reasoning_effort с 400/422, клиент автоматически повторяет запрос без него."""
+        from jarvis.modules.llm import OpenAIClient
+
+        with patch.dict("os.environ", {"OPENAI_API_KEY": "sk-test"}, clear=True):
+            client = OpenAIClient({"openai": {"model": "custom-model"}})
+            attempts = []
+
+            def fake_create(**kw):
+                attempts.append(dict(kw))
+                if "reasoning_effort" in kw:
+                    raise Exception(
+                        "400 Unrecognized request argument 'reasoning_effort'"
+                    )
+                fake_msg = MagicMock(
+                    content="Ответ без reasoning_effort", reasoning_content=None
+                )
+                return MagicMock(choices=[MagicMock(message=fake_msg)])
+
+            client.client.chat.completions.create = fake_create
+
+            answer = client.chat("тест", reasoning_effort="low")
+            assert answer == "Ответ без reasoning_effort"
+            assert len(attempts) == 2
+            assert "reasoning_effort" in attempts[0]
+            assert "reasoning_effort" not in attempts[1]
 
 
 # ──────────────────────────────────────────────

@@ -26,6 +26,11 @@ logs/
 # ── Models (downloaded separately) ──
 models/
 !models/.gitkeep
+data/voices/
+*.wav
+*.mp3
+*.ogg
+*.rar
 
 # ── OS ──
 .DS_Store

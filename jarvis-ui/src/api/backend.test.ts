@@ -227,6 +227,7 @@ describe("Configuration and History Wrappers", () => {
     expect(invoke).toHaveBeenCalledWith("backend_send_message", {
       message: "привет",
       session: "sess-1",
+      images: null,
     });
   });
 
@@ -236,6 +237,17 @@ describe("Configuration and History Wrappers", () => {
     expect(invoke).toHaveBeenCalledWith("backend_send_message", {
       message: "тест",
       session: null,
+      images: null,
+    });
+  });
+
+  it("sendBackendMessage с изображениями передаёт images в invoke", async () => {
+    invoke.mockResolvedValueOnce({ ok: true, text: "картинка получена" });
+    await sendBackendMessage("анализ", "sess-1", ["data:image/png;base64,123"]);
+    expect(invoke).toHaveBeenCalledWith("backend_send_message", {
+      message: "анализ",
+      session: "sess-1",
+      images: ["data:image/png;base64,123"],
     });
   });
 

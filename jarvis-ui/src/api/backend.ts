@@ -81,6 +81,8 @@ export interface ApiPresetConfig {
   model: string;
   agentEnabled?: boolean;
   approvalMode?: string;
+  reasoningEffort?: string;
+  thinkingBudget?: number;
 }
 
 export interface MicrophoneDevice {
@@ -97,9 +99,28 @@ export interface SystemStats {
   platform: string;
 }
 
+export interface ModelCapability {
+  id: string;
+  name?: string;
+  reasoning?: boolean;
+  reasoningEffort?: boolean;
+  reasoning_effort?: boolean;
+  reasoningEfforts?: string[];
+  reasoning_efforts?: string[];
+  maxThinkingBudget?: number;
+  max_thinking_budget?: number;
+  multimodal?: boolean;
+  supportedParameters?: string[];
+  supported_parameters?: string[];
+  contextLength?: number;
+  context_length?: number;
+  description?: string;
+}
+
 export interface ModelGroup {
   provider: string;
   models: string[];
+  details?: Record<string, ModelCapability>;
 }
 
 export interface BackendTimer {
@@ -220,6 +241,8 @@ export interface BackendConfigTree {
     system_prompt?: string | null;
     temperature?: number | null;
     max_tokens?: number | null;
+    reasoning_effort?: string | null;
+    reasoningEffort?: string | null;
     ollama?: { base_url?: string; model?: string; temperature?: number; timeout?: number };
     openai?: { model?: string; temperature?: number; max_tokens?: number; timeout?: number };
     anthropic?: { model?: string; temperature?: number; max_tokens?: number; timeout?: number };
@@ -361,13 +384,62 @@ export async function getSystemStats(): Promise<SystemStats> {
   return safeInvoke("system_stats");
 }
 
-export async function sendBackendMessage(message: string, sessionId?: string): Promise<string> {
-  const response = await safeInvoke<{ ok: boolean; text?: string; error?: string }>(
+let _lastResponseThinking: string | undefined = undefined;
+
+export function getLastResponseThinking(): string | undefined {
+  return _lastResponseThinking;
+}
+
+export interface BackendMessageResult {
+  text: string;
+  thinking?: string;
+}
+
+export async function sendBackendMessageDetailed(
+  message: string,
+  sessionId?: string,
+  images?: string[],
+  reasoningEffort?: string,
+  reasoningBudget?: number,
+): Promise<BackendMessageResult> {
+  const payload: Record<string, unknown> = {
+    message,
+    session: sessionId ?? null,
+    images: images && images.length > 0 ? images : null,
+  };
+  if (reasoningEffort !== undefined && reasoningEffort !== null) {
+    payload.reasoning_effort = reasoningEffort;
+  }
+  if (reasoningBudget !== undefined && reasoningBudget !== null) {
+    payload.reasoning_budget = reasoningBudget;
+  }
+  const response = await safeInvoke<{ ok: boolean; text?: string; error?: string; thinking?: string }>(
     "backend_send_message",
-    { message, session: sessionId ?? null },
+    payload,
   );
   if (!response.ok) throw new Error(response.error ?? "Ошибка backend");
-  return response.text ?? "";
+  _lastResponseThinking = response.thinking;
+  return {
+    text: response.text ?? "",
+    thinking: response.thinking,
+  };
+}
+
+export async function sendBackendMessage(
+  message: string,
+  sessionId?: string,
+  images?: string[],
+  reasoningEffort?: string,
+  reasoningBudget?: number,
+): Promise<string> {
+  const res = await sendBackendMessageDetailed(
+    message,
+    sessionId,
+    images,
+    reasoningEffort,
+    reasoningBudget,
+  );
+  return res.text;
 }
 
 // ── Browser Mock Implementation ───────────────────────────────────────────────
@@ -670,22 +742,74 @@ async function handleBrowserMock<T>(cmd: string, args?: Record<string, unknown>)
     }
 
     if (conf.type === "anthropic") {
+      const details: Record<string, ModelCapability> = {
+        "claude-3-5-sonnet-20241022": {
+          id: "claude-3-5-sonnet-20241022",
+          name: "Claude 3.5 Sonnet",
+          reasoning: false,
+          multimodal: true,
+          contextLength: 200000,
+        },
+        "claude-3-5-haiku-20241022": {
+          id: "claude-3-5-haiku-20241022",
+          name: "Claude 3.5 Haiku",
+          reasoning: false,
+          multimodal: true,
+          contextLength: 200000,
+        },
+        "claude-3-opus-20240229": {
+          id: "claude-3-opus-20240229",
+          name: "Claude 3 Opus",
+          reasoning: false,
+          multimodal: true,
+          contextLength: 200000,
+        },
+      };
       return {
         ok: true,
         groups: [
-          { provider: "anthropic", models: ["claude-3-5-sonnet-20241022", "claude-3-5-haiku-20241022", "claude-3-opus-20240229"] },
+          {
+            provider: "anthropic",
+            models: ["claude-3-5-sonnet-20241022", "claude-3-5-haiku-20241022", "claude-3-opus-20240229"],
+            details,
+          },
         ],
       } as T;
     }
+    const openaiDetails: Record<string, ModelCapability> = {
+      "gpt-4o": { id: "gpt-4o", name: "GPT-4o", reasoning: false, multimodal: true, contextLength: 128000 },
+      "gpt-4o-mini": { id: "gpt-4o-mini", name: "GPT-4o Mini", reasoning: false, multimodal: true, contextLength: 128000 },
+      "o1-mini": {
+        id: "o1-mini",
+        name: "o1-mini",
+        reasoning: true,
+        reasoningEffort: true,
+        reasoningEfforts: ["off", "low", "medium", "high", "max"],
+        multimodal: false,
+        contextLength: 128000,
+      },
+      "qwen2.5:3b": { id: "qwen2.5:3b", name: "Qwen 2.5 3B", reasoning: false, multimodal: false, contextLength: 32768 },
+      "llama3.2:3b": { id: "llama3.2:3b", name: "Llama 3.2 3B", reasoning: false, multimodal: false, contextLength: 131072 },
+    };
     return {
       ok: true,
       groups: [
-        { provider: "openai", models: ["gpt-4o", "gpt-4o-mini", "o1-mini", "qwen2.5:3b", "llama3.2:3b"] },
+        {
+          provider: "openai",
+          models: ["gpt-4o", "gpt-4o-mini", "o1-mini", "qwen2.5:3b", "llama3.2:3b"],
+          details: openaiDetails,
+        },
       ],
     } as T;
   }
   if (cmd === "backend_send_message") {
-    return { ok: true, text: "Ответ Джарвиса: Команда принята." } as T;
+    const payload = args as { reasoning_effort?: string } | undefined;
+    const hasReasoning = payload?.reasoning_effort && payload.reasoning_effort !== "off";
+    return {
+      ok: true,
+      text: "Ответ Джарвиса: Команда принята.",
+      ...(hasReasoning ? { thinking: "Размышляю над ответом..." } : {}),
+    } as T;
   }
   return { ok: true } as T;
 }

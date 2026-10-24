@@ -179,6 +179,25 @@ class Bridge:
         except Exception:
             pass  # UI stream loss must never kill generation
 
+    def _emit_thinking(self, delta: str) -> None:
+        """Streams one thinking chunk as a JSONL line; Rust forwards it to the UI as chat-thinking."""
+        if self._stop_event.is_set():
+            raise InterruptedError("Генерация остановлена пользователем")
+        try:
+            payload: dict[str, Any] = {
+                "ok": True,
+                "stream": True,
+                "thinking": True,
+                "delta": delta,
+            }
+            if self._current_id:
+                payload["id"] = self._current_id
+            with self._stdout_lock:
+                self._proto_out.write(self._serialize(payload) + "\n")
+                self._proto_out.flush()
+        except Exception:
+            pass  # UI stream loss must never kill generation
+
     def _emit_tool(self, name: str, args: dict) -> None:
         """Notifies the UI that a tool is about to execute."""
         try:
@@ -239,6 +258,12 @@ class Bridge:
         if preset.get("max_tokens") is not None:
             llm_config["max_tokens"] = preset["max_tokens"]
             provider_config["max_tokens"] = preset["max_tokens"]
+        if preset.get("reasoning_effort") is not None:
+            llm_config["reasoning_effort"] = preset["reasoning_effort"]
+            provider_config["reasoning_effort"] = preset["reasoning_effort"]
+        if preset.get("thinking_budget") is not None:
+            llm_config["thinking_budget"] = preset["thinking_budget"]
+            provider_config["thinking_budget"] = preset["thinking_budget"]
         # Bash agent must be enabled explicitly for tool-calling to work.
         # ResponsePipeline copies these values at construction time (before the
         # preset was applied), so mirror them onto the live pipeline instance.
@@ -733,26 +758,35 @@ class Bridge:
                                 "status", "Постоянная прослушка включена"
                             )
 
+                    llm_cfg = jarvis.config.get("llm", {}) if jarvis is not None else {}
+                    r_effort = llm_cfg.get("reasoning_effort")
+                    r_budget = llm_cfg.get("thinking_budget")
                     resp = jarvis.response.process_query(
                         text,
                         stream_callback=self._emit_delta,
+                        thinking_callback=self._emit_thinking,
                         tool_callback=self._emit_tool,
                         tool_result_callback=self._emit_tool_result,
+                        reasoning_effort=r_effort,
+                        reasoning_budget=r_budget,
                     )
 
-                    final_resp = resp or "Готово, сэр."
-                    self._emit_voice_event(
-                        "finished",
-                        {
-                            "query": text,
-                            "response": final_resp,
-                            "session": self._current_session,
-                        },
-                    )
+                    from jarvis.prompt_builder import extract_reasoning
 
-                    if resp and hasattr(jarvis.response, "speak"):
-                        self._emit_voice_event("speaking", resp)
-                        jarvis.response.speak(resp)
+                    clean_resp, voice_thinking = extract_reasoning(resp or "")
+                    final_resp = clean_resp or "Готово, сэр."
+                    finish_payload: dict[str, Any] = {
+                        "query": text,
+                        "response": final_resp,
+                        "session": self._current_session,
+                    }
+                    if voice_thinking:
+                        finish_payload["thinking"] = voice_thinking
+                    self._emit_voice_event("finished", finish_payload)
+
+                    if clean_resp and hasattr(jarvis.response, "speak"):
+                        self._emit_voice_event("speaking", clean_resp)
+                        jarvis.response.speak(clean_resp)
                         if hasattr(jarvis.response, "wait_for_speech"):
                             jarvis.response.wait_for_speech()
 
@@ -823,7 +857,8 @@ class Bridge:
             if self._stop_event.is_set():
                 return {"ok": False, "error": "Остановлено пользователем"}
             text = str(request.get("text", "")).strip()
-            if not text:
+            images = request.get("images")
+            if not text and not images:
                 return {"ok": False, "error": "Пустое сообщение"}
             # Keep backend context aligned with the UI chat that is sending.
             session = str(request.get("session", "") or "")
@@ -835,20 +870,30 @@ class Bridge:
             # mute/dictate/exit), exactly like Jarvis._process_special does
             # before the response pipeline swallows them.
             marker = None
-            if self.jarvis is not None and self.jarvis.commands is not None:
+            if (
+                not images
+                and self.jarvis is not None
+                and self.jarvis.commands is not None
+            ):
                 marker = self.jarvis.commands.executor.parse_voice_command(
                     text.lower().strip()
                 )
             if marker:
                 return {"ok": True, "text": self._resolve_marker(marker)}
+            reasoning_effort = request.get("reasoning_effort")
+            reasoning_budget = request.get("reasoning_budget")
             jarvis = self.jarvis
             response = (
                 self._quiet_call(
                     lambda: jarvis.response.process_query(
                         text,
+                        images=images,
                         stream_callback=self._emit_delta,
+                        thinking_callback=self._emit_thinking,
                         tool_callback=self._emit_tool,
                         tool_result_callback=self._emit_tool_result,
+                        reasoning_effort=reasoning_effort,
+                        reasoning_budget=reasoning_budget,
                     )
                 )
                 if jarvis is not None
@@ -857,16 +902,19 @@ class Bridge:
             if self._stop_event.is_set():
                 return {"ok": False, "error": "Остановлено пользователем"}
             response = self._resolve_marker(response)
-            # Только маскировка секретов: в текстовом чате показываем ПОЛНЫЙ
-            # ответ. Обрезка/markdown-чистка (sanitize_for_tts) — в
-            # ResponsePipeline.speak, т.е. только когда ответ идёт голосом.
-            try:
-                from jarvis.prompt_builder import redact_secrets
+            from jarvis.prompt_builder import extract_reasoning, redact_secrets
 
-                response = redact_secrets(response)
+            clean_text, thinking = extract_reasoning(response)
+            try:
+                clean_text = redact_secrets(clean_text)
+                if thinking:
+                    thinking = redact_secrets(thinking)
             except Exception:
                 pass  # sanitisation must never break the reply path
-            return {"ok": True, "text": response}
+            res_obj: dict[str, Any] = {"ok": True, "text": clean_text}
+            if thinking:
+                res_obj["thinking"] = thinking
+            return res_obj
         if command == "list_models":
             return self._list_models(request.get("config", {}))
         if command == "get_config":
@@ -960,7 +1008,7 @@ class Bridge:
 
     @staticmethod
     def _validate_config(config: dict[str, Any]) -> str | None:
-        if config.get("type") not in {"openai", "anthropic"}:
+        if config.get("type") not in {"openai", "anthropic", "ollama"}:
             return "Неподдерживаемый тип API"
         endpoint = str(config.get("endpoint") or "").strip()
         if not endpoint:
@@ -1123,15 +1171,21 @@ class Bridge:
         }
 
     @staticmethod
-    def _group_models(ids: list[str]) -> list[dict[str, Any]]:
+    def _group_models(
+        ids: list[str],
+        details: Optional[dict[str, dict[str, Any]]] = None,
+    ) -> list[dict[str, Any]]:
         groups: dict[str, list[str]] = {}
         for model_id in ids:
             group = model_id.split("/", 1)[0] if "/" in model_id else "other"
             groups.setdefault(group, []).append(model_id)
-        return [
-            {"provider": group, "models": sorted(models)}
-            for group, models in sorted(groups.items())
-        ]
+        result: list[dict[str, Any]] = []
+        for group, models in sorted(groups.items()):
+            g_dict: dict[str, Any] = {"provider": group, "models": sorted(models)}
+            if details is not None:
+                g_dict["details"] = {m: details[m] for m in models if m in details}
+            result.append(g_dict)
+        return result
 
     def _list_models(self, config: dict[str, Any]) -> dict[str, Any]:
         error = self._validate_config(config)
@@ -1140,9 +1194,12 @@ class Bridge:
         api_type: str = config["type"]
         endpoint: str = config["endpoint"].rstrip("/")
         api_key: str = str(config.get("api_key") or "").strip()
-        url = f"{endpoint}/models"
+        if api_type == "ollama":
+            url = f"{endpoint}/api/tags"
+        else:
+            url = f"{endpoint}/models"
         headers: dict[str, str] = {}
-        if api_type == "openai":
+        if api_type in {"openai", "ollama"}:
             if api_key:
                 headers["Authorization"] = f"Bearer {api_key}"
         else:
@@ -1151,19 +1208,297 @@ class Bridge:
             headers["anthropic-version"] = ANTHROPIC_VERSION
         try:
             resp = requests.get(url, headers=headers, timeout=15)
+            # Fallback for Ollama if /models gives 404
+            if resp.status_code == 404 and (
+                "11434" in endpoint or "ollama" in endpoint.lower()
+            ):
+                alt_url = f"{endpoint}/api/tags"
+                alt_resp = requests.get(alt_url, headers=headers, timeout=15)
+                if alt_resp.status_code == 200:
+                    resp = alt_resp
             resp.raise_for_status()
             payload = resp.json()
         except Exception as exc:
             return {"ok": False, "error": f"Не удалось получить модели: {exc}"}
         raw = payload.get("data") if isinstance(payload, dict) else payload
+        if not raw and isinstance(payload, dict) and "models" in payload:
+            raw = payload.get("models")
         ids: list[str] = []
+        model_details: dict[str, dict[str, Any]] = {}
         for item in raw or []:
-            model_id = item.get("id") if isinstance(item, dict) else item
-            if isinstance(model_id, str):
+            arch: dict[str, Any] = {}
+            caps: dict[str, Any] = {}
+            features: list[Any] = []
+            supp_params: list[Any] = []
+            raw_details: dict[str, Any] = {}
+            pricing: dict[str, Any] = {}
+            if isinstance(item, dict):
+                model_id = item.get("id") or item.get("name") or item.get("model")
+                name = item.get("name") or model_id or ""
+                description = item.get("description")
+                ctx = (
+                    item.get("context_length")
+                    or item.get("context_window")
+                    or item.get("max_context_length")
+                )
+                raw_params = item.get("supported_parameters") or item.get("parameters")
+                if isinstance(raw_params, list):
+                    supp_params = raw_params
+                raw_arch = item.get("architecture")
+                if isinstance(raw_arch, dict):
+                    arch = raw_arch
+                raw_caps = item.get("capabilities")
+                if isinstance(raw_caps, dict):
+                    caps = raw_caps
+                raw_features = item.get("features")
+                if isinstance(raw_features, list):
+                    features = raw_features
+                if isinstance(item.get("details"), dict):
+                    raw_details = item["details"]
+                if isinstance(item.get("pricing"), dict):
+                    pricing = item["pricing"]
+            else:
+                model_id = str(item)
+                name = model_id
+                description = None
+                ctx = None
+
+            if isinstance(model_id, str) and model_id.strip():
+                model_id = model_id.strip()
                 ids.append(model_id)
+                id_lower = model_id.lower()
+                id_basename = id_lower.split("/")[-1]
+
+                # 1. Endpoint-explicit reasoning options / efforts
+                explicit_efforts: list[str] = []
+                if isinstance(item, dict):
+                    raw_efforts = (
+                        item.get("reasoning_efforts")
+                        or item.get("supported_reasoning_efforts")
+                        or item.get("reasoning_effort_levels")
+                    )
+                    if isinstance(raw_efforts, list):
+                        explicit_efforts = [
+                            str(x).strip().lower()
+                            for x in raw_efforts
+                            if str(x).strip()
+                        ]
+                    elif isinstance(item.get("reasoning_options"), list):
+                        for ro in item["reasoning_options"]:
+                            if isinstance(ro, str) and ro.strip():
+                                explicit_efforts.append(ro.strip().lower())
+                            elif isinstance(ro, dict):
+                                vals = (
+                                    ro.get("values")
+                                    or ro.get("options")
+                                    or ro.get("efforts")
+                                )
+                                if isinstance(vals, list):
+                                    for v in vals:
+                                        if isinstance(v, str) and v.strip():
+                                            explicit_efforts.append(v.strip().lower())
+                    elif isinstance(item.get("options"), dict):
+                        opt_efforts = item["options"].get("reasoning_effort") or item[
+                            "options"
+                        ].get("reasoningEffort")
+                        if isinstance(opt_efforts, dict) and isinstance(
+                            opt_efforts.get("values"), list
+                        ):
+                            explicit_efforts = [
+                                str(x).strip().lower()
+                                for x in opt_efforts["values"]
+                                if str(x).strip()
+                            ]
+                        elif isinstance(opt_efforts, list):
+                            explicit_efforts = [
+                                str(x).strip().lower()
+                                for x in opt_efforts
+                                if str(x).strip()
+                            ]
+
+                # Reasoning detection from endpoint parameters & capabilities
+                has_reasoning_param = any(
+                    p in supp_params
+                    for p in (
+                        "reasoning",
+                        "include_reasoning",
+                        "thinking",
+                        "reasoning_effort",
+                        "thinking_budget",
+                        "thought",
+                        "reasoning_tokens",
+                    )
+                ) or bool(explicit_efforts)
+                has_reasoning_pricing = bool(pricing.get("reasoning"))
+                ollama_families = [
+                    str(f).lower()
+                    for f in (
+                        raw_details.get("families") or [raw_details.get("family") or ""]
+                    )
+                ]
+                has_ollama_reasoning = any(
+                    fam in ("deepseek", "qwq") for fam in ollama_families
+                )
+                has_reasoning_cap = bool(
+                    caps.get("reasoning")
+                    or caps.get("thinking")
+                    or has_reasoning_pricing
+                    or has_ollama_reasoning
+                    or (
+                        isinstance(item, dict)
+                        and (item.get("reasoning") or item.get("thinking"))
+                    )
+                )
+                has_reasoning_arch = bool(
+                    arch.get("instruct_type") == "thinking"
+                    or "thinking" in str(arch.get("modality", "")).lower()
+                )
+                reasoning_patterns = (
+                    "o1",
+                    "o3",
+                    "o4",
+                    "deepseek-r1",
+                    "-r1",
+                    "/r1",
+                    "r1-",
+                    "r1:",
+                    "qwq",
+                    "reasoner",
+                    "reasoning",
+                    "thinking",
+                    "thought",
+                    "gemini-2.5",
+                    "gemini-3",
+                    "gemini-2.0-flash-thinking",
+                    "claude-3-7",
+                    "claude-3.7",
+                    "grok-3",
+                )
+                has_reasoning_heuristic = any(
+                    p in id_lower or p in id_basename for p in reasoning_patterns
+                )
+                supports_reasoning = (
+                    has_reasoning_param
+                    or has_reasoning_cap
+                    or has_reasoning_arch
+                    or has_reasoning_heuristic
+                )
+
+                if supports_reasoning:
+                    if explicit_efforts:
+                        clean_efforts = ["off"]
+                        for e in explicit_efforts:
+                            if e != "off" and e not in clean_efforts:
+                                clean_efforts.append(e)
+                        reasoning_efforts_list = clean_efforts
+                    elif (
+                        "reasoning_effort" in supp_params or "reasoning" in supp_params
+                    ):
+                        reasoning_efforts_list = ["off", "low", "medium", "high"]
+                    elif any(
+                        p in id_lower or p in id_basename
+                        for p in ("deepseek-r1", "-r1", "/r1", "r1-", "r1:", "qwq")
+                    ) and not any(p in id_lower for p in ("claude", "o1", "o3", "o4")):
+                        reasoning_efforts_list = ["off", "on"]
+                    elif any(
+                        p in id_lower
+                        for p in (
+                            "claude-3-7",
+                            "claude-3.7",
+                            "gemini-2.5",
+                            "gemini-3",
+                            "gemini-2.0-flash-thinking",
+                            "flash-thinking",
+                            "o1",
+                            "o3",
+                            "o4",
+                        )
+                    ):
+                        reasoning_efforts_list = ["off", "low", "medium", "high", "max"]
+                    else:
+                        reasoning_efforts_list = ["off", "low", "medium", "high"]
+                else:
+                    reasoning_efforts_list = []
+
+                if ctx is None:
+                    if "gemini" in id_lower:
+                        ctx = 2097152 if "pro" in id_lower else 1048576
+                    elif any(
+                        p in id_lower for p in ("claude-3", "sonnet", "opus", "haiku")
+                    ):
+                        ctx = 200000
+                    elif any(
+                        p in id_lower for p in ("gpt-4o", "gpt-4-turbo", "o1", "o3")
+                    ):
+                        ctx = 128000
+                    elif "deepseek" in id_lower:
+                        ctx = 64000
+
+                # Multimodal (vision/attachments) detection
+                modality = str(arch.get("modality", "")).lower()
+                has_image_modality = "image" in modality or "vision" in modality
+                has_vision_cap = bool(
+                    caps.get("vision")
+                    or caps.get("multimodal")
+                    or "vision" in features
+                    or "multimodal" in features
+                    or "image_url" in supp_params
+                    or any("clip" in fam or "mllama" in fam for fam in ollama_families)
+                )
+                multimodal_patterns = (
+                    "gpt-4o",
+                    "gpt-4-turbo",
+                    "vision",
+                    "-vl",
+                    "/vl",
+                    "vl-",
+                    "vl:",
+                    "llava",
+                    "gemini",
+                    "claude-3",
+                    "claude-sonnet",
+                    "claude-opus",
+                    "claude-haiku",
+                    "pixtral",
+                    "minicpm-v",
+                    "qwen2-vl",
+                    "qwen2.5-vl",
+                    "omni",
+                )
+                has_multimodal_heuristic = any(
+                    p in id_lower or p in id_basename for p in multimodal_patterns
+                )
+                supports_multimodal = (
+                    has_image_modality or has_vision_cap or has_multimodal_heuristic
+                )
+
+                max_thinking = 64000 if supports_reasoning else 0
+
+                model_details[model_id] = {
+                    "id": model_id,
+                    "name": name,
+                    "reasoning": supports_reasoning,
+                    "reasoning_effort": bool(supports_reasoning),
+                    "reasoningEffort": bool(supports_reasoning),
+                    "reasoning_efforts": reasoning_efforts_list,
+                    "reasoningEfforts": reasoning_efforts_list,
+                    "max_thinking_budget": max_thinking,
+                    "maxThinkingBudget": max_thinking,
+                    "multimodal": supports_multimodal,
+                    "supported_parameters": supp_params,
+                    "supportedParameters": supp_params,
+                    "context_length": ctx,
+                    "contextLength": ctx,
+                    "description": description,
+                }
+
         if not ids:
             return {"ok": False, "error": "Список моделей пуст"}
-        return {"ok": True, "groups": self._group_models(sorted(set(ids)))}
+        return {
+            "ok": True,
+            "groups": self._group_models(sorted(set(ids)), details=model_details),
+            "model_details": model_details,
+        }
 
     @staticmethod
     def _timers() -> dict[str, Any]:

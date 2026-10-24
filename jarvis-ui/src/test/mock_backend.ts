@@ -104,10 +104,34 @@ async function handleInvoke(cmd: string, args?: Record<string, unknown>): Promis
         {
           provider: "ollama",
           models: ["qwen2.5:72b", "llama3.3:70b", "deepseek-r1:70b"],
+          details: {
+            "deepseek-r1:70b": {
+              id: "deepseek-r1:70b",
+              name: "DeepSeek R1 70B",
+              reasoning: true,
+              reasoningEffort: true,
+              reasoningEfforts: ["off", "low", "medium", "high", "max"],
+              multimodal: false,
+            },
+          },
         },
         {
           provider: "openai",
           models: ["gpt-4o", "gpt-4o-mini"],
+          details: {
+            "gpt-4o": {
+              id: "gpt-4o",
+              name: "GPT-4o",
+              reasoning: false,
+              multimodal: true,
+            },
+            "gpt-4o-mini": {
+              id: "gpt-4o-mini",
+              name: "GPT-4o Mini",
+              reasoning: false,
+              multimodal: true,
+            },
+          },
         },
       ],
     };

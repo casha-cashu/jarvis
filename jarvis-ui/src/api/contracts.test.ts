@@ -194,6 +194,18 @@ describe("IPC Protocol Contracts (Tauri Invoke Commands)", () => {
     expect(mockInvoke).toHaveBeenCalledWith("backend_send_message", {
       message: "Ping",
       session: null,
+      images: null,
+    });
+  });
+
+  it("sendBackendMessage passes images when provided", async () => {
+    mockInvoke.mockResolvedValueOnce({ ok: true, text: "Seen" });
+    const reply = await sendBackendMessage("Look", "s1", ["data:image/png;base64,xyz"]);
+    expect(reply).toBe("Seen");
+    expect(mockInvoke).toHaveBeenCalledWith("backend_send_message", {
+      message: "Look",
+      session: "s1",
+      images: ["data:image/png;base64,xyz"],
     });
   });
 

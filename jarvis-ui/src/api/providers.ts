@@ -1,3 +1,5 @@
+import type { ModelGroup } from "./backend";
+
 export type ProviderType = "openai" | "anthropic";
 
 /** A user-defined LLM provider endpoint (e.g. Ollama, xKiro, OpenRouter). */
@@ -15,9 +17,35 @@ export interface ActiveModel {
   model: string;
 }
 
-const PROVIDERS_KEY = "jarvis.ui.providers";
-const LEGACY_PRESETS_KEY = "jarvis.ui.api-presets";
-const ACTIVE_KEY = "jarvis.ui.active-model";
+export const PROVIDERS_KEY = "jarvis.ui.providers";
+export const LEGACY_PRESETS_KEY = "jarvis.ui.api-presets";
+export const ACTIVE_KEY = "jarvis.ui.active-model";
+export const MODELS_CACHE_KEY = "jarvis.ui.models-cache";
+
+export function loadModelsCache(): Record<string, ModelGroup[]> {
+  try {
+    return JSON.parse(localStorage.getItem(MODELS_CACHE_KEY) ?? "{}") as Record<string, ModelGroup[]>;
+  } catch {
+    return {};
+  }
+}
+
+export function cacheModels(providerId: string, groups: ModelGroup[]): void {
+  const cache = loadModelsCache();
+  cache[providerId] = groups;
+  localStorage.setItem(MODELS_CACHE_KEY, JSON.stringify(cache));
+}
+
+export function clearModelsCache(providerId?: string): void {
+  if (providerId) {
+    const cache = loadModelsCache();
+    delete cache[providerId];
+    localStorage.setItem(MODELS_CACHE_KEY, JSON.stringify(cache));
+  } else {
+    localStorage.removeItem(MODELS_CACHE_KEY);
+  }
+}
+
 
 export function loadProviders(): ProviderEntry[] {
   try {
@@ -90,6 +118,7 @@ export function updateProvider(id: string, patch: Partial<ProviderEntry>): Provi
 export function deleteProvider(id: string): ProviderEntry[] {
   const next = loadProviders().filter((p) => p.id !== id);
   saveProviders(next);
+  clearModelsCache(id);
   const active = getActiveModel();
   if (active && active.providerId === id) clearActiveModel();
   notifyProvidersChanged();

@@ -16,6 +16,7 @@ import json
 import os
 import logging
 import random
+import re
 import threading
 import time
 from abc import ABC, abstractmethod
@@ -329,7 +330,9 @@ class LLMClient(ABC):
             sp = sp.replace("{datetime}", dt_str)
         return sp
 
-    def add_to_history(self, role: str, content: str):
+    def add_to_history(
+        self, role: str, content: str, images: Optional[list[str]] = None
+    ):
         """Добавляет сообщение в историю и персистит на диск.
 
         Под локом история перечитывается с диска: если параллельный
@@ -345,7 +348,10 @@ class LLMClient(ABC):
             # склеивают в один ход — Anthropic это документированное
             # поведение, потерь ходов быть не должно.
             self.history = _load_history_raw()
-            self.history.append({"role": role, "content": content})
+            entry: dict[str, Any] = {"role": role, "content": content}
+            if images:
+                entry["images"] = images
+            self.history.append(entry)
 
             # Обрезаем историю если слишком длинная
             self.history = _safe_truncate_history(self.history, self.max_history)
@@ -382,7 +388,16 @@ class LLMClient(ABC):
             _save_history_raw(self.history)
 
     @abstractmethod
-    def chat(self, message: str) -> str:
+    def chat(
+        self,
+        message: str,
+        images: Optional[list[str]] = None,
+        stream_callback: Optional[Callable[[str], None]] = None,
+        thinking_callback: Optional[Callable[[str], None]] = None,
+        reasoning_effort: Optional[str] = None,
+        reasoning_budget: Optional[int] = None,
+        **kwargs: Any,
+    ) -> str:
         """Отправляет сообщение и получает ответ"""
 
 
@@ -407,31 +422,106 @@ class AnthropicClient(LLMClient):
         self.temperature = anthropic_config.get("temperature", 0.7)
         self.max_tokens = anthropic_config.get("max_tokens", 1024)
         self.timeout = anthropic_config.get("timeout", 30)
+        self.reasoning_effort = anthropic_config.get("reasoning_effort")
+        self.thinking_budget = anthropic_config.get("thinking_budget")
 
         logger.info(f"✅ Anthropic клиент: {self.model}")
 
-    def chat(self, message: str, stream_callback=None) -> str:
+    def chat(
+        self,
+        message: str,
+        images: Optional[list[str]] = None,
+        stream_callback: Optional[Callable[[str], None]] = None,
+        thinking_callback: Optional[Callable[[str], None]] = None,
+        reasoning_effort: Optional[str] = None,
+        reasoning_budget: Optional[int] = None,
+        **kwargs: Any,
+    ) -> str:
         """Отправляет сообщение в Anthropic API"""
         if stream_callback is not None:
             # Anthropic-клиент пока не стримит: параметр принимается, чтобы
             # LLMManager звал всех клиентов единообразно (иначе — TypeError).
             logger.debug("Anthropic client does not support streaming — ignoring")
         try:
-            self.add_to_history("user", message)
+            self.add_to_history("user", message, images=images)
+
+            formatted_messages: list[dict[str, Any]] = []
+            for m in self.history:
+                role = m["role"]
+                content = m["content"]
+                imgs = m.get("images")
+                if imgs and role == "user":
+                    content_blocks: list[dict[str, Any]] = []
+                    for img in imgs:
+                        media_type = "image/jpeg"
+                        b64_data = img
+                        if img.startswith("data:") and ";base64," in img:
+                            header, b64_data = img.split(";base64,", 1)
+                            media_type = header.replace("data:", "")
+                        content_blocks.append(
+                            {
+                                "type": "image",
+                                "source": {
+                                    "type": "base64",
+                                    "media_type": media_type,
+                                    "data": b64_data,
+                                },
+                            }
+                        )
+                    if content:
+                        content_blocks.append({"type": "text", "text": content})
+                    formatted_messages.append(
+                        {"role": "user", "content": content_blocks}
+                    )
+                else:
+                    formatted_messages.append({"role": role, "content": content})
+
+            effort = (
+                reasoning_effort
+                if reasoning_effort is not None
+                else self.reasoning_effort
+            )
+            budget = (
+                reasoning_budget
+                if reasoning_budget is not None
+                else self.thinking_budget
+            )
+            create_kwargs: dict[str, Any] = {
+                "model": self.model,
+                "max_tokens": self.max_tokens,
+                "temperature": self.temperature,
+                "system": self._render_system_prompt(),
+                "messages": cast(Any, formatted_messages),
+                "timeout": self.timeout,
+            }
+            if effort and effort != "off":
+                effort_map = {"low": 1024, "medium": 4096, "high": 8192, "max": 16384}
+                tok = budget or effort_map.get(str(effort).lower(), 4096)
+                create_kwargs["thinking"] = {"type": "enabled", "budget_tokens": tok}
+                create_kwargs["temperature"] = 1.0
+                create_kwargs["max_tokens"] = max(self.max_tokens, tok + 1024)
+            elif budget:
+                create_kwargs["thinking"] = {"type": "enabled", "budget_tokens": budget}
+                create_kwargs["temperature"] = 1.0
+                create_kwargs["max_tokens"] = max(self.max_tokens, budget + 1024)
 
             response = with_rate_limit_retry(
-                lambda: self.client.messages.create(
-                    model=self.model,
-                    max_tokens=self.max_tokens,
-                    temperature=self.temperature,
-                    system=self._render_system_prompt(),
-                    messages=cast(Any, self.history),
-                    timeout=self.timeout,
-                ),
+                lambda: self.client.messages.create(**create_kwargs),
                 max_retries=self.max_retries,
                 base_delay=self.base_delay,
                 max_delay=self.max_delay,
             )
+
+            thinking_block = next(
+                (
+                    str(getattr(b, "thinking", "")).strip()
+                    for b in response.content
+                    if getattr(b, "type", "") == "thinking"
+                ),
+                None,
+            )
+            if thinking_block and thinking_callback:
+                thinking_callback(thinking_block)
 
             # Empty or tool_use/thinking-only responses have no text block.
             answer = next(
@@ -442,6 +532,9 @@ class AnthropicClient(LLMClient):
                 ),
                 "",
             )
+            if thinking_block and answer and not answer.startswith("<think>"):
+                answer = f"<think>\n{thinking_block}\n</think>\n{answer}"
+
             if not answer:
                 # Пустой assistant-контент Anthropic отвергает на следующем
                 # запросе — не отравляем историю, снимаем осиротевший user.
@@ -463,6 +556,10 @@ class AnthropicClient(LLMClient):
         on_tool_call=None,
         max_iterations: int = 5,
         stream_callback: Optional[Callable[[str], None]] = None,
+        thinking_callback: Optional[Callable[[str], None]] = None,
+        reasoning_effort: Optional[str] = None,
+        reasoning_budget: Optional[int] = None,
+        **kwargs: Any,
     ) -> str:
         """LLM ↔ tools loop via Anthropic's native tools API.
 
@@ -491,21 +588,55 @@ class AnthropicClient(LLMClient):
             base_messages: list[dict[str, Any]] = list(self.history)
             executed_tools: list[str] = []
 
+            effort = (
+                reasoning_effort
+                if reasoning_effort is not None
+                else self.reasoning_effort
+            )
+            budget = (
+                reasoning_budget
+                if reasoning_budget is not None
+                else self.thinking_budget
+            )
+            create_kwargs: dict[str, Any] = {
+                "model": self.model,
+                "max_tokens": self.max_tokens,
+                "temperature": self.temperature,
+                "system": self._render_system_prompt(),
+                "tools": cast(Any, anthropic_tools),
+                "timeout": self.timeout,
+            }
+            if effort and effort != "off":
+                effort_map = {"low": 1024, "medium": 4096, "high": 8192, "max": 16384}
+                tok = budget or effort_map.get(str(effort).lower(), 4096)
+                create_kwargs["thinking"] = {"type": "enabled", "budget_tokens": tok}
+                create_kwargs["temperature"] = 1.0
+                create_kwargs["max_tokens"] = max(self.max_tokens, tok + 1024)
+            elif budget:
+                create_kwargs["thinking"] = {"type": "enabled", "budget_tokens": budget}
+                create_kwargs["temperature"] = 1.0
+                create_kwargs["max_tokens"] = max(self.max_tokens, budget + 1024)
+
             for iteration in range(max_iterations):
+                call_kwargs = dict(create_kwargs)
+                call_kwargs["messages"] = cast(Any, base_messages)
                 response = with_rate_limit_retry(
-                    lambda: self.client.messages.create(
-                        model=self.model,
-                        max_tokens=self.max_tokens,
-                        temperature=self.temperature,
-                        system=self._render_system_prompt(),
-                        messages=cast(Any, base_messages),
-                        tools=cast(Any, anthropic_tools),
-                        timeout=self.timeout,
-                    ),
+                    lambda: self.client.messages.create(**call_kwargs),
                     max_retries=self.max_retries,
                     base_delay=self.base_delay,
                     max_delay=self.max_delay,
                 )
+
+                thinking_block = next(
+                    (
+                        str(getattr(b, "thinking", "")).strip()
+                        for b in response.content
+                        if getattr(b, "type", "") == "thinking"
+                    ),
+                    None,
+                )
+                if thinking_block and thinking_callback:
+                    thinking_callback(thinking_block)
 
                 # Anthropic returns content as a list of blocks
                 # (TextBlock | ToolUseBlock)
@@ -518,6 +649,14 @@ class AnthropicClient(LLMClient):
                 ).strip()
 
                 if not tool_use_blocks:
+                    if (
+                        thinking_block
+                        and final_text
+                        and not final_text.startswith("<think>")
+                    ):
+                        final_text = (
+                            f"<think>\n{thinking_block}\n</think>\n{final_text}"
+                        )
                     if final_text:
                         if stream_callback is not None:
                             try:
@@ -601,18 +740,27 @@ class OpenRouterClient(LLMClient):
         self.model = openrouter_config.get("model", "anthropic/claude-3.5-sonnet")
         self.temperature = openrouter_config.get("temperature", 0.7)
         self.timeout = openrouter_config.get("timeout", 30)
+        self.reasoning_effort = openrouter_config.get("reasoning_effort")
+        self.thinking_budget = openrouter_config.get("thinking_budget")
 
         if not self.api_key:
             raise ValueError("OPENROUTER_API_KEY не установлен")
 
         logger.info(f"✅ OpenRouter клиент: {self.model}")
 
-    def chat(self, message: str, stream_callback=None) -> str:
-        """Отправляет сообщение в OpenRouter"""
-        if stream_callback is not None:
-            logger.debug("OpenRouter client does not support streaming — ignoring")
+    def chat(
+        self,
+        message: str,
+        images: Optional[list[str]] = None,
+        stream_callback: Optional[Callable[[str], None]] = None,
+        thinking_callback: Optional[Callable[[str], None]] = None,
+        reasoning_effort: Optional[str] = None,
+        reasoning_budget: Optional[int] = None,
+        **kwargs: Any,
+    ) -> str:
+        """Отправляет сообщение в OpenRouter с поддержкой streaming и reasoning"""
         try:
-            self.add_to_history("user", message)
+            self.add_to_history("user", message, images=images)
 
             headers = {
                 "Authorization": f"Bearer {self.api_key}",
@@ -620,19 +768,173 @@ class OpenRouterClient(LLMClient):
                 "HTTP-Referer": "http://localhost",
             }
 
-            messages = []
+            messages: list[dict[str, Any]] = []
             if self.system_prompt:
                 messages.append(
                     {"role": "system", "content": self._render_system_prompt()}
                 )
 
-            messages.extend(self.history)
+            for m in self.history:
+                role = m["role"]
+                content = m["content"]
+                imgs = m.get("images")
+                if imgs and role == "user":
+                    parts: list[dict[str, Any]] = []
+                    if content:
+                        parts.append({"type": "text", "text": content})
+                    for img in imgs:
+                        url = (
+                            img
+                            if img.startswith("data:")
+                            else f"data:image/jpeg;base64,{img}"
+                        )
+                        parts.append({"type": "image_url", "image_url": {"url": url}})
+                    messages.append({"role": "user", "content": parts})
+                else:
+                    messages.append({"role": role, "content": content})
 
-            payload = {
+            effort = (
+                reasoning_effort
+                if reasoning_effort is not None
+                else self.reasoning_effort
+            )
+            budget = (
+                reasoning_budget
+                if reasoning_budget is not None
+                else self.thinking_budget
+            )
+
+            payload: dict[str, Any] = {
                 "model": self.model,
                 "messages": messages,
                 "temperature": self.temperature,
             }
+            if effort and effort != "off":
+                payload["reasoning"] = {"effort": effort}
+                payload["include_reasoning"] = True
+            elif budget:
+                payload["reasoning"] = {"max_tokens": budget}
+                payload["include_reasoning"] = True
+            elif thinking_callback is not None:
+                payload["include_reasoning"] = True
+
+            if stream_callback is not None or thinking_callback is not None:
+                payload["stream"] = True
+
+                def _send_stream():
+                    resp = _http_post(
+                        self.session,
+                        "https://openrouter.ai/api/v1/chat/completions",
+                        headers=headers,
+                        json=payload,
+                        timeout=self.timeout,
+                        stream=True,
+                    )
+                    resp.raise_for_status()
+                    return resp
+
+                response = with_rate_limit_retry(
+                    _send_stream,
+                    max_retries=self.max_retries,
+                    base_delay=self.base_delay,
+                    max_delay=self.max_delay,
+                )
+
+                reasoning_parts: list[str] = []
+                content_parts: list[str] = []
+                in_thinking = False
+
+                with response:
+                    for line in response.iter_lines():
+                        if not line:
+                            continue
+                        line_str = (
+                            line.decode("utf-8") if isinstance(line, bytes) else line
+                        )
+                        if line_str.startswith("data: "):
+                            data_content = line_str[6:].strip()
+                            if data_content == "[DONE]":
+                                break
+                            try:
+                                chunk = json.loads(data_content)
+                            except json.JSONDecodeError:
+                                continue
+                            if not chunk.get("choices"):
+                                continue
+                            delta_obj = chunk["choices"][0].get("delta", {})
+                            reasoning_delta = (
+                                delta_obj.get("reasoning")
+                                or delta_obj.get("reasoning_content")
+                                or delta_obj.get("thinking")
+                            )
+                            if isinstance(reasoning_delta, str) and reasoning_delta:
+                                reasoning_parts.append(reasoning_delta)
+                                if thinking_callback:
+                                    thinking_callback(reasoning_delta)
+                                continue
+
+                            delta = delta_obj.get("content") or ""
+                            if delta:
+                                content_parts.append(delta)
+                                if any(
+                                    t in delta
+                                    for t in ("<think>", "<thought>", "<reasoning>")
+                                ):
+                                    in_thinking = True
+                                if in_thinking:
+                                    if any(
+                                        t in delta
+                                        for t in (
+                                            "</think>",
+                                            "</thought>",
+                                            "</reasoning>",
+                                        )
+                                    ):
+                                        in_thinking = False
+                                        for tag in (
+                                            "</think>",
+                                            "</thought>",
+                                            "</reasoning>",
+                                        ):
+                                            if tag in delta:
+                                                before, _, after = delta.partition(tag)
+                                                clean_tag = tag.replace("</", "<")
+                                                think_chunk = before.replace(
+                                                    clean_tag, ""
+                                                )
+                                                if think_chunk and thinking_callback:
+                                                    thinking_callback(think_chunk)
+                                                if after and stream_callback:
+                                                    stream_callback(after)
+                                                break
+                                    else:
+                                        clean_chunk = delta
+                                        for tag in (
+                                            "<think>",
+                                            "<thought>",
+                                            "<reasoning>",
+                                        ):
+                                            clean_chunk = clean_chunk.replace(tag, "")
+                                        if clean_chunk and thinking_callback:
+                                            thinking_callback(clean_chunk)
+                                else:
+                                    if stream_callback:
+                                        stream_callback(delta)
+
+                final_content = "".join(content_parts).strip()
+                if reasoning_parts:
+                    final_reasoning = "".join(reasoning_parts).strip()
+                    if not final_content.startswith(
+                        "<think>"
+                    ) and not final_content.startswith("<thought>"):
+                        answer = f"<think>\n{final_reasoning}\n</think>\n{final_content}".strip()
+                    else:
+                        answer = final_content
+                else:
+                    answer = final_content or "(пустой ответ)"
+
+                self.add_to_history("assistant", answer)
+                return answer
 
             def _send():
                 resp = _http_post(
@@ -652,8 +954,23 @@ class OpenRouterClient(LLMClient):
                 max_delay=self.max_delay,
             )
             data = response.json()
+            msg = data["choices"][0]["message"]
+            answer = (msg.get("content") or "").strip()
+            reasoning = (
+                msg.get("reasoning")
+                or msg.get("reasoning_content")
+                or msg.get("thinking")
+            )
+            if (
+                isinstance(reasoning, str)
+                and reasoning.strip()
+                and not answer.startswith("<think>")
+                and not answer.startswith("<thought>")
+            ):
+                if thinking_callback:
+                    thinking_callback(reasoning)
+                answer = f"<think>\n{reasoning}\n</think>\n{answer}"
 
-            answer = data["choices"][0]["message"]["content"].strip()
             if not answer:
                 self._discard_pending_user()
                 return ""
@@ -665,6 +982,12 @@ class OpenRouterClient(LLMClient):
             logger.error(f"❌ Ошибка OpenRouter: {e}")
             self._discard_pending_user()
             raise LLMError(str(e)) from e
+
+
+def _is_o_series(model_name: str) -> bool:
+    """True if model is OpenAI o1, o3, o4 series which disallow temperature and require max_completion_tokens."""
+    m = model_name.lower().split("/")[-1]
+    return bool(re.match(r"^o[134]($|[-/])", m))
 
 
 class OpenAIClient(LLMClient):
@@ -697,57 +1020,223 @@ class OpenAIClient(LLMClient):
         self.model = openai_cfg.get("model", "gpt-4o-mini")
         self.temperature = openai_cfg.get("temperature", 0.7)
         self.max_tokens = openai_cfg.get("max_tokens", 1024)
+        self.reasoning_effort = openai_cfg.get("reasoning_effort")
+        self.reasoning_budget = openai_cfg.get("reasoning_budget")
 
         logger.info(f"✅ OpenAI клиент: {self.model}")
 
     def _build_messages(self) -> list[dict[str, Any]]:
-        msgs = []
+        msgs: list[dict[str, Any]] = []
         if self.system_prompt:
             msgs.append({"role": "system", "content": self._render_system_prompt()})
-        msgs.extend(self.history)
+        for m in self.history:
+            role = m["role"]
+            content = m["content"]
+            imgs = m.get("images")
+            if imgs and role == "user":
+                parts: list[dict[str, Any]] = []
+                if content:
+                    parts.append({"type": "text", "text": content})
+                for img in imgs:
+                    url = (
+                        img
+                        if img.startswith("data:")
+                        else f"data:image/jpeg;base64,{img}"
+                    )
+                    parts.append({"type": "image_url", "image_url": {"url": url}})
+                msgs.append({"role": "user", "content": parts})
+            else:
+                msgs.append({"role": role, "content": content})
         return msgs
 
-    def chat(self, message: str, stream_callback=None) -> str:
+    def chat(
+        self,
+        message: str,
+        images: Optional[list[str]] = None,
+        stream_callback: Optional[Callable[[str], None]] = None,
+        thinking_callback: Optional[Callable[[str], None]] = None,
+        reasoning_effort: Optional[str] = None,
+        reasoning_budget: Optional[int] = None,
+        **kwargs: Any,
+    ) -> str:
         try:
-            self.add_to_history("user", message)
+            self.add_to_history("user", message, images=images)
 
-            if stream_callback is not None:
+            effort = (
+                reasoning_effort
+                if reasoning_effort is not None
+                else self.reasoning_effort
+            )
+            # OpenAI reasoning_effort accepts: low, medium, high. Map 'max' -> 'high', 'on' -> 'medium'.
+            wire_effort: Optional[str] = (
+                "high" if effort == "max" else ("medium" if effort == "on" else effort)
+            )
+
+            is_o = _is_o_series(self.model)
+            is_openrouter = (
+                "openrouter" in str(getattr(self.client, "base_url", "")).lower()
+            )
+            create_kwargs: dict[str, Any] = {
+                "model": self.model,
+                "messages": self._build_messages(),
+            }
+            if not is_o:
+                create_kwargs["temperature"] = self.temperature
+                create_kwargs["max_tokens"] = self.max_tokens
+            else:
+                create_kwargs["max_completion_tokens"] = self.max_tokens
+
+            if wire_effort and wire_effort != "off":
+                create_kwargs["reasoning_effort"] = wire_effort
+
+            def _call_create(stream_flag: bool = False) -> Any:
+                call_kwargs = dict(create_kwargs)
+                if stream_flag:
+                    call_kwargs["stream"] = True
+                if is_openrouter and wire_effort and wire_effort != "off":
+                    call_kwargs.setdefault("extra_body", {})["reasoning"] = {
+                        "effort": wire_effort
+                    }
+                try:
+                    return self.client.chat.completions.create(**call_kwargs)
+                except Exception as exc:
+                    err_s = str(exc).lower()
+                    modified = False
+                    if "reasoning_effort" in call_kwargs and (
+                        "reasoning_effort" in err_s
+                        or "unrecognized" in err_s
+                        or "invalid" in err_s
+                        or "422" in err_s
+                        or "400" in err_s
+                    ):
+                        logger.warning(
+                            "Provider rejected reasoning_effort, retrying without it: %s",
+                            exc,
+                        )
+                        call_kwargs.pop("reasoning_effort", None)
+                        modified = True
+                    if "max_tokens" in call_kwargs and (
+                        "max_completion_tokens" in err_s or "max_tokens" in err_s
+                    ):
+                        val = call_kwargs.pop("max_tokens", None)
+                        if val is not None:
+                            call_kwargs["max_completion_tokens"] = val
+                        modified = True
+                    if "temperature" in call_kwargs and "temperature" in err_s:
+                        call_kwargs.pop("temperature", None)
+                        modified = True
+                    if modified:
+                        return self.client.chat.completions.create(**call_kwargs)
+                    raise
+
+            if stream_callback is not None or thinking_callback is not None:
                 stream: Any = with_rate_limit_retry(
-                    lambda: self.client.chat.completions.create(
-                        model=self.model,
-                        messages=cast(Any, self._build_messages()),
-                        temperature=self.temperature,
-                        max_tokens=self.max_tokens,
-                        stream=True,
-                    ),
+                    lambda: _call_create(stream_flag=True),
                     max_retries=self.max_retries,
                     base_delay=self.base_delay,
                     max_delay=self.max_delay,
                 )
-                parts: list[str] = []
+                reasoning_parts: list[str] = []
+                content_parts: list[str] = []
+                in_thinking = False
                 for chunk in stream:
                     if not chunk.choices:
                         continue
-                    delta = chunk.choices[0].delta.content
+                    delta_obj = chunk.choices[0].delta
+                    delta_extra = getattr(delta_obj, "model_extra", None) or {}
+                    reasoning_delta = (
+                        getattr(delta_obj, "reasoning_content", None)
+                        or getattr(delta_obj, "reasoning", None)
+                        or getattr(delta_obj, "thinking", None)
+                        or getattr(delta_obj, "thought", None)
+                        or delta_extra.get("reasoning_content")
+                        or delta_extra.get("reasoning")
+                        or delta_extra.get("thinking")
+                        or delta_extra.get("thought")
+                    )
+                    if isinstance(reasoning_delta, str) and reasoning_delta:
+                        reasoning_parts.append(reasoning_delta)
+                        if thinking_callback:
+                            thinking_callback(reasoning_delta)
+                        continue
+
+                    delta = getattr(delta_obj, "content", None) or ""
                     if delta:
-                        parts.append(delta)
-                        stream_callback(delta)
-                answer = "".join(parts).strip() or "(пустой ответ)"
+                        content_parts.append(delta)
+                        if any(
+                            t in delta for t in ("<think>", "<thought>", "<reasoning>")
+                        ):
+                            in_thinking = True
+                        if in_thinking:
+                            if any(
+                                t in delta
+                                for t in ("</think>", "</thought>", "</reasoning>")
+                            ):
+                                in_thinking = False
+                                for tag in ("</think>", "</thought>", "</reasoning>"):
+                                    if tag in delta:
+                                        before, _, after = delta.partition(tag)
+                                        clean_tag = tag.replace("</", "<")
+                                        think_chunk = before.replace(clean_tag, "")
+                                        if think_chunk and thinking_callback:
+                                            thinking_callback(think_chunk)
+                                        if after and stream_callback:
+                                            stream_callback(after)
+                                        break
+                            else:
+                                clean_chunk = delta
+                                for tag in ("<think>", "<thought>", "<reasoning>"):
+                                    clean_chunk = clean_chunk.replace(tag, "")
+                                if clean_chunk and thinking_callback:
+                                    thinking_callback(clean_chunk)
+                        else:
+                            if stream_callback:
+                                stream_callback(delta)
+
+                final_content = "".join(content_parts).strip()
+                if reasoning_parts:
+                    final_reasoning = "".join(reasoning_parts).strip()
+                    if not final_content.startswith(
+                        "<think>"
+                    ) and not final_content.startswith("<thought>"):
+                        answer = f"<think>\n{final_reasoning}\n</think>\n{final_content}".strip()
+                    else:
+                        answer = final_content
+                else:
+                    answer = final_content or "(пустой ответ)"
+
                 self.add_to_history("assistant", answer)
                 return answer
 
             response = with_rate_limit_retry(
-                lambda: self.client.chat.completions.create(  # type: ignore[call-overload]
-                    model=self.model,
-                    messages=self._build_messages(),  # type: ignore[arg-type]
-                    temperature=self.temperature,
-                    max_tokens=self.max_tokens,
-                ),
+                lambda: _call_create(stream_flag=False),
                 max_retries=self.max_retries,
                 base_delay=self.base_delay,
                 max_delay=self.max_delay,
             )
-            answer = (response.choices[0].message.content or "").strip()
+            msg_obj = response.choices[0].message
+            answer = (msg_obj.content or "").strip()
+            msg_extra = getattr(msg_obj, "model_extra", None) or {}
+            reasoning = (
+                getattr(msg_obj, "reasoning_content", None)
+                or getattr(msg_obj, "reasoning", None)
+                or getattr(msg_obj, "thinking", None)
+                or getattr(msg_obj, "thought", None)
+                or msg_extra.get("reasoning_content")
+                or msg_extra.get("reasoning")
+                or msg_extra.get("thinking")
+                or msg_extra.get("thought")
+            )
+            if (
+                isinstance(reasoning, str)
+                and reasoning.strip()
+                and not answer.startswith("<think>")
+                and not answer.startswith("<thought>")
+            ):
+                if thinking_callback:
+                    thinking_callback(reasoning)
+                answer = f"<think>\n{reasoning}\n</think>\n{answer}"
+
             if not answer:
                 self._discard_pending_user()
                 return ""
@@ -765,6 +1254,10 @@ class OpenAIClient(LLMClient):
         on_tool_call=None,
         max_iterations: int = 5,
         stream_callback=None,
+        thinking_callback: Optional[Callable[[str], None]] = None,
+        reasoning_effort: Optional[str] = None,
+        reasoning_budget: Optional[int] = None,
+        **kwargs: Any,
     ) -> str:
         """LLM ↔ tools loop via OpenAI chat.completions with ``tools``.
 
@@ -780,39 +1273,164 @@ class OpenAIClient(LLMClient):
             base_messages = self._build_messages()
             executed_tools: list[str] = []
 
+            effort = (
+                reasoning_effort
+                if reasoning_effort is not None
+                else self.reasoning_effort
+            )
+            # OpenAI reasoning_effort accepts: low, medium, high. Map 'max' -> 'high', 'on' -> 'medium'.
+            wire_effort: Optional[str] = (
+                "high" if effort == "max" else ("medium" if effort == "on" else effort)
+            )
+            is_o = _is_o_series(self.model)
+            is_openrouter = (
+                "openrouter" in str(getattr(self.client, "base_url", "")).lower()
+            )
+
+            def _call_create(call_kwargs: dict[str, Any]) -> Any:
+                if is_openrouter and wire_effort and wire_effort != "off":
+                    call_kwargs.setdefault("extra_body", {})["reasoning"] = {
+                        "effort": wire_effort
+                    }
+                try:
+                    return self.client.chat.completions.create(**call_kwargs)
+                except Exception as exc:
+                    err_s = str(exc).lower()
+                    modified = False
+                    if "reasoning_effort" in call_kwargs and (
+                        "reasoning_effort" in err_s
+                        or "unrecognized" in err_s
+                        or "invalid" in err_s
+                        or "422" in err_s
+                        or "400" in err_s
+                    ):
+                        logger.warning(
+                            "Provider rejected reasoning_effort, retrying without it: %s",
+                            exc,
+                        )
+                        call_kwargs.pop("reasoning_effort", None)
+                        modified = True
+                    if "max_tokens" in call_kwargs and (
+                        "max_completion_tokens" in err_s or "max_tokens" in err_s
+                    ):
+                        val = call_kwargs.pop("max_tokens", None)
+                        if val is not None:
+                            call_kwargs["max_completion_tokens"] = val
+                        modified = True
+                    if "temperature" in call_kwargs and "temperature" in err_s:
+                        call_kwargs.pop("temperature", None)
+                        modified = True
+                    if modified:
+                        return self.client.chat.completions.create(**call_kwargs)
+                    raise
+
             for iteration in range(max_iterations):
                 tool_calls: list[dict[str, Any]] = []
-                # Last allowed iteration must not stream: we need the whole
-                # text even if the model keeps trying to call tools.
                 can_stream = (
                     stream_callback is not None and iteration < max_iterations - 1
                 )
                 content_parts: list[str] = []
+                reasoning_parts: list[str] = []
+
+                req_kwargs: dict[str, Any] = {
+                    "model": self.model,
+                    "messages": base_messages,
+                    "tools": tools,
+                    "tool_choice": "auto",
+                }
+                if not is_o:
+                    req_kwargs["temperature"] = self.temperature
+                    req_kwargs["max_tokens"] = self.max_tokens
+                else:
+                    req_kwargs["max_completion_tokens"] = self.max_tokens
+
+                if wire_effort and wire_effort != "off":
+                    req_kwargs["reasoning_effort"] = wire_effort
 
                 if can_stream:
+                    req_kwargs["stream"] = True
                     stream = with_rate_limit_retry(
-                        lambda: self.client.chat.completions.create(  # type: ignore[call-overload]
-                            model=self.model,
-                            messages=base_messages,  # type: ignore[arg-type]
-                            tools=tools,  # type: ignore[arg-type]
-                            tool_choice="auto",
-                            temperature=self.temperature,
-                            max_tokens=self.max_tokens,
-                            stream=True,
-                        ),
+                        lambda: _call_create(dict(req_kwargs)),
                         max_retries=self.max_retries,
                         base_delay=self.base_delay,
                         max_delay=self.max_delay,
                     )
                     tc_map: dict = {}
+                    in_thinking = False
                     for chunk in stream:
                         if not chunk.choices:
                             continue
                         delta = chunk.choices[0].delta
-                        if delta and delta.content:
-                            content_parts.append(delta.content)
-                            if stream_callback is not None:
-                                stream_callback(delta.content)
+                        if delta:
+                            delta_extra = getattr(delta, "model_extra", None) or {}
+                            reasoning_delta = (
+                                getattr(delta, "reasoning_content", None)
+                                or getattr(delta, "reasoning", None)
+                                or getattr(delta, "thinking", None)
+                                or getattr(delta, "thought", None)
+                                or delta_extra.get("reasoning_content")
+                                or delta_extra.get("reasoning")
+                                or delta_extra.get("thinking")
+                                or delta_extra.get("thought")
+                            )
+                            if isinstance(reasoning_delta, str) and reasoning_delta:
+                                reasoning_parts.append(reasoning_delta)
+                                if thinking_callback:
+                                    thinking_callback(reasoning_delta)
+                                continue
+
+                            delta_content = delta.content or ""
+                            if delta_content:
+                                content_parts.append(delta_content)
+                                if any(
+                                    t in delta_content
+                                    for t in ("<think>", "<thought>", "<reasoning>")
+                                ):
+                                    in_thinking = True
+                                if in_thinking:
+                                    if any(
+                                        t in delta_content
+                                        for t in (
+                                            "</think>",
+                                            "</thought>",
+                                            "</reasoning>",
+                                        )
+                                    ):
+                                        in_thinking = False
+                                        for tag in (
+                                            "</think>",
+                                            "</thought>",
+                                            "</reasoning>",
+                                        ):
+                                            if tag in delta_content:
+                                                before, _, after = (
+                                                    delta_content.partition(tag)
+                                                )
+                                                clean_tag = tag.replace("</", "<")
+                                                think_chunk = before.replace(
+                                                    clean_tag, ""
+                                                )
+                                                if think_chunk and thinking_callback:
+                                                    thinking_callback(think_chunk)
+                                                if (
+                                                    after
+                                                    and stream_callback is not None
+                                                ):
+                                                    stream_callback(after)
+                                                break
+                                    else:
+                                        clean_chunk = delta_content
+                                        for tag in (
+                                            "<think>",
+                                            "<thought>",
+                                            "<reasoning>",
+                                        ):
+                                            clean_chunk = clean_chunk.replace(tag, "")
+                                        if clean_chunk and thinking_callback:
+                                            thinking_callback(clean_chunk)
+                                else:
+                                    if stream_callback is not None:
+                                        stream_callback(delta_content)
                         for tcd in (delta.tool_calls if delta else None) or []:
                             slot = tc_map.setdefault(
                                 tcd.index, {"id": "", "name": "", "args": ""}
@@ -836,20 +1454,28 @@ class OpenAIClient(LLMClient):
                     ]
                 else:
                     response = with_rate_limit_retry(
-                        lambda: self.client.chat.completions.create(  # type: ignore[call-overload]
-                            model=self.model,
-                            messages=base_messages,  # type: ignore[arg-type]
-                            tools=tools,  # type: ignore[arg-type]
-                            tool_choice="auto",
-                            temperature=self.temperature,
-                            max_tokens=self.max_tokens,
-                        ),
+                        lambda: _call_create(dict(req_kwargs)),
                         max_retries=self.max_retries,
                         base_delay=self.base_delay,
                         max_delay=self.max_delay,
                     )
                     msg = response.choices[0].message
                     content = (msg.content or "").strip()
+                    msg_extra = getattr(msg, "model_extra", None) or {}
+                    reasoning = (
+                        getattr(msg, "reasoning_content", None)
+                        or getattr(msg, "reasoning", None)
+                        or getattr(msg, "thinking", None)
+                        or getattr(msg, "thought", None)
+                        or msg_extra.get("reasoning_content")
+                        or msg_extra.get("reasoning")
+                        or msg_extra.get("thinking")
+                        or msg_extra.get("thought")
+                    )
+                    if isinstance(reasoning, str) and reasoning.strip():
+                        reasoning_parts.append(reasoning.strip())
+                        if thinking_callback:
+                            thinking_callback(reasoning.strip())
                     raw_calls = getattr(msg, "tool_calls", None) or []
                     tool_calls = [
                         {
@@ -863,13 +1489,22 @@ class OpenAIClient(LLMClient):
                     ]
 
                 if not tool_calls:
-                    if content:
-                        history_content = content
+                    final_content = content
+                    if reasoning_parts:
+                        final_reasoning = "".join(reasoning_parts).strip()
+                        if (
+                            final_reasoning
+                            and not final_content.startswith("<think>")
+                            and not final_content.startswith("<thought>")
+                        ):
+                            final_content = f"<think>\n{final_reasoning}\n</think>\n{final_content}".strip()
+                    if final_content:
+                        history_content = final_content
                         if executed_tools:
                             tools_summary = "\n".join(executed_tools)
-                            history_content = f"[Контекст работы инструментов:\n{tools_summary}]\n\n{content}"
+                            history_content = f"[Контекст работы инструментов:\n{tools_summary}]\n\n{final_content}"
                         self.add_to_history("assistant", history_content)
-                        return content
+                        return final_content
                     self._discard_pending_user()
                     return ""
 
@@ -961,6 +1596,8 @@ class OllamaClient(LLMClient):
         # не-стриминг /api/chat молчит до конца генерации — 30с убивали
         # первый запрос после холодного старта Ollama.
         self.timeout = ollama_config.get("timeout", 120)
+        self.reasoning_effort = ollama_config.get("reasoning_effort")
+        self.thinking_budget = ollama_config.get("thinking_budget")
 
         logger.info(f"✅ Ollama клиент: {self.model}")
 
@@ -984,10 +1621,19 @@ class OllamaClient(LLMClient):
             max_delay=self.max_delay,
         )
 
-    def chat(self, message: str, stream_callback=None) -> str:
+    def chat(
+        self,
+        message: str,
+        images: Optional[list[str]] = None,
+        stream_callback: Optional[Callable[[str], None]] = None,
+        thinking_callback: Optional[Callable[[str], None]] = None,
+        reasoning_effort: Optional[str] = None,
+        reasoning_budget: Optional[int] = None,
+        **kwargs: Any,
+    ) -> str:
         """Отправляет сообщение в Ollama. Со stream_callback отдаёт дельты."""
         try:
-            self.add_to_history("user", message)
+            self.add_to_history("user", message, images=images)
 
             messages = []
             if self.system_prompt:
@@ -995,23 +1641,66 @@ class OllamaClient(LLMClient):
                     {"role": "system", "content": self._render_system_prompt()}
                 )
 
-            messages.extend(self.history)
+            for m in self.history:
+                msg_dict: dict[str, Any] = {"role": m["role"], "content": m["content"]}
+                if m.get("images"):
+                    cleaned_imgs = []
+                    for img in m["images"]:
+                        if img.startswith("data:") and ";base64," in img:
+                            cleaned_imgs.append(img.split(";base64,")[1])
+                        else:
+                            cleaned_imgs.append(img)
+                    msg_dict["images"] = cleaned_imgs
+                messages.append(msg_dict)
 
-            if stream_callback is not None:
-                answer = self._chat_stream(messages, stream_callback)
+            effort = (
+                reasoning_effort
+                if reasoning_effort is not None
+                else self.reasoning_effort
+            )
+            budget = (
+                reasoning_budget
+                if reasoning_budget is not None
+                else self.thinking_budget
+            )
+
+            if stream_callback is not None or thinking_callback is not None:
+                answer = self._chat_stream(
+                    messages,
+                    stream_callback=stream_callback,
+                    thinking_callback=thinking_callback,
+                    reasoning_effort=effort,
+                    reasoning_budget=budget,
+                )
                 self.add_to_history("assistant", answer)
                 return answer
 
-            payload = {
+            options: dict[str, Any] = {"temperature": self.temperature}
+            if budget:
+                options["num_predict"] = budget
+
+            payload: dict[str, Any] = {
                 "model": self.model,
                 "messages": messages,
                 "stream": False,
-                "options": {"temperature": self.temperature},
+                "options": options,
             }
 
             data = self._post_chat(payload)
 
-            answer = data["message"]["content"].strip()
+            raw_msg = data.get("message", {})
+            answer = raw_msg.get("content", "").strip()
+            thinking = raw_msg.get("thinking")
+            if (
+                isinstance(thinking, str)
+                and thinking.strip()
+                and not answer.startswith("<think>")
+                and not answer.startswith("<thought>")
+            ):
+                if thinking_callback:
+                    thinking_callback(thinking.strip())
+                answer = f"<think>\n{thinking.strip()}\n</think>\n{answer}"
+
             if not answer:
                 self._discard_pending_user()
                 return ""
@@ -1024,15 +1713,28 @@ class OllamaClient(LLMClient):
             self._discard_pending_user()
             raise LLMError(str(e)) from e
 
-    def _chat_stream(self, messages: list, stream_callback) -> str:
+    def _chat_stream(
+        self,
+        messages: list,
+        stream_callback: Optional[Callable[[str], None]] = None,
+        thinking_callback: Optional[Callable[[str], None]] = None,
+        reasoning_effort: Optional[str] = None,
+        reasoning_budget: Optional[int] = None,
+    ) -> str:
         """Streaming variant of /api/chat; returns the full answer."""
-        payload = {
+        options: dict[str, Any] = {"temperature": self.temperature}
+        if reasoning_budget:
+            options["num_predict"] = reasoning_budget
+
+        payload: dict[str, Any] = {
             "model": self.model,
             "messages": messages,
             "stream": True,
-            "options": {"temperature": self.temperature},
+            "options": options,
         }
-        parts: list[str] = []
+        reasoning_parts: list[str] = []
+        content_parts: list[str] = []
+        in_thinking = False
         with _http_post(
             self.session,
             f"{self.base_url}/api/chat",
@@ -1048,13 +1750,59 @@ class OllamaClient(LLMClient):
                     chunk = json.loads(line)
                 except json.JSONDecodeError:
                     continue
-                delta = (chunk.get("message") or {}).get("content") or ""
+                msg = chunk.get("message") or {}
+
+                # 1. Native thinking field (Ollama 0.5+)
+                thinking_delta = msg.get("thinking") or ""
+                if thinking_delta:
+                    reasoning_parts.append(thinking_delta)
+                    if thinking_callback:
+                        thinking_callback(thinking_delta)
+                    continue
+
+                # 2. Content delta (may contain <think>...</think> tags)
+                delta = msg.get("content") or ""
                 if delta:
-                    parts.append(delta)
-                    stream_callback(delta)
+                    content_parts.append(delta)
+                    if any(t in delta for t in ("<think>", "<thought>", "<reasoning>")):
+                        in_thinking = True
+                    if in_thinking:
+                        if any(
+                            t in delta
+                            for t in ("</think>", "</thought>", "</reasoning>")
+                        ):
+                            in_thinking = False
+                            for tag in ("</think>", "</thought>", "</reasoning>"):
+                                if tag in delta:
+                                    before, _, after = delta.partition(tag)
+                                    clean_tag = tag.replace("</", "<")
+                                    think_chunk = before.replace(clean_tag, "")
+                                    if think_chunk and thinking_callback:
+                                        thinking_callback(think_chunk)
+                                    if after and stream_callback:
+                                        stream_callback(after)
+                                    break
+                        else:
+                            clean_chunk = delta
+                            for tag in ("<think>", "<thought>", "<reasoning>"):
+                                clean_chunk = clean_chunk.replace(tag, "")
+                            if clean_chunk and thinking_callback:
+                                thinking_callback(clean_chunk)
+                    else:
+                        if stream_callback:
+                            stream_callback(delta)
                 if chunk.get("done"):
                     break
-        return "".join(parts).strip() or "(пустой ответ)"
+
+        final_content = "".join(content_parts).strip()
+        if reasoning_parts:
+            final_reasoning = "".join(reasoning_parts).strip()
+            if not final_content.startswith("<think>") and not final_content.startswith(
+                "<thought>"
+            ):
+                return f"<think>\n{final_reasoning}\n</think>\n{final_content}".strip()
+            return final_content
+        return final_content or "(пустой ответ)"
 
     def chat_with_tools(
         self,
@@ -1063,6 +1811,10 @@ class OllamaClient(LLMClient):
         on_tool_call=None,
         max_iterations: int = 5,
         stream_callback=None,
+        thinking_callback: Optional[Callable[[str], None]] = None,
+        reasoning_effort: Optional[str] = None,
+        reasoning_budget: Optional[int] = None,
+        **kwargs: Any,
     ) -> str:
         """LLM ↔ tools conversation loop.
 
@@ -1074,6 +1826,9 @@ class OllamaClient(LLMClient):
             max_iterations: Safety cap to prevent infinite tool-call loops.
             stream_callback: Optional; receives content deltas of the FINAL
                 text answer (tool iterations stay silent).
+            thinking_callback: Optional; receives reasoning / thinking deltas.
+            reasoning_effort: Optional reasoning effort level.
+            reasoning_budget: Optional token budget for reasoning.
 
         Returns:
             Final assistant text response AFTER all tool calls have been
@@ -1092,6 +1847,10 @@ class OllamaClient(LLMClient):
             base_messages.extend(self.history)
             executed_tools: list[str] = []
 
+            options: dict[str, Any] = {"temperature": self.temperature}
+            if reasoning_budget:
+                options["num_predict"] = reasoning_budget
+
             for iteration in range(max_iterations):
                 # Last allowed iteration must not stream: we need the whole
                 # text even if the model keeps trying to call tools.
@@ -1099,6 +1858,7 @@ class OllamaClient(LLMClient):
                     stream_callback is not None and iteration < max_iterations - 1
                 )
                 parts: list[str] = []
+                reasoning_parts: list[str] = []
                 data: dict | None = None
 
                 payload = {
@@ -1106,7 +1866,7 @@ class OllamaClient(LLMClient):
                     "messages": base_messages,
                     "tools": tools,
                     "stream": can_stream,
-                    "options": {"temperature": self.temperature},
+                    "options": options,
                 }
 
                 if can_stream:
@@ -1119,6 +1879,7 @@ class OllamaClient(LLMClient):
                     ) as resp:
                         resp.raise_for_status()
                         streamed_calls: list = []
+                        in_thinking = False
                         for line in resp.iter_lines():
                             if not line:
                                 continue
@@ -1127,11 +1888,63 @@ class OllamaClient(LLMClient):
                             except json.JSONDecodeError:
                                 continue
                             msg_chunk = chunk.get("message") or {}
+                            thinking_delta = msg_chunk.get("thinking") or ""
+                            if thinking_delta:
+                                reasoning_parts.append(thinking_delta)
+                                if thinking_callback:
+                                    thinking_callback(thinking_delta)
+                                continue
+
                             delta = msg_chunk.get("content") or ""
                             if delta:
                                 parts.append(delta)
-                                if stream_callback is not None:
-                                    stream_callback(delta)
+                                if any(
+                                    t in delta
+                                    for t in ("<think>", "<thought>", "<reasoning>")
+                                ):
+                                    in_thinking = True
+                                if in_thinking:
+                                    if any(
+                                        t in delta
+                                        for t in (
+                                            "</think>",
+                                            "</thought>",
+                                            "</reasoning>",
+                                        )
+                                    ):
+                                        in_thinking = False
+                                        for tag in (
+                                            "</think>",
+                                            "</thought>",
+                                            "</reasoning>",
+                                        ):
+                                            if tag in delta:
+                                                before, _, after = delta.partition(tag)
+                                                clean_tag = tag.replace("</", "<")
+                                                think_chunk = before.replace(
+                                                    clean_tag, ""
+                                                )
+                                                if think_chunk and thinking_callback:
+                                                    thinking_callback(think_chunk)
+                                                if (
+                                                    after
+                                                    and stream_callback is not None
+                                                ):
+                                                    stream_callback(after)
+                                                break
+                                    else:
+                                        clean_chunk = delta
+                                        for tag in (
+                                            "<think>",
+                                            "<thought>",
+                                            "<reasoning>",
+                                        ):
+                                            clean_chunk = clean_chunk.replace(tag, "")
+                                        if clean_chunk and thinking_callback:
+                                            thinking_callback(clean_chunk)
+                                else:
+                                    if stream_callback is not None:
+                                        stream_callback(delta)
                             for call in msg_chunk.get("tool_calls") or []:
                                 streamed_calls.append(call)
                             if chunk.get("done"):
@@ -1150,17 +1963,32 @@ class OllamaClient(LLMClient):
 
                 msg = data.get("message", {})
 
+                thinking = msg.get("thinking")
+                if isinstance(thinking, str) and thinking.strip():
+                    reasoning_parts.append(thinking.strip())
+                    if thinking_callback:
+                        thinking_callback(thinking.strip())
+
                 tool_calls = msg.get("tool_calls") or []
                 content = (msg.get("content") or "").strip()
 
                 if not tool_calls:
-                    if content:
-                        history_content = content
+                    final_content = content
+                    if reasoning_parts:
+                        final_reasoning = "".join(reasoning_parts).strip()
+                        if (
+                            final_reasoning
+                            and not final_content.startswith("<think>")
+                            and not final_content.startswith("<thought>")
+                        ):
+                            final_content = f"<think>\n{final_reasoning}\n</think>\n{final_content}".strip()
+                    if final_content:
+                        history_content = final_content
                         if executed_tools:
                             tools_summary = "\n".join(executed_tools)
-                            history_content = f"[Контекст работы инструментов:\n{tools_summary}]\n\n{content}"
+                            history_content = f"[Контекст работы инструментов:\n{tools_summary}]\n\n{final_content}"
                         self.add_to_history("assistant", history_content)
-                        return content
+                        return final_content
                     self._discard_pending_user()
                     return ""
 
@@ -1290,15 +2118,29 @@ class LLMManager:
         if not self.clients:
             raise RuntimeError("❌ Ни один LLM провайдер не доступен")
 
-    def chat(self, message: str, stream_callback=None, cached: bool = True) -> str:
+    def chat(
+        self,
+        message: str,
+        images: Optional[list[str]] = None,
+        stream_callback: Optional[Callable[[str], None]] = None,
+        thinking_callback: Optional[Callable[[str], None]] = None,
+        cached: bool = True,
+        reasoning_effort: Optional[str] = None,
+        reasoning_budget: Optional[int] = None,
+        **extra_kwargs: Any,
+    ) -> str:
         """
         Отправляет сообщение в LLM
 
         Args:
             message: Сообщение пользователя
-            stream_callback: Функция для streaming (опционально)
+            images: Опциональный список изображений (base64)
+            stream_callback: Функция для streaming ответа (опционально)
+            thinking_callback: Функция для streaming рассуждений (опционально)
             cached: использовать ли LRU-кэш для повторных вопросов (по умолч. да).
-                Авто-выключается при streaming — там кэш сломал бы UX.
+                Авто-выключается при streaming, thinking и мультимодальности.
+            reasoning_effort: Уровень рассуждений (off/low/medium/high/max)
+            reasoning_budget: Лимит токенов на рассуждения (токены)
 
         Returns:
             Ответ LLM
@@ -1306,8 +2148,15 @@ class LLMManager:
         if not self.primary:
             return "Извините, сэр, ИИ недоступен."
 
-        # Streaming кэшу не подлежит — callback должен видеть токены.
-        use_cache = cached and stream_callback is None
+        # Streaming, thinking и мультимодальность кэшу не подлежат
+        has_reasoning = (
+            (reasoning_effort is not None and reasoning_effort != "off")
+            or reasoning_budget is not None
+            or thinking_callback is not None
+        )
+        use_cache = (
+            cached and stream_callback is None and not has_reasoning and not images
+        )
         cache_key: str | None = None
         if use_cache:
             cache_key = f"{len(self.primary.history)}:{message.strip().lower()}"
@@ -1318,9 +2167,17 @@ class LLMManager:
                 return self._cache[cache_key]
 
         try:
-            kwargs = {}
+            kwargs: dict[str, Any] = dict(extra_kwargs)
+            if images:
+                kwargs["images"] = images
             if stream_callback is not None:
                 kwargs["stream_callback"] = stream_callback
+            if thinking_callback is not None:
+                kwargs["thinking_callback"] = thinking_callback
+            if reasoning_effort is not None:
+                kwargs["reasoning_effort"] = reasoning_effort
+            if reasoning_budget is not None:
+                kwargs["reasoning_budget"] = reasoning_budget
             response = self.primary.chat(message, **kwargs)
         except Exception as e:
             logger.error(f"❌ Ошибка LLM: {e}")
@@ -1335,7 +2192,14 @@ class LLMManager:
                     logger.info(f"🔄 Пробую fallback: {name}")
                     if hasattr(client, "history") and hasattr(self.primary, "history"):
                         client.history = list(self.primary.history)
-                    response = client.chat(message)
+                    fb_kwargs: dict[str, Any] = dict(extra_kwargs)
+                    if images:
+                        fb_kwargs["images"] = images
+                    if reasoning_effort is not None:
+                        fb_kwargs["reasoning_effort"] = reasoning_effort
+                    if reasoning_budget is not None:
+                        fb_kwargs["reasoning_budget"] = reasoning_budget
+                    response = client.chat(message, **fb_kwargs)
                     break
                 except Exception:
                     continue

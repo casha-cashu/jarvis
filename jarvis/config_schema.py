@@ -105,6 +105,7 @@ class PiperConfig(BaseModel):
     lib_path: Optional[str] = None
     speaker_id: int = 0
     length_scale: float = 1.0
+    jarvis_fx: bool = False
 
 
 class GTTSConfig(BaseModel):

@@ -66,6 +66,197 @@ def test_bridge_list_models_requires_valid_config():
     assert result["ok"] is False
 
 
+def test_bridge_list_models_parses_reasoning_and_multimodal_metadata(monkeypatch):
+    class FakeResponse:
+        status_code = 200
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {
+                "data": [
+                    {
+                        "id": "openrouter/deepseek-r1",
+                        "name": "DeepSeek R1",
+                        "supported_parameters": ["reasoning", "temperature"],
+                        "architecture": {"modality": "text->text"},
+                    },
+                    {
+                        "id": "google/gemini-2.5-flash",
+                        "name": "Gemini 2.5 Flash",
+                        "architecture": {"modality": "text+image->text"},
+                        "supported_parameters": ["include_reasoning", "tools"],
+                    },
+                    {
+                        "id": "openai/gpt-4o",
+                        "name": "GPT-4o",
+                        "architecture": {"modality": "text+image->text"},
+                    },
+                ]
+            }
+
+    monkeypatch.setattr("requests.get", lambda *a, **kw: FakeResponse())
+
+    bridge = Bridge()
+    res = bridge.handle(
+        {
+            "command": "list_models",
+            "config": {
+                "type": "openai",
+                "endpoint": "https://openrouter.ai/api/v1",
+                "api_key": "sk-test",
+            },
+        }
+    )
+    assert res["ok"] is True
+    assert "model_details" in res
+    details = res["model_details"]
+
+    # DeepSeek R1 has reasoning=True and multimodal=False
+    assert details["openrouter/deepseek-r1"]["reasoning"] is True
+    assert details["openrouter/deepseek-r1"]["multimodal"] is False
+    assert "low" in details["openrouter/deepseek-r1"]["reasoning_efforts"]
+
+    # Gemini 2.5 Flash has reasoning=True and multimodal=True
+    assert details["google/gemini-2.5-flash"]["reasoning"] is True
+    assert details["google/gemini-2.5-flash"]["multimodal"] is True
+
+    # GPT-4o has multimodal=True
+    assert details["openai/gpt-4o"]["multimodal"] is True
+
+
+def test_bridge_list_models_parses_ollama_and_gemini_details(monkeypatch):
+    class FakeOllamaResponse:
+        status_code = 200
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {
+                "models": [
+                    {
+                        "name": "models/gemini-3.8-flash",
+                        "model": "models/gemini-3.8-flash",
+                    },
+                    {
+                        "name": "deepseek-custom",
+                        "details": {"family": "deepseek"},
+                    },
+                    {
+                        "name": "vision-custom",
+                        "details": {"families": ["clip", "llama"]},
+                    },
+                ]
+            }
+
+    monkeypatch.setattr("requests.get", lambda *a, **kw: FakeOllamaResponse())
+
+    bridge = Bridge()
+    res = bridge.handle(
+        {
+            "command": "list_models",
+            "config": {
+                "type": "ollama",
+                "endpoint": "http://127.0.0.1:11434",
+            },
+        }
+    )
+    assert res["ok"] is True
+    details = res["model_details"]
+
+    # models/gemini-3.8-flash (user's exact active model)
+    assert details["models/gemini-3.8-flash"]["reasoning"] is True
+    assert details["models/gemini-3.8-flash"]["multimodal"] is True
+
+    # Ollama deepseek family
+    assert details["deepseek-custom"]["reasoning"] is True
+
+    # Ollama clip family
+    assert details["vision-custom"]["multimodal"] is True
+
+
+def test_bridge_list_models_dynamic_reasoning_efforts(monkeypatch):
+    class FakeEndpointResponse:
+        status_code = 200
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {
+                "data": [
+                    {
+                        "id": "custom/explicit-options-model",
+                        "name": "Explicit Options Model",
+                        "reasoning_options": [
+                            {"type": "effort", "values": ["minimal", "low", "high"]}
+                        ],
+                    },
+                    {
+                        "id": "custom/explicit-list-model",
+                        "name": "Explicit List Model",
+                        "reasoning_efforts": ["low", "max"],
+                    },
+                    {
+                        "id": "ollama/deepseek-r1:8b",
+                        "name": "DeepSeek R1 8B",
+                        "details": {"family": "deepseek"},
+                    },
+                    {
+                        "id": "anthropic/claude-3-7-sonnet",
+                        "name": "Claude 3.7 Sonnet",
+                    },
+                    {
+                        "id": "meta/llama-3-8b",
+                        "name": "Llama 3 8B",
+                    },
+                ]
+            }
+
+    monkeypatch.setattr("requests.get", lambda *a, **kw: FakeEndpointResponse())
+
+    bridge = Bridge()
+    res = bridge.handle(
+        {
+            "command": "list_models",
+            "config": {
+                "type": "openai",
+                "endpoint": "https://api.example.com/v1",
+                "api_key": "test",
+            },
+        }
+    )
+    assert res["ok"] is True
+    details = res["model_details"]
+
+    # 1. Explicit reasoning_options dict format
+    m1 = details["custom/explicit-options-model"]
+    assert m1["reasoning"] is True
+    assert m1["reasoning_efforts"] == ["off", "minimal", "low", "high"]
+
+    # 2. Explicit reasoning_efforts list format
+    m2 = details["custom/explicit-list-model"]
+    assert m2["reasoning"] is True
+    assert m2["reasoning_efforts"] == ["off", "low", "max"]
+
+    # 3. Toggle reasoning model (R1 / QwQ)
+    m3 = details["ollama/deepseek-r1:8b"]
+    assert m3["reasoning"] is True
+    assert m3["reasoning_efforts"] == ["off", "on"]
+
+    # 4. Claude 3.7 model
+    m4 = details["anthropic/claude-3-7-sonnet"]
+    assert m4["reasoning"] is True
+    assert m4["reasoning_efforts"] == ["off", "low", "medium", "high", "max"]
+
+    # 5. Non-reasoning model
+    m5 = details["meta/llama-3-8b"]
+    assert m5["reasoning"] is False
+    assert m5["reasoning_efforts"] == []
+
+
 # ──────────────────────────────────────────────
 # Изоляция персиста истории: llm.HISTORY_FILE (и ui-history/ рядом)
 # переносится в tmp_path, чтобы тесты не трогали ~/.local/share/jarvis.
@@ -385,7 +576,11 @@ def test_chat_message_full_text_not_truncated(monkeypatch):
 
     def factory(**_kwargs):
         def process_query(
-            text, stream_callback=None, tool_callback=None, tool_result_callback=None
+            text,
+            stream_callback=None,
+            tool_callback=None,
+            tool_result_callback=None,
+            **_kwargs,
         ):
             if stream_callback:
                 stream_callback("часть1 ")

@@ -5,20 +5,57 @@ Text-to-Speech module using Piper TTS
 """
 
 import json
+import logging
 import os
+from pathlib import Path
 import queue
+import re
 import shutil
 import subprocess
 import tempfile
 import threading
 import time
-import logging
-from pathlib import Path
 from typing import Optional
 
 from jarvis._env import sanitized_env
 
 logger = logging.getLogger(__name__)
+
+# Strip thinking blocks (<think>...</think>, <thought>...</thought>, <reasoning>...</reasoning>) robustly across all TTS layers
+_THINK_TAG_NAMES = "think|thought|reasoning"
+_PAIRED_THINK_RE = re.compile(
+    r"<\s*("
+    + _THINK_TAG_NAMES
+    + r")(?:\s[^>]*)?>(?:(?!<\s*(?:"
+    + _THINK_TAG_NAMES
+    + r")).)*?<\s*/\s*\1\s*>",
+    re.DOTALL | re.IGNORECASE,
+)
+_THINK_TAG_RE = _PAIRED_THINK_RE
+_THINK_STRIP_RE = _PAIRED_THINK_RE
+_UNCLOSED_THINK_RE = re.compile(
+    r"<\s*(?:" + _THINK_TAG_NAMES + r")(?:\s[^>]*)?>.*$", re.DOTALL | re.IGNORECASE
+)
+_ORPHAN_THINK_CLOSE_RE = re.compile(
+    r"<\s*/\s*(?:" + _THINK_TAG_NAMES + r")\s*>", re.IGNORECASE
+)
+
+
+def _strip_thinking(text: str) -> str:
+    """Robust defense-in-depth: strip all <think>...</think> tags and orphaned closing tags."""
+    if not text:
+        return ""
+    prev = None
+    cleaned = text
+    while cleaned != prev:
+        prev = cleaned
+        cleaned = _PAIRED_THINK_RE.sub("", cleaned)
+    prev = None
+    while cleaned != prev:
+        prev = cleaned
+        cleaned = _UNCLOSED_THINK_RE.sub("", cleaned)
+        cleaned = _ORPHAN_THINK_CLOSE_RE.sub("", cleaned)
+    return cleaned.strip()
 
 
 # ── Воспроизведение с поддержкой отмены ──────────────────────────────
@@ -49,6 +86,55 @@ def _player_commands(path: str) -> list:
         ["paplay", path],
         ["afplay", path],
     ]
+
+
+def apply_jarvis_audio_fx(wav_path: Path | str) -> Path:
+    """Apply Marvel JARVIS intercom acoustic DSP filter chain to audio file.
+
+    DSP filter chain:
+      - highpass=f=130: Cuts sub-bass rumble
+      - equalizer=f=3000:width_type=h:width=1500:g=4.5: High-mid presence boost (voice clarity)
+      - acompressor=threshold=-16dB:ratio=3.5:attack=10:release=120: Punchy intercom dynamics
+      - aecho=0.8:0.65:24:0.18: Subtle short metallic early reflections
+      - lowpass=f=7500: Smooths top-end harshness
+    """
+    input_p = Path(wav_path)
+    if not input_p.exists():
+        return input_p
+
+    if not shutil.which("ffmpeg"):
+        return input_p
+
+    output_p = input_p.with_name(f"{input_p.stem}_fx{input_p.suffix}")
+    filter_chain = (
+        "highpass=f=130,"
+        "equalizer=f=3000:width_type=h:width=1500:g=4.5,"
+        "acompressor=threshold=-16dB:ratio=3.5:attack=10:release=120,"
+        "aecho=0.8:0.65:24:0.18,"
+        "lowpass=f=7500"
+    )
+    try:
+        res = subprocess.run(
+            [
+                "ffmpeg",
+                "-y",
+                "-i",
+                str(input_p),
+                "-af",
+                filter_chain,
+                str(output_p),
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+            env=sanitized_env(),
+        )
+        if res.returncode == 0 and output_p.exists() and output_p.stat().st_size > 0:
+            return output_p
+    except Exception as e:
+        logger.debug("apply_jarvis_audio_fx fallback: %s", e)
+
+    return input_p
 
 
 def _stop_proc(proc, grace: float = 1.0) -> None:
@@ -279,6 +365,7 @@ class PiperTTS:
         speaker_id: int = 0,
         length_scale: float = 1.0,
         use_coprocess: bool = True,
+        jarvis_fx: bool = False,
     ):
         """
         Args:
@@ -289,6 +376,7 @@ class PiperTTS:
             speaker_id: ID голоса (для мультиголосовых моделей)
             length_scale: Скорость речи (1.0 = норма, <1 = быстрее, >1 = медленнее)
             use_coprocess: Использовать долгоживущий процесс piper с --json-input
+            jarvis_fx: Применять акустический фильтр интеркома Джарвиса (Marvel FX)
         """
         import os
 
@@ -297,6 +385,7 @@ class PiperTTS:
         self.speaker_id = speaker_id
         self.length_scale = length_scale
         self.use_coprocess = use_coprocess
+        self.jarvis_fx = jarvis_fx
         self._proc: Optional[subprocess.Popen] = None
         self._proc_lock = threading.Lock()
 
@@ -461,7 +550,8 @@ class PiperTTS:
         Returns:
             True если успешно
         """
-        if not text.strip():
+        text = _strip_thinking(text)
+        if not text:
             return False
 
         if output_file:
@@ -595,7 +685,16 @@ class PiperTTS:
 
     def _play_audio(self, audio_file: Path):
         """Воспроизводит аудио файл (с поддержкой отмены через cancel_playback)"""
-        _play_audio_file(audio_file)
+        if getattr(self, "jarvis_fx", False):
+            fx_file = apply_jarvis_audio_fx(audio_file)
+            _play_audio_file(fx_file)
+            if fx_file != audio_file:
+                try:
+                    fx_file.unlink()
+                except OSError:
+                    pass
+        else:
+            _play_audio_file(audio_file)
 
 
 class GTTSFallback:
@@ -616,7 +715,8 @@ class GTTSFallback:
 
     def speak(self, text: str, play: bool = True) -> bool:
         """Синтезирует речь через Google TTS"""
-        if not self.gTTS or not text.strip():
+        text = _strip_thinking(text)
+        if not self.gTTS or not text:
             return False
 
         # Создаём директорию если не существует
@@ -724,7 +824,8 @@ class SpeechT5TTS:
 
     def speak(self, text: str, play: bool = True) -> bool:
         """Синтезирует речь голосом Джарвиса (lazy load при первом вызове)"""
-        if not text.strip():
+        text = _strip_thinking(text)
+        if not text:
             return False
 
         # Lazy loading
@@ -790,6 +891,7 @@ class TTSManager:
                     lib_path=piper_config.get("lib_path"),
                     speaker_id=piper_config.get("speaker_id", 0),
                     length_scale=piper_config.get("length_scale", 1.0),
+                    jarvis_fx=piper_config.get("jarvis_fx", False),
                 )
                 logger.info("✅ Основной TTS: Piper")
             except Exception as e:
@@ -828,13 +930,14 @@ class TTSManager:
         Returns:
             True если успешно
         """
-        if not text.strip():
+        cleaned = _strip_thinking(text)
+        if not cleaned:
             return False
 
         # Пробуем основной
         if self.primary:
             try:
-                if self.primary.speak(text):
+                if self.primary.speak(cleaned):
                     return True
             except Exception as e:
                 logger.warning(f"⚠️ Основной TTS не сработал: {e}")
@@ -842,7 +945,7 @@ class TTSManager:
         # Пробуем fallback
         if self.fallback:
             try:
-                return self.fallback.speak(text)
+                return self.fallback.speak(cleaned)
             except Exception as e:
                 logger.error(f"❌ Fallback TTS не сработал: {e}")
 
@@ -893,12 +996,15 @@ class TTSWorker:
         Returns:
             True если фраза поставлена в очередь.
         """
-        if self.tts is None or not text or not text.strip():
+        if self.tts is None or not text:
             return False
         if self._stopped:
             logger.debug("🔇 TTSWorker остановлен — фраза пропущена")
             return False
-        self._queue.put(text)
+        cleaned = _strip_thinking(text)
+        if not cleaned:
+            return False
+        self._queue.put(cleaned)
         return True
 
     def cancel(self) -> int:

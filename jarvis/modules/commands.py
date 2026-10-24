@@ -82,6 +82,7 @@ class CommandExecutor:
         self._detached_procs: list[subprocess.Popen] = []
         self._detached_lock = threading.Lock()
         self._speak: Optional[Callable[[str], None]] = speak_fn
+        self._llm_chat: Optional[Callable[..., str]] = None
 
         # Сценарии и макросы
         if scenarios_path == "data/scenarios.json":
@@ -108,6 +109,91 @@ class CommandExecutor:
         cmds_count = len(self.commands.get("commands", {}))
         apps_count = len(self.apps.get("apps", {}))
         logger.info(f"✅ Загружено команд: {cmds_count}, приложений: {apps_count}")
+
+    def set_llm_chat(self, chat_fn: Callable[..., str]) -> None:
+        """Wire LLM chat function for vision and multimodal queries."""
+        self._llm_chat = chat_fn
+
+    def _capture_screen_base64(self) -> Optional[str]:
+        """Capture screen as base64-encoded JPEG image."""
+        try:
+            from PIL import Image, ImageGrab
+            import io
+            import base64
+            import os
+            import shutil
+            import tempfile
+
+            img = None
+            # 1. First try ImageGrab
+            try:
+                img = ImageGrab.grab()
+            except Exception as grab_err:
+                logger.debug("ImageGrab.grab fallback to CLI: %s", grab_err)
+
+            # 2. If ImageGrab fails, use CLI tool (screencapture / grim / scrot / import)
+            if img is None:
+                tmp_png = tempfile.NamedTemporaryFile(suffix=".png", delete=False).name
+                cmd = None
+                if sys.platform == "darwin":
+                    cmd = ["screencapture", "-x", tmp_png]
+                elif shutil.which("grim"):
+                    cmd = ["grim", tmp_png]
+                elif shutil.which("scrot"):
+                    cmd = ["scrot", tmp_png]
+                elif shutil.which("import"):
+                    cmd = ["import", "-window", "root", tmp_png]
+
+                if cmd:
+                    res = subprocess.run(
+                        cmd,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        timeout=5,
+                        env=sanitized_env(),
+                    )
+                    if (
+                        res.returncode == 0
+                        and os.path.exists(tmp_png)
+                        and os.path.getsize(tmp_png) > 0
+                    ):
+                        img = Image.open(tmp_png)
+                try:
+                    os.unlink(tmp_png)
+                except OSError:
+                    pass
+
+            if img is None:
+                return None
+
+            # Resize to max 1920x1080 while preserving aspect ratio
+            img.thumbnail((1920, 1080))
+            buf = io.BytesIO()
+            img.convert("RGB").save(buf, format="JPEG", quality=85)
+            return base64.b64encode(buf.getvalue()).decode("utf-8")
+        except Exception as e:
+            logger.error("Failed to capture screen base64: %s", e)
+            return None
+
+    def _screen_vision(self, query: str = "") -> str:
+        """Capture screen and query vision model."""
+        b64_img = self._capture_screen_base64()
+        if not b64_img:
+            return "Не удалось сделать снимок экрана, сэр."
+        if not self._llm_chat:
+            return "Снимок экрана сделан, но языковая модель не подключена."
+
+        q_clean = query.strip()
+        vision_prompt = (
+            q_clean
+            if len(q_clean) > 20
+            else "Проанализируй скриншот экрана. Кратко опиши, что открыто и что происходит на экране."
+        )
+        try:
+            return self._llm_chat(vision_prompt, images=[b64_img])
+        except Exception as e:
+            logger.error("Ошибка анализа экрана через LLM: %s", e)
+            return "Не удалось проанализировать экран из-за ошибки модели."
 
     # ── Загрузка ──────────────────────────────────────────────
 
@@ -326,6 +412,11 @@ class CommandExecutor:
         if q in commands:
             logger.info(f"🎯 Exact match: '{q}'")
             entry = commands[q]
+            if (
+                entry.get("cmd") == "_screen_vision"
+                or entry.get("category") == "vision"
+            ):
+                return self._screen_vision(q)
             out = self._run(entry["cmd"], capture=bool(entry.get("capture")))
             if out is _RUN_FAILED:
                 return "Не получилось, сэр."
@@ -358,6 +449,8 @@ class CommandExecutor:
         if match:
             key, data = match
             logger.info(f"🎯 Fuzzy match: '{q}' → '{key}'")
+            if data.get("cmd") == "_screen_vision" or data.get("category") == "vision":
+                return self._screen_vision(q)
             out = self._run(data["cmd"], capture=bool(data.get("capture")))
             if out is _RUN_FAILED:
                 return "Не получилось, сэр."
@@ -772,6 +865,10 @@ class CommandManager:
         except Exception as e:
             logger.warning(f"⚠️ NLU недоступен: {e} — fallback на fuzzy pipeline")
             return None
+
+    def set_llm_chat(self, chat_fn: Callable[..., str]) -> None:
+        """Wire LLM chat function to executor for vision commands."""
+        self.executor.set_llm_chat(chat_fn)
 
     def process(self, query: str) -> Optional[str]:
         return self.executor.execute(query)

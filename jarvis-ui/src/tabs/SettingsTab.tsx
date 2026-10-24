@@ -41,6 +41,7 @@ import {
   deleteProvider,
   loadProviders,
   updateProvider,
+  cacheModels,
   type ProviderEntry,
   type ProviderType,
 } from "../api/providers";
@@ -112,6 +113,9 @@ export default function SettingsTab() {
   const [temperatureVal, setTemperatureVal] = useState(0.7);
   const [useMaxTokens, setUseMaxTokens] = useState(false);
   const [maxTokensVal, setMaxTokensVal] = useState(4096);
+  const [reasoningEffortVal, setReasoningEffortVal] = useState<string>(() => {
+    return localStorage.getItem("jarvis.ui.reasoningEffort") || "medium";
+  });
 
   // Status & action loading
   const [restarting, setRestarting] = useState(false);
@@ -147,6 +151,9 @@ export default function SettingsTab() {
         if (data.llm?.max_tokens !== undefined) {
           setUseMaxTokens(data.llm.max_tokens !== null);
           if (data.llm.max_tokens !== null) setMaxTokensVal(data.llm.max_tokens);
+        }
+        if (data.llm?.reasoning_effort !== undefined && data.llm.reasoning_effort !== null) {
+          setReasoningEffortVal(String(data.llm.reasoning_effort));
         }
         if (data.vad?.silero?.threshold !== undefined) {
           setVadThreshold(data.vad.silero.threshold);
@@ -281,8 +288,11 @@ export default function SettingsTab() {
         apiKey: form.apiKey.trim(),
         model: "",
       });
-      const total = groups.reduce((acc, g) => acc + g.models.length, 0);
+      const total = groups.reduce((acc, g) => acc + (g.models?.length ?? 0), 0);
       setCheckOk(`Связь установлена (${total} моделей найдено)`);
+      if (editingId && editingId !== "__new__") {
+        cacheModels(editingId, groups);
+      }
     } catch (err) {
       setFormError(err instanceof Error ? err.message : "Ошибка подключения");
     } finally {
@@ -290,43 +300,83 @@ export default function SettingsTab() {
     }
   };
 
-  const handleSaveProvider = () => {
+  const handleSaveProvider = async (skipCheck = false) => {
     if (!form.name.trim()) {
       setFormError("Укажите название провайдера");
       return;
     }
-    if (!form.endpoint.trim()) {
+    const ep = form.endpoint.trim();
+    if (!ep) {
       setFormError("Укажите URL эндпоинта");
       return;
     }
     try {
-      const u = new URL(form.endpoint.trim());
+      const u = new URL(ep);
       if (!u.protocol.startsWith("http")) throw new Error();
     } catch {
       setFormError("Некорректный URL эндпоинта (должен начинаться с http:// или https://)");
       return;
     }
 
+    let loadedGroups: ModelGroup[] = [];
+    if (!skipCheck) {
+      setChecking(true);
+      setFormError(null);
+      try {
+        loadedGroups = await listApiModels({
+          type: form.type,
+          endpoint: ep,
+          apiKey: form.apiKey.trim(),
+          model: "",
+        });
+      } catch (err) {
+        setChecking(false);
+        setFormError(
+          err instanceof Error
+            ? `Ошибка проверки API: ${err.message}`
+            : "Ошибка проверки API",
+        );
+        return;
+      }
+      setChecking(false);
+    }
+
+    let targetId: string = editingId || "";
     if (editingId === "__new__") {
-      addProvider({
+      const updatedList = addProvider({
         name: form.name.trim(),
         type: form.type,
-        endpoint: form.endpoint.trim(),
+        endpoint: ep,
         apiKey: form.apiKey.trim(),
       });
+      targetId = updatedList[updatedList.length - 1].id;
       setProviders(loadProviders());
       handleCloseForm();
-      showNote(`Провайдер «${form.name.trim()}» добавлен`);
+      const total = loadedGroups.reduce((acc, g) => acc + (g.models?.length ?? 0), 0);
+      showNote(
+        total > 0
+          ? `Провайдер «${form.name.trim()}» добавлен (${total} моделей загружено)`
+          : `Провайдер «${form.name.trim()}» добавлен`,
+      );
     } else if (editingId) {
       updateProvider(editingId, {
         name: form.name.trim(),
         type: form.type,
-        endpoint: form.endpoint.trim(),
+        endpoint: ep,
         apiKey: form.apiKey.trim(),
       });
       setProviders(loadProviders());
       handleCloseForm();
-      showNote("Провайдер обновлён");
+      const total = loadedGroups.reduce((acc, g) => acc + (g.models?.length ?? 0), 0);
+      showNote(
+        total > 0
+          ? `Провайдер «${form.name.trim()}» обновлён (${total} моделей загружено)`
+          : "Провайдер обновлён",
+      );
+    }
+
+    if (targetId && loadedGroups.length > 0) {
+      cacheModels(targetId, loadedGroups);
     }
   };
 
@@ -586,7 +636,18 @@ export default function SettingsTab() {
                       </div>
                     </Field>
                   </div>
-                  {formError && <p className="text-xs text-danger">{formError}</p>}
+                  {formError && (
+                    <div className="flex flex-col gap-1">
+                      <p className="text-xs text-danger">{formError}</p>
+                      <button
+                        type="button"
+                        onClick={() => void handleSaveProvider(true)}
+                        className="self-start text-[11px] text-text-muted underline hover:text-text"
+                      >
+                        Сохранить без проверки моделей
+                      </button>
+                    </div>
+                  )}
                   {checkOk && <p className="text-xs text-emerald-500">{checkOk}</p>}
                   <div className="flex items-center justify-end gap-2 pt-2">
                     <button
@@ -600,9 +661,11 @@ export default function SettingsTab() {
                     </button>
                     <button
                       type="button"
-                      onClick={handleSaveProvider}
-                      className="rounded-lg bg-accent px-4 py-1.5 text-xs font-medium text-white hover:brightness-110"
+                      onClick={() => void handleSaveProvider(false)}
+                      disabled={checking}
+                      className="flex items-center gap-1.5 rounded-lg bg-accent px-4 py-1.5 text-xs font-medium text-white hover:brightness-110 disabled:opacity-50"
                     >
+                      {checking && <RefreshCw size={12} className="animate-spin" />}
                       Сохранить
                     </button>
                   </div>
@@ -769,6 +832,36 @@ export default function SettingsTab() {
                     ) : (
                       <p className="text-[11px] text-text-muted">Без принудительного лимита (по умолчанию провайдера)</p>
                     )}
+                  </div>
+
+                  {/* Reasoning effort block */}
+                  <div className="flex flex-col gap-2 rounded-xl border border-border bg-surface p-4">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-medium text-text">Глубина рассуждений (reasoning_effort)</span>
+                    </div>
+                    <div className="flex flex-col gap-1.5 pt-1">
+                      <select
+                        value={reasoningEffortVal}
+                        onChange={(e) => {
+                          const next = e.target.value;
+                          setReasoningEffortVal(next);
+                          try {
+                            localStorage.setItem("jarvis.ui.reasoningEffort", next);
+                          } catch {}
+                          handleSaveConfigKey("llm", "reasoning_effort", next === "off" ? null : next);
+                        }}
+                        className="rounded-lg border border-border bg-surface-2 px-3 py-1.5 text-xs text-text focus:outline-none focus:border-accent"
+                      >
+                        <option value="off">Выключены (off)</option>
+                        <option value="low">Низкая (low)</option>
+                        <option value="medium">Средняя (medium)</option>
+                        <option value="high">Высокая (high)</option>
+                        <option value="max">Максимальная (max)</option>
+                      </select>
+                      <p className="text-[11px] text-text-muted">
+                        Уровень размышлений (Thinking) для поддерживающих моделей
+                      </p>
+                    </div>
                   </div>
                 </div>
 

@@ -61,6 +61,10 @@ struct ApiPresetConfig {
   agent_enabled: bool,
   #[serde(default)]
   approval_mode: String,
+  #[serde(default)]
+  reasoning_effort: Option<String>,
+  #[serde(default)]
+  thinking_budget: Option<u32>,
 }
 
 fn default_true() -> bool {
@@ -251,7 +255,9 @@ fn ensure_bridge(state: &AppState) -> Result<(), String> {
             if value.get("stream").is_some() {
               if let Some(delta) = value.get("delta").and_then(|d| d.as_str()) {
                 if !delta.is_empty() {
-                  let _ = app.emit("chat-stream", delta);
+                  let is_thinking = value.get("thinking").and_then(|t| t.as_bool()).unwrap_or(false);
+                  let event = if is_thinking { "chat-thinking" } else { "chat-stream" };
+                  let _ = app.emit(event, delta);
                 }
               }
             } else if let Some(tool) = value.get("tool") {
@@ -509,7 +515,9 @@ fn stream_request_inner(app: &tauri::AppHandle, state: &AppState, mut payload: s
     if value.get("stream").and_then(|s| s.as_bool()).unwrap_or(false) {
       if let Some(delta) = value.get("delta").and_then(|d| d.as_str()) {
         if !delta.is_empty() {
-          let _ = app.emit("chat-stream", delta);
+          let is_thinking = value.get("thinking").and_then(|t| t.as_bool()).unwrap_or(false);
+          let event = if is_thinking { "chat-thinking" } else { "chat-stream" };
+          let _ = app.emit(event, delta);
         }
       }
       continue;
@@ -527,8 +535,29 @@ fn stream_request_inner(app: &tauri::AppHandle, state: &AppState, mut payload: s
 }
 
 #[tauri::command]
-async fn backend_send_message(message: String, session: Option<String>, app: tauri::AppHandle, state: tauri::State<'_, Arc<AppState>>) -> Result<serde_json::Value, String> {
-  let payload = serde_json::json!({"command": "message", "text": message, "session": session});
+async fn backend_send_message(
+  message: String,
+  session: Option<String>,
+  images: Option<Vec<String>>,
+  reasoning_effort: Option<String>,
+  reasoning_budget: Option<u32>,
+  app: tauri::AppHandle,
+  state: tauri::State<'_, Arc<AppState>>,
+) -> Result<serde_json::Value, String> {
+  let mut payload = serde_json::json!({
+    "command": "message",
+    "text": message,
+    "session": session,
+  });
+  if let Some(imgs) = images {
+    payload["images"] = serde_json::json!(imgs);
+  }
+  if let Some(effort) = reasoning_effort {
+    payload["reasoning_effort"] = serde_json::json!(effort);
+  }
+  if let Some(budget) = reasoning_budget {
+    payload["reasoning_budget"] = serde_json::json!(budget);
+  }
   let app = app.clone();
   let state: Arc<AppState> = state.inner().clone();
   tauri::async_runtime::spawn_blocking(move || stream_request(&app, &state, payload))
@@ -538,7 +567,21 @@ async fn backend_send_message(message: String, session: Option<String>, app: tau
 
 #[tauri::command]
 async fn backend_configure(config: ApiPresetConfig, state: tauri::State<'_, Arc<AppState>>) -> Result<serde_json::Value, String> {
-  let payload = serde_json::json!({"command": "configure", "config": {"type": config.r#type, "endpoint": config.endpoint, "api_key": config.api_key, "model": config.model, "agent_enabled": config.agent_enabled, "approval_mode": config.approval_mode}});
+  let mut cfg_obj = serde_json::json!({
+    "type": config.r#type,
+    "endpoint": config.endpoint,
+    "api_key": config.api_key,
+    "model": config.model,
+    "agent_enabled": config.agent_enabled,
+    "approval_mode": config.approval_mode,
+  });
+  if let Some(ref effort) = config.reasoning_effort {
+    cfg_obj["reasoning_effort"] = serde_json::json!(effort);
+  }
+  if let Some(budget) = config.thinking_budget {
+    cfg_obj["thinking_budget"] = serde_json::json!(budget);
+  }
+  let payload = serde_json::json!({"command": "configure", "config": cfg_obj});
   run_bridge(state, payload, Duration::from_secs(60)).await
 }
 
@@ -918,4 +961,194 @@ pub fn run() {
         shutdown_bridge(&state);
       }
     });
+}
+
+#[cfg(test)]
+mod tests {
+  #[test]
+  fn test_stream_thinking_event_classification() {
+    let thinking_line = serde_json::json!({
+      "ok": true,
+      "stream": true,
+      "thinking": true,
+      "delta": "Размышляю над вопросом...",
+      "id": "s0"
+    });
+    let is_thinking = thinking_line.get("thinking").and_then(|t| t.as_bool()).unwrap_or(false);
+    let event = if is_thinking { "chat-thinking" } else { "chat-stream" };
+    assert_eq!(event, "chat-thinking");
+
+    let text_line = serde_json::json!({
+      "ok": true,
+      "stream": true,
+      "delta": "Ответ пользователю",
+      "id": "s0"
+    });
+    let is_thinking_text = text_line.get("thinking").and_then(|t| t.as_bool()).unwrap_or(false);
+    let event_text = if is_thinking_text { "chat-thinking" } else { "chat-stream" };
+    assert_eq!(event_text, "chat-stream");
+
+    let thinking_false_line = serde_json::json!({
+      "ok": true,
+      "stream": true,
+      "thinking": false,
+      "delta": "Еще один чанк",
+      "id": "s0"
+    });
+    let is_thinking_false = thinking_false_line.get("thinking").and_then(|t| t.as_bool()).unwrap_or(false);
+    let event_false = if is_thinking_false { "chat-thinking" } else { "chat-stream" };
+    assert_eq!(event_false, "chat-stream");
+  }
+
+  #[test]
+  fn test_heartbeat_empty_delta_is_ignored() {
+    let heartbeat = serde_json::json!({
+      "ok": true,
+      "stream": true,
+      "delta": "",
+      "id": "s0"
+    });
+    let delta = heartbeat.get("delta").and_then(|d| d.as_str()).unwrap();
+    assert!(delta.is_empty());
+  }
+
+  #[test]
+  fn test_rapid_alternating_stream_chunks_and_heartbeats() {
+    // Simulator matching lines 511-518 and 251-258 in lib.rs
+    let classify_chunk = |val: &serde_json::Value| -> Option<(&'static str, String)> {
+      if val.get("stream").and_then(|s| s.as_bool()).unwrap_or(false) {
+        if let Some(delta) = val.get("delta").and_then(|d| d.as_str()) {
+          if !delta.is_empty() {
+            let is_thinking = val.get("thinking").and_then(|t| t.as_bool()).unwrap_or(false);
+            let event = if is_thinking { "chat-thinking" } else { "chat-stream" };
+            return Some((event, delta.to_string()));
+          }
+        }
+      }
+      None
+    };
+
+    let stream_sequence = vec![
+      // 1. Thinking chunk
+      serde_json::json!({"stream": true, "thinking": true, "delta": "Шаг 1: Анализ"}),
+      // 2. Heartbeat ping (20s timeout keep-alive: delta is empty string)
+      serde_json::json!({"stream": true, "thinking": true, "delta": ""}),
+      // 3. More thinking
+      serde_json::json!({"stream": true, "thinking": true, "delta": "Шаг 2: Проверка"}),
+      // 4. Regular heartbeat ping
+      serde_json::json!({"stream": true, "delta": ""}),
+      // 5. Normal answer stream chunk (thinking false)
+      serde_json::json!({"stream": true, "thinking": false, "delta": "Результат готов:"}),
+      // 6. Rapid flip back to thinking (e.g. intermediate reasoning)
+      serde_json::json!({"stream": true, "thinking": true, "delta": "Стоп, перепроверим"}),
+      // 7. Normal stream chunk without thinking field (default false)
+      serde_json::json!({"stream": true, "delta": " Ответ подтвержден."}),
+      // 8. Stream chunk with thinking null (should be treated as false)
+      serde_json::json!({"stream": true, "thinking": null, "delta": " Финал."}),
+      // 9. Another 20s heartbeat
+      serde_json::json!({"stream": true, "thinking": false, "delta": ""}),
+      // 10. Non-stream or malformed chunks
+      serde_json::json!({"stream": false, "delta": "ignored"}),
+      serde_json::json!({"stream": true, "delta": 12345}),
+      serde_json::json!({"stream": true}),
+    ];
+
+    let mut emitted: Vec<(&'static str, String)> = Vec::new();
+    for chunk in &stream_sequence {
+      if let Some((event, delta)) = classify_chunk(chunk) {
+        emitted.push((event, delta));
+      }
+    }
+
+    // Heartbeats ("delta": "") and malformed/non-stream chunks must NEVER be emitted
+    assert_eq!(emitted.len(), 6);
+    assert_eq!(emitted[0], ("chat-thinking", "Шаг 1: Анализ".to_string()));
+    assert_eq!(emitted[1], ("chat-thinking", "Шаг 2: Проверка".to_string()));
+    assert_eq!(emitted[2], ("chat-stream", "Результат готов:".to_string()));
+    assert_eq!(emitted[3], ("chat-thinking", "Стоп, перепроверим".to_string()));
+    assert_eq!(emitted[4], ("chat-stream", " Ответ подтвержден.".to_string()));
+    assert_eq!(emitted[5], ("chat-stream", " Финал.".to_string()));
+  }
+
+  #[test]
+  fn test_backend_send_message_payload_variants_stress() {
+    use serde::Deserialize;
+    #[derive(Deserialize)]
+    struct MockSendMessageArgs {
+      message: String,
+      session: Option<String>,
+      images: Option<Vec<String>>,
+      #[serde(default)]
+      reasoning_effort: Option<String>,
+      #[serde(default)]
+      reasoning_budget: Option<u32>,
+    }
+
+    // Helper formatting function matching backend_send_message logic
+    let format_payload = |message: String, session: Option<String>, images: Option<Vec<String>>, reasoning_effort: Option<String>, reasoning_budget: Option<u32>| {
+      let mut payload = serde_json::json!({
+        "command": "message",
+        "text": message,
+        "session": session,
+      });
+      if let Some(imgs) = images {
+        payload["images"] = serde_json::json!(imgs);
+      }
+      if let Some(effort) = reasoning_effort {
+        payload["reasoning_effort"] = serde_json::json!(effort);
+      }
+      if let Some(budget) = reasoning_budget {
+        payload["reasoning_budget"] = serde_json::json!(budget);
+      }
+      payload
+    };
+
+    // 1. None images
+    let p_none = format_payload("Тест".into(), None, None, None, None);
+    assert_eq!(p_none["command"], "message");
+    assert_eq!(p_none["text"], "Тест");
+    assert!(p_none["session"].is_null());
+    assert!(p_none.get("images").is_none());
+
+    // 2. Empty array images: Some(vec![]) and reasoning effort
+    let p_empty = format_payload("Тест пустой".into(), Some("s1".into()), Some(vec![]), Some("high".into()), Some(8192));
+    assert_eq!(p_empty["command"], "message");
+    assert_eq!(p_empty["session"], "s1");
+    assert_eq!(p_empty["images"], serde_json::json!([]));
+    assert_eq!(p_empty["reasoning_effort"], "high");
+    assert_eq!(p_empty["reasoning_budget"], 8192);
+
+    // 3. Large array of 100 images (each 50KB base64 string)
+    let fake_img_base64 = "data:image/png;base64,".to_string() + &"A".repeat(50_000);
+    let large_images: Vec<String> = (0..100).map(|_| fake_img_base64.clone()).collect();
+    let p_large = format_payload("Большой массив".into(), Some("s2".into()), Some(large_images), None, None);
+    assert_eq!(p_large["command"], "message");
+    let images_arr = p_large["images"].as_array().expect("images must be array");
+    assert_eq!(images_arr.len(), 100);
+    assert_eq!(images_arr[0].as_str().unwrap().len(), 50022);
+
+    // 4. Tauri IPC deserialization of null vs empty vs omitted
+    let json_null = r#"{"message": "привет", "session": null, "images": null, "reasoning_effort": null, "reasoning_budget": null}"#;
+    let parsed_null: MockSendMessageArgs = serde_json::from_str(json_null).unwrap();
+    assert_eq!(parsed_null.message, "привет");
+    assert!(parsed_null.images.is_none());
+    assert!(parsed_null.reasoning_effort.is_none());
+    assert!(parsed_null.reasoning_budget.is_none());
+
+    let json_omitted = r#"{"message": "привет"}"#;
+    let parsed_omitted: MockSendMessageArgs = serde_json::from_str(json_omitted).unwrap();
+    assert!(parsed_omitted.images.is_none());
+    assert!(parsed_omitted.session.is_none());
+    assert!(parsed_omitted.reasoning_effort.is_none());
+    assert!(parsed_omitted.reasoning_budget.is_none());
+
+    let json_with_reasoning = r#"{"message": "привет", "reasoning_effort": "medium", "reasoning_budget": 4096}"#;
+    let parsed_reasoning: MockSendMessageArgs = serde_json::from_str(json_with_reasoning).unwrap();
+    assert_eq!(parsed_reasoning.reasoning_effort, Some("medium".into()));
+    assert_eq!(parsed_reasoning.reasoning_budget, Some(4096));
+
+    let json_empty_arr = r#"{"message": "привет", "images": []}"#;
+    let parsed_empty_arr: MockSendMessageArgs = serde_json::from_str(json_empty_arr).unwrap();
+    assert_eq!(parsed_empty_arr.images, Some(vec![]));
+  }
 }

@@ -492,3 +492,90 @@ class TestBeep:
 
         with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("cmd", 2)):
             beep()  # must not raise
+
+
+class TestTTSInvariantPreservation:
+    """Defense-in-depth invariant: Piper TTS and ResponsePipeline.speak
+    must NEVER voice <think>...</think> tokens under any circumstance."""
+
+    def test_speak_never_voices_thinking_tokens_even_on_sanitize_exception(self):
+        from jarvis.response_pipeline import ResponsePipeline
+
+        p = ResponsePipeline({})
+        worker = MagicMock()
+        p.tts_worker = worker
+
+        with patch(
+            "jarvis.prompt_builder.sanitize_for_tts",
+            side_effect=RuntimeError("Sanitize crash"),
+        ):
+            p.speak("<think>\nSecret internal reasoning\n</think>\nЧистый ответ")
+
+        worker.speak.assert_called_once_with("Чистый ответ")
+
+    def test_speak_drops_speech_when_only_thinking_tokens(self):
+        from jarvis.response_pipeline import ResponsePipeline
+
+        p = ResponsePipeline({})
+        worker = MagicMock()
+        p.tts_worker = worker
+
+        p.speak("<think>\nOnly reasoning thoughts\n</think>")
+        worker.speak.assert_not_called()
+
+    def test_tts_worker_strips_thinking_tags_directly(self):
+        eng = FakeEngine()
+        w = TTSWorker(eng)
+        try:
+            assert w.speak("<think>bad thoughts</think>Хороший текст") is True
+            assert w.wait_idle(timeout=5)
+            assert eng.spoken == ["Хороший текст"]
+
+            # Text with only thinking tokens should be rejected and not queued
+            assert w.speak("<think>only thoughts</think>") is False
+            assert w.pending == 0
+        finally:
+            w.close(timeout=2)
+
+    def test_tts_manager_strips_thinking_tags_directly(self):
+        from jarvis.modules.tts import TTSManager
+
+        mgr = object.__new__(TTSManager)
+        mgr.primary = MagicMock()
+        mgr.fallback = MagicMock()
+        mgr.primary.speak.return_value = True
+
+        res = mgr.speak("<think class='test'>thoughts</think>Hello from manager")
+        assert res is True
+        mgr.primary.speak.assert_called_once_with("Hello from manager")
+
+        # Empty after stripping -> False, engines never called
+        mgr.primary.reset_mock()
+        assert mgr.speak("<think>only thoughts</think>") is False
+        mgr.primary.speak.assert_not_called()
+
+    def test_piper_tts_strips_thinking_tags_directly(self, tmp_path):
+        from jarvis.modules.tts import PiperTTS
+
+        piper = object.__new__(PiperTTS)
+        piper.use_coprocess = False
+        piper.model_path = MagicMock(exists=lambda: False)
+        piper._speak_oneshot = MagicMock(return_value=True)
+
+        # 1. Pure thinking tokens -> immediately returns False, zero synthesis
+        assert piper.speak("<think>hidden reasoning</think>") is False
+        piper._speak_oneshot.assert_not_called()
+
+        # 2. Mixed thinking tokens -> stripped before synthesis
+        out_wav = tmp_path / "test.wav"
+        assert (
+            piper.speak(
+                "<think>thoughts</think>Clean voice text",
+                output_file=str(out_wav),
+                play=False,
+            )
+            is True
+        )
+        piper._speak_oneshot.assert_called_once()
+        args, _ = piper._speak_oneshot.call_args
+        assert args[0] == "Clean voice text"

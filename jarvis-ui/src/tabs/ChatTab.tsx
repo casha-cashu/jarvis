@@ -1,14 +1,33 @@
-import { useState, useRef, useEffect } from "react";
-import { Plus, Mic, Send, Volume2, RefreshCw, Trash2, X, MessageSquare } from "lucide-react";
+import { useState, useRef, useEffect, useMemo } from "react";
+import {
+  Plus,
+  Mic,
+  Send,
+  Volume2,
+  RefreshCw,
+  Trash2,
+  X,
+  MessageSquare,
+  Paperclip,
+  FileText,
+  Image,
+  Brain,
+  Thermometer,
+  ChevronDown,
+  ChevronRight,
+} from "lucide-react";
 import { listen } from "@tauri-apps/api/event";
 import {
   sendBackendMessage,
+  getLastResponseThinking,
   configureBackend,
   listApiModels,
   switchBackendSession,
   deleteBackendSession,
   getVoiceMode,
   setVoiceMode,
+  getBackendConfig,
+  setBackendConfigValue,
   type ModelGroup,
 } from "../api/backend";
 import {
@@ -16,32 +35,49 @@ import {
   getActiveModel,
   setActiveModel,
   isLocalProvider,
+  loadModelsCache,
+  cacheModels,
   type ProviderEntry,
 } from "../api/providers";
 
-interface ProviderModels {
+export interface ProviderModels {
   provider: ProviderEntry;
   groups: ModelGroup[]; // sub-groups by id prefix inside one provider
   error?: string;
 }
 
-interface ToolStep {
+export interface ToolStep {
   id: string;
   name: string;
   input: string;
   output?: string;
 }
 
-interface Message {
+export interface Message {
   id: string;
   role: "user" | "assistant" | "system";
   text: string;
   timestamp: string;
   /** Agent trajectory persisted with the assistant message. */
   steps?: ToolStep[];
+  /** Reasoning trace persisted with the assistant message. */
+  thinking?: string;
+  /** Elapsed seconds spent thinking. */
+  thinkingDuration?: number;
+  /** Attached images (base64 data URLs) displayed on user messages. */
+  images?: string[];
 }
 
-interface Session {
+export interface AttachmentItem {
+  id: string;
+  file: File;
+  name: string;
+  size: number;
+  isImage: boolean;
+  previewUrl?: string;
+}
+
+export interface Session {
   id: string;
   title: string;
   lastMessage: string;
@@ -49,9 +85,131 @@ interface Session {
   messages: Message[];
 }
 
+function formatFileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function fileToBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result ?? ""));
+    reader.onerror = () => reject(reader.error ?? new Error("Не удалось прочитать файл"));
+    reader.readAsDataURL(file);
+  });
+}
+
+function formatFileMarkdown(name: string, content: string): string {
+  const ext = name.split(".").pop()?.toLowerCase() ?? "";
+  const langMap: Record<string, string> = {
+    py: "python",
+    rs: "rust",
+    js: "javascript",
+    ts: "typescript",
+    tsx: "tsx",
+    jsx: "jsx",
+    json: "json",
+    md: "markdown",
+    txt: "text",
+    log: "text",
+    sh: "bash",
+    bash: "bash",
+    toml: "toml",
+    yaml: "yaml",
+    yml: "yaml",
+    html: "html",
+    css: "css",
+    sql: "sql",
+  };
+  const lang = langMap[ext] ?? ext;
+  return `### Файл: ${name}\n\`\`\`${lang}\n${content}\n\`\`\``;
+}
+
+interface ThinkingBlockProps {
+  thinking: string;
+  isLive?: boolean;
+  duration?: number;
+}
+
+export function ThinkingBlock({ thinking, isLive = false, duration = 0 }: ThinkingBlockProps) {
+  const [open, setOpen] = useState(isLive);
+  const scrollRef = useRef<HTMLPreElement>(null);
+  const [elapsed, setElapsed] = useState(duration);
+  const startTimeRef = useRef<number>(Date.now() - duration * 1000);
+
+  useEffect(() => {
+    if (!isLive) {
+      setElapsed(duration);
+      return;
+    }
+    setOpen(true);
+    startTimeRef.current = Date.now() - (duration > 0 ? duration * 1000 : 0);
+    const interval = setInterval(() => {
+      setElapsed(Math.max(1, Math.floor((Date.now() - startTimeRef.current) / 1000)));
+    }, 500);
+    return () => clearInterval(interval);
+  }, [isLive, duration]);
+
+  useEffect(() => {
+    if (isLive && open && scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    }
+  }, [thinking, isLive, open]);
+
+  const displaySeconds = isLive ? elapsed : (duration > 0 ? duration : (elapsed > 0 ? elapsed : 1));
+  const timerLabel = `${displaySeconds} сек`;
+
+  return (
+    <div className="flex w-full animate-fade-in justify-start" data-testid="thinking-block">
+      <div className="w-full overflow-hidden rounded-lg border border-accent/20 bg-surface shadow-xs">
+        <button
+          type="button"
+          onClick={() => setOpen((prev) => !prev)}
+          className={`flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-xs transition-colors hover:bg-surface-2 ${
+            isLive ? "bg-accent/5" : ""
+          }`}
+          title={open ? "Скрыть размышления" : "Показать размышления"}
+        >
+          <div className="flex items-center gap-2">
+            {isLive ? (
+              <span className="flex items-center gap-1.5 font-medium text-accent">
+                <span className="h-2 w-2 rounded-full bg-accent animate-pulse" />
+                <span>Думает ({timerLabel})...</span>
+              </span>
+            ) : (
+              <span className="flex items-center gap-1.5 font-medium text-text-muted">
+                <Brain size={14} className="text-accent/80 shrink-0" />
+                <span>Размышления ({timerLabel})</span>
+              </span>
+            )}
+          </div>
+          <div className="flex items-center gap-1.5">
+            {isLive && <Dots muted />}
+            {open ? (
+              <ChevronDown size={14} className="shrink-0 text-text-muted transition-transform" />
+            ) : (
+              <ChevronRight size={14} className="shrink-0 text-text-muted transition-transform" />
+            )}
+          </div>
+        </button>
+
+        {open && (
+          <pre
+            ref={scrollRef}
+            className="max-h-60 overflow-y-auto border-t border-border bg-bg/60 px-3 py-2.5 font-mono text-[11px] leading-relaxed text-text-muted whitespace-pre-wrap break-words"
+          >
+            {thinking || (isLive ? "формирование мыслей..." : "(нет записей)")}
+          </pre>
+        )}
+      </div>
+    </div>
+  );
+}
+
 const CHAT_STORAGE_KEY = "jarvis.ui.chats";
-const MODELS_CACHE_KEY = "jarvis.ui.models-cache";
 const SKIP_CHAT_DELETE_CONFIRM_KEY = "jarvis.ui.skip-chat-delete-confirm";
+const REASONING_EFFORT_KEY = "jarvis.ui.reasoningEffort";
 
 function loadSessions(): Session[] {
   try {
@@ -60,20 +218,6 @@ function loadSessions(): Session[] {
   } catch {
     return [];
   }
-}
-
-function loadModelsCache(): Record<string, ModelGroup[]> {
-  try {
-    return JSON.parse(localStorage.getItem(MODELS_CACHE_KEY) ?? "{}") as Record<string, ModelGroup[]>;
-  } catch {
-    return {};
-  }
-}
-
-function cacheModels(providerId: string, groups: ModelGroup[]): void {
-  const cache = loadModelsCache();
-  cache[providerId] = groups;
-  localStorage.setItem(MODELS_CACHE_KEY, JSON.stringify(cache));
 }
 
 export default function ChatTab() {
@@ -111,10 +255,210 @@ export default function ChatTab() {
   }, [liveSegments]);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
+  // Live reasoning state
+  const [liveThinking, setLiveThinking] = useState<string>("");
+  const liveThinkingRef = useRef<string>("");
+  const [isThinkingLive, setIsThinkingLive] = useState<boolean>(false);
+  const thinkingStartTimeRef = useRef<number | null>(null);
+  const [thinkingDuration, setThinkingDuration] = useState<number>(0);
+  const thinkingDurationRef = useRef<number>(0);
+
+  // Reasoning effort control
+  const [reasoningEffort, setReasoningEffort] = useState<string>(() => {
+    return localStorage.getItem(REASONING_EFFORT_KEY) || "medium";
+  });
+
+  const handleReasoningChange = (newEffort: string) => {
+    setReasoningEffort(newEffort);
+    try {
+      localStorage.setItem(REASONING_EFFORT_KEY, newEffort);
+    } catch {
+      // Ignore storage errors
+    }
+  };
+
+  // Temperature control (synchronized with settings and backend)
+  const [chatTemperature, setChatTemperature] = useState<number>(() => {
+    try {
+      const saved = localStorage.getItem("jarvis.ui.temperature");
+      if (saved !== null) {
+        const parsed = parseFloat(saved);
+        if (!isNaN(parsed)) return parsed;
+      }
+    } catch {}
+    return 0.7;
+  });
+
+  useEffect(() => {
+    getBackendConfig()
+      .then((cfg) => {
+        if (cfg.llm?.temperature !== undefined && cfg.llm.temperature !== null) {
+          const num = Number(cfg.llm.temperature);
+          if (!isNaN(num)) setChatTemperature(num);
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  const handleTemperatureChange = (val: number) => {
+    const clamped = Math.max(0.0, Math.min(2.0, Number(val.toFixed(2))));
+    setChatTemperature(clamped);
+    try {
+      localStorage.setItem("jarvis.ui.temperature", String(clamped));
+      void setBackendConfigValue("llm", "temperature", clamped);
+    } catch {}
+  };
+
+  const activeCapability = useMemo(() => {
+    if (!active) return undefined;
+    for (const pm of providerModels) {
+      if (pm.provider.id === active.providerId) {
+        for (const group of pm.groups) {
+          if (group.details && group.details[active.model]) {
+            return group.details[active.model];
+          }
+        }
+      }
+    }
+    return undefined;
+  }, [active, providerModels]);
+
+  const isReasoningSupported = activeCapability?.reasoning ?? (
+    active?.model
+      ? /o1|o3|o4|deepseek-r1|-r1|\/r1|r1-|r1:|qwq|reasoner|reasoning|thinking|thought|gemini-2\.5|gemini-3|gemini-2\.0-flash-thinking|claude-3-7|claude-3\.7|grok-3/i.test(active.model)
+      : true
+  );
+
+  const availableEfforts = useMemo(() => {
+    if (activeCapability) {
+      if (activeCapability.reasoning && Array.isArray(activeCapability.reasoningEfforts) && activeCapability.reasoningEfforts.length > 0) {
+        return activeCapability.reasoningEfforts;
+      }
+      if (!activeCapability.reasoning) {
+        return [];
+      }
+    }
+    if (!isReasoningSupported) {
+      return [];
+    }
+    if (active?.model && /deepseek-r1|-r1|\/r1|r1-|r1:|qwq/i.test(active.model) && !/claude|o1|o3/i.test(active.model)) {
+      return ["off", "on"];
+    }
+    if (active?.model && /claude-3-7|claude-3\.7/i.test(active.model)) {
+      return ["off", "low", "medium", "high", "max"];
+    }
+    return ["off", "low", "medium", "high", "max"];
+  }, [activeCapability, isReasoningSupported, active?.model]);
+
+  useEffect(() => {
+    if (availableEfforts.length === 0) {
+      if (reasoningEffort !== "off") {
+        setReasoningEffort("off");
+        try {
+          localStorage.setItem(REASONING_EFFORT_KEY, "off");
+        } catch {}
+      }
+    } else if (reasoningEffort !== "off" && !availableEfforts.includes(reasoningEffort)) {
+      const fallback = availableEfforts.find((e) => e !== "off") || "off";
+      setReasoningEffort(fallback);
+      try {
+        localStorage.setItem(REASONING_EFFORT_KEY, fallback);
+      } catch {}
+    }
+  }, [availableEfforts, reasoningEffort]);
+
+  const isMultimodalSupported = activeCapability?.multimodal ?? (
+    active?.model
+      ? /gpt-4o|gpt-4-turbo|vision|-vl|\/vl|vl-|vl:|llava|gemini|claude-3|claude-sonnet|claude-opus|claude-haiku|pixtral|minicpm-v|qwen2-vl|qwen2\.5-vl|omni/i.test(active.model)
+      : true
+  );
+
+  // Attachments state
+  const [attachments, setAttachments] = useState<AttachmentItem[]>([]);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [isDragging, setIsDragging] = useState(false);
+  const dragCounterRef = useRef(0);
+
+  const addFiles = (fileList: FileList | File[]) => {
+    const files = Array.from(fileList);
+    if (files.length === 0) return;
+
+    const newAttachments: AttachmentItem[] = files.map((file) => {
+      const isImage = file.type.startsWith("image/") || /\.(png|jpe?g|webp|gif|svg|bmp)$/i.test(file.name);
+      return {
+        id: crypto.randomUUID(),
+        file,
+        name: file.name,
+        size: file.size,
+        isImage,
+        previewUrl: isImage ? URL.createObjectURL(file) : undefined,
+      };
+    });
+
+    setAttachments((prev) => [...prev, ...newAttachments]);
+  };
+
+  const removeAttachment = (id: string) => {
+    setAttachments((prev) => {
+      const item = prev.find((a) => a.id === id);
+      if (item?.previewUrl) {
+        URL.revokeObjectURL(item.previewUrl);
+      }
+      return prev.filter((a) => a.id !== id);
+    });
+  };
+
+  const clearAttachments = () => {
+    setAttachments((prev) => {
+      prev.forEach((a) => {
+        if (a.previewUrl) URL.revokeObjectURL(a.previewUrl);
+      });
+      return [];
+    });
+  };
+
+  const handleDragEnter = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounterRef.current += 1;
+    if (e.dataTransfer.items && e.dataTransfer.items.length > 0) {
+      setIsDragging(true);
+    }
+  };
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounterRef.current -= 1;
+    if (dragCounterRef.current <= 0) {
+      dragCounterRef.current = 0;
+      setIsDragging(false);
+    }
+  };
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounterRef.current = 0;
+    setIsDragging(false);
+    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+      addFiles(Array.from(e.dataTransfer.files));
+    }
+  };
+
   const current = sessions.find((s) => s.id === activeSession) ?? sessions[0];
 
   useEffect(() => {
-    localStorage.setItem(CHAT_STORAGE_KEY, JSON.stringify(sessions));
+    try {
+      localStorage.setItem(CHAT_STORAGE_KEY, JSON.stringify(sessions));
+    } catch (e) {
+      console.warn("Не удалось сохранить историю чатов в localStorage:", e);
+    }
   }, [sessions]);
 
   useEffect(() => {
@@ -144,11 +488,23 @@ export default function ChatTab() {
     return () => window.removeEventListener("jarvis:history-updated", onHistoryUpdated);
   }, []);
 
-  // Sync providers and active model when changed from Settings
+  // Sync providers, active model and models cache when changed from Settings
   useEffect(() => {
     const onProvidersChanged = () => {
-      setProviders(loadProviders());
+      const nextProviders = loadProviders();
+      setProviders(nextProviders);
       setActive(getActiveModel());
+      const cache = loadModelsCache();
+      const updatedModels: ProviderModels[] = [];
+      for (const p of nextProviders) {
+        const c = cache[p.id];
+        if (c && c.length > 0) {
+          updatedModels.push({ provider: p, groups: c });
+        }
+      }
+      if (updatedModels.length > 0) {
+        setProviderModels(updatedModels);
+      }
     };
     window.addEventListener("jarvis:providers-changed", onProvidersChanged);
     return () => window.removeEventListener("jarvis:providers-changed", onProvidersChanged);
@@ -182,7 +538,22 @@ export default function ChatTab() {
 
   // Stream deltas from the backend into the live bubble.
   useEffect(() => {
+    const unlistenThinking = listen<string>("chat-thinking", (event) => {
+      if (thinkingStartTimeRef.current === null) {
+        thinkingStartTimeRef.current = Date.now();
+      }
+      setIsThinkingLive(true);
+      liveThinkingRef.current += event.payload;
+      setLiveThinking((prev) => prev + event.payload);
+    });
+
     const unlistenDelta = listen<string>("chat-stream", (event) => {
+      if (thinkingStartTimeRef.current !== null && thinkingDurationRef.current === 0) {
+        const sec = Math.max(1, Math.round((Date.now() - thinkingStartTimeRef.current) / 1000));
+        thinkingDurationRef.current = sec;
+        setThinkingDuration(sec);
+        setIsThinkingLive(false);
+      }
       setLiveSegments((prev) => {
         const last = prev[prev.length - 1];
         if (last && last.kind === "text") {
@@ -192,6 +563,12 @@ export default function ChatTab() {
       });
     });
     const unlistenTool = listen<string>("chat-tool", (event) => {
+      if (thinkingStartTimeRef.current !== null && thinkingDurationRef.current === 0) {
+        const sec = Math.max(1, Math.round((Date.now() - thinkingStartTimeRef.current) / 1000));
+        thinkingDurationRef.current = sec;
+        setThinkingDuration(sec);
+        setIsThinkingLive(false);
+      }
       try {
         const parsed = JSON.parse(event.payload) as { name: string; args: Record<string, unknown> };
         const step: ToolStep = {
@@ -338,13 +715,29 @@ export default function ChatTab() {
           const steps = liveSegmentsRef.current
             .filter((s): s is { kind: "tool"; step: ToolStep } => s.kind === "tool")
             .map((s) => s.step);
+          const finalThinking =
+            liveThinkingRef.current.trim() ||
+            (typeof (data as Record<string, unknown>).thinking === "string"
+              ? ((data as Record<string, unknown>).thinking as string).trim()
+              : "");
+          let finalDuration = thinkingDurationRef.current;
+          if (thinkingStartTimeRef.current !== null && finalDuration === 0) {
+            finalDuration = Math.max(1, Math.round((Date.now() - thinkingStartTimeRef.current) / 1000));
+          }
           const assistantMessage: Message = {
             id: crypto.randomUUID(),
             role: "assistant",
             text: data.response.trim(),
             timestamp: now,
             ...(steps.length > 0 ? { steps } : {}),
+            ...(finalThinking ? { thinking: finalThinking, thinkingDuration: finalDuration || 1 } : {}),
           };
+          setLiveThinking("");
+          liveThinkingRef.current = "";
+          setIsThinkingLive(false);
+          thinkingStartTimeRef.current = null;
+          setThinkingDuration(0);
+          thinkingDurationRef.current = 0;
           setSessions((prev) => {
             const targetId = activeSessionRef.current || prev[0]?.id;
             if (!targetId) {
@@ -398,6 +791,7 @@ export default function ChatTab() {
     window.addEventListener("jarvis:voice-mode-change", onVoiceModeChange);
 
     return () => {
+      void unlistenThinking.then((fn) => fn());
       void unlistenDelta.then((fn) => fn());
       void unlistenTool.then((fn) => fn());
       void unlistenResult.then((fn) => fn());
@@ -508,6 +902,7 @@ export default function ChatTab() {
         endpoint: provider.endpoint,
         apiKey: provider.apiKey,
         model: modelId,
+        reasoningEffort: reasoningEffort !== "off" ? reasoningEffort : undefined,
         // Флаги агента хранятся в localStorage (Настройки → LLM). Без них
         // serde-дефолты Rust (true/auto) тихо включали bash-агент при
         // каждой смене модели — даже если пользователь его выключил.
@@ -522,27 +917,79 @@ export default function ChatTab() {
   };
 
   const handleSend = async () => {
-    const text = input.trim();
-    if (!text || sending) return;
-    // Без активной сессии сообщение уходило в backend, но не сохранялось
-    // никуда: ответ стримился и исчезал. Требуем чат и шлём в его id.
+    const textInput = input.trim();
+    if ((!textInput && attachments.length === 0) || sending) return;
+
     setSending(true);
     setError(null);
     setLiveSegments([]);
+    setLiveThinking("");
+    liveThinkingRef.current = "";
+    setIsThinkingLive(false);
+    thinkingStartTimeRef.current = null;
+    setThinkingDuration(0);
+    thinkingDurationRef.current = 0;
     setInput("");
+
+    const currentAttachments = [...attachments];
+    clearAttachments();
+
+    const imageAttachments = currentAttachments.filter((a) => a.isImage);
+    const fileAttachments = currentAttachments.filter((a) => !a.isImage);
+
+    let base64Images: string[] = [];
+    if (imageAttachments.length > 0) {
+      try {
+        base64Images = await Promise.all(imageAttachments.map((a) => fileToBase64(a.file)));
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Не удалось прочитать изображение");
+        setSending(false);
+        return;
+      }
+    }
+
+    let fileMarkdownBlocks: string[] = [];
+    if (fileAttachments.length > 0) {
+      try {
+        fileMarkdownBlocks = await Promise.all(
+          fileAttachments.map(async (a) => {
+            const content = await a.file.text();
+            return formatFileMarkdown(a.name, content);
+          }),
+        );
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Не удалось прочитать файл");
+        setSending(false);
+        return;
+      }
+    }
+
+    const fullMessageText = [textInput, ...fileMarkdownBlocks].filter(Boolean).join("\n\n");
+    const displayUserText = fullMessageText || (base64Images.length > 0 ? "Изображение" : "");
+
     const now = new Date().toLocaleTimeString("ru-RU", {
       hour: "2-digit",
       minute: "2-digit",
     });
-    const userMessage: Message = { id: crypto.randomUUID(), role: "user", text, timestamp: now };
+
+    const userMessage: Message = {
+      id: crypto.randomUUID(),
+      role: "user",
+      text: displayUserText,
+      timestamp: now,
+      ...(base64Images.length > 0 ? { images: base64Images } : {}),
+    };
+
     const targetSession = sessions.find((s) => s.id === activeSession) ?? sessions[0];
     let sessionKey: string;
+    const sessionTitle = textInput || (currentAttachments[0]?.name ?? "Новый чат");
+
     if (!targetSession) {
       sessionKey = crypto.randomUUID();
       const newSession: Session = {
         id: sessionKey,
-        title: text.slice(0, 36) || "Новый чат",
-        lastMessage: text,
+        title: sessionTitle.slice(0, 36) || "Новый чат",
+        lastMessage: displayUserText,
         timestamp: now,
         messages: [userMessage],
       };
@@ -550,16 +997,38 @@ export default function ChatTab() {
       setActiveSession(sessionKey);
     } else {
       sessionKey = targetSession.id;
-      setSessions((previous) => previous.map((session) => session.id === sessionKey ? {
-        ...session,
-        title: session.messages.length === 0 ? text.slice(0, 36) : session.title,
-        lastMessage: text,
-        timestamp: now,
-        messages: [...session.messages, userMessage],
-      } : session));
+      setSessions((previous) =>
+        previous.map((session) =>
+          session.id === sessionKey
+            ? {
+                ...session,
+                title: session.messages.length === 0 ? sessionTitle.slice(0, 36) : session.title,
+                lastMessage: displayUserText,
+                timestamp: now,
+                messages: [...session.messages, userMessage],
+              }
+            : session,
+        ),
+      );
     }
+
     try {
-      const response = await sendBackendMessage(text, sessionKey);
+      const response = await sendBackendMessage(
+        fullMessageText,
+        sessionKey,
+        base64Images.length > 0 ? base64Images : undefined,
+        reasoningEffort,
+      );
+
+      let finalDuration = thinkingDurationRef.current;
+      if (thinkingStartTimeRef.current !== null && finalDuration === 0) {
+        finalDuration = Math.max(1, Math.round((Date.now() - thinkingStartTimeRef.current) / 1000));
+        thinkingDurationRef.current = finalDuration;
+      }
+      const responseThinking = getLastResponseThinking();
+      const finalThinking = liveThinkingRef.current.trim() || responseThinking?.trim() || "";
+      setIsThinkingLive(false);
+
       const steps = liveSegmentsRef.current
         .filter((s): s is { kind: "tool"; step: ToolStep } => s.kind === "tool")
         .map((s) => s.step);
@@ -573,17 +1042,30 @@ export default function ChatTab() {
         text: response || streamedText || "Готово.",
         timestamp: now,
         ...(steps.length > 0 ? { steps } : {}),
+        ...(finalThinking ? { thinking: finalThinking, thinkingDuration: finalDuration || 1 } : {}),
       };
-      setSessions((previous) => previous.map((session) => session.id === sessionKey ? {
-        ...session,
-        lastMessage: assistantMessage.text,
-        messages: [...session.messages, assistantMessage],
-      } : session));
+      setSessions((previous) =>
+        previous.map((session) =>
+          session.id === sessionKey
+            ? {
+                ...session,
+                lastMessage: assistantMessage.text,
+                messages: [...session.messages, assistantMessage],
+              }
+            : session,
+        ),
+      );
     } catch (err) {
       setError(err instanceof Error ? err.message : "Не удалось связаться с JARVIS");
-      setInput(text);
+      setInput(textInput);
     } finally {
       setLiveSegments([]);
+      setLiveThinking("");
+      liveThinkingRef.current = "";
+      setIsThinkingLive(false);
+      thinkingStartTimeRef.current = null;
+      setThinkingDuration(0);
+      thinkingDurationRef.current = 0;
       setSending(false);
     }
   };
@@ -647,8 +1129,29 @@ export default function ChatTab() {
         </div>
       </div>
 
-      {/* Chat area */}
-      <div className="flex flex-1 flex-col">
+      {/* Chat area with drag & drop support */}
+      <div
+        className="relative flex flex-1 flex-col overflow-hidden"
+        onDragEnter={handleDragEnter}
+        onDragOver={handleDragOver}
+        onDragLeave={handleDragLeave}
+        onDrop={handleDrop}
+      >
+        {/* Visual dropzone indicator overlay */}
+        {isDragging && (
+          <div
+            className="pointer-events-none absolute inset-0 z-40 flex flex-col items-center justify-center rounded-lg border-2 border-dashed border-accent bg-surface/90 backdrop-blur-xs animate-fade-in"
+            aria-label="Dropzone"
+            data-testid="dropzone-overlay"
+          >
+            <div className="flex flex-col items-center gap-2 p-6 text-center text-accent">
+              <Paperclip size={36} className="animate-bounce" />
+              <span className="text-base font-medium">Перетащите файлы сюда</span>
+              <span className="text-xs text-text-muted">Изображения, документы и файлы с кодом</span>
+            </div>
+          </div>
+        )}
+
         {/* Chat header */}
         <div className="flex items-center justify-between border-b border-border px-4 py-2.5">
           <div className="flex items-center gap-2">
@@ -697,14 +1200,24 @@ export default function ChatTab() {
                           : `${provider.name} · ${sub.provider}`;
                         return (
                           <optgroup key={`${provider.id}-${sub.provider}`} label={label}>
-                            {(sub.models ?? []).map((id) => (
-                              <option
-                                key={`${provider.id}::${id}`}
-                                value={`${provider.id}::${id}`}
-                              >
-                                {id}
-                              </option>
-                            ))}
+                            {(sub.models ?? []).map((id) => {
+                              const detail = sub.details?.[id];
+                              const ctxNum = detail?.contextLength ?? (detail as any)?.context_length;
+                              const ctxStr = ctxNum
+                                ? ctxNum >= 1000000
+                                  ? ` (${(ctxNum / 1000000).toFixed(1)}M)`
+                                  : ` (${Math.round(ctxNum / 1000)}k)`
+                                : "";
+                              return (
+                                <option
+                                  key={`${provider.id}::${id}`}
+                                  value={`${provider.id}::${id}`}
+                                  title={detail?.description || undefined}
+                                >
+                                  {id}{ctxStr}
+                                </option>
+                              );
+                            })}
                           </optgroup>
                         );
                       })
@@ -734,6 +1247,92 @@ export default function ChatTab() {
                   ? <span className="block h-3 w-3 animate-spin rounded-full border-2 border-current/30 border-t-current" />
                   : <RefreshCw size={11} />}
               </button>
+            </div>
+
+            {/* Reasoning effort selector */}
+            <div
+              className={`flex items-center gap-1.5 rounded-lg border px-2 py-1 text-xs transition-colors ${
+                availableEfforts.length === 0
+                  ? "border-border/30 bg-surface-2/40 text-text-muted/50 cursor-not-allowed opacity-60"
+                  : reasoningEffort !== "off"
+                  ? "border-accent/40 bg-accent/10 text-accent font-medium"
+                  : "border-border bg-surface-2 text-text-muted"
+              }`}
+              title={
+                availableEfforts.length === 0
+                  ? "Модель не поддерживает размышления (Reasoning)"
+                  : `Глубина рассуждений (${reasoningEffort})`
+              }
+            >
+              <Brain
+                size={13}
+                className={
+                  availableEfforts.length === 0
+                    ? "text-text-muted/40"
+                    : reasoningEffort !== "off"
+                    ? "text-accent"
+                    : "text-text-muted"
+                }
+              />
+              <select
+                data-testid="reasoning-effort-select"
+                aria-label="Глубина рассуждений"
+                value={availableEfforts.length === 0 ? "off" : reasoningEffort}
+                onChange={(e) => handleReasoningChange(e.target.value)}
+                disabled={sending || availableEfforts.length === 0}
+                className={`bg-transparent text-xs text-inherit focus:outline-none ${
+                  availableEfforts.length === 0 ? "cursor-not-allowed" : "cursor-pointer"
+                }`}
+              >
+                {availableEfforts.length === 0 ? (
+                  <option value="off" className="bg-surface text-text-muted">
+                    Мысли: Выкл
+                  </option>
+                ) : (
+                  availableEfforts.map((effort) => {
+                    const label =
+                      effort === "off"
+                        ? "Мысли: Выкл"
+                        : effort === "on"
+                        ? "Мысли: Вкл"
+                        : `Мысли: ${effort.charAt(0).toUpperCase() + effort.slice(1)}`;
+                    return (
+                      <option key={effort} value={effort} className="bg-surface text-text">
+                        {label}
+                      </option>
+                    );
+                  })
+                )}
+              </select>
+            </div>
+
+            {/* Temperature selector */}
+            <div
+              className="flex items-center gap-1.5 rounded-lg border border-border bg-surface-2 px-2 py-1 text-xs text-text-muted transition-colors hover:border-accent/40"
+              title="Температура генерации (0.0 — точный/код, 1.0+ — креативный)"
+            >
+              <Thermometer size={13} className="text-text-muted" />
+              <span className="text-[11px] font-medium text-text-muted">Темп:</span>
+              <input
+                data-testid="chat-temperature-input"
+                type="number"
+                min={0}
+                max={2}
+                step={0.05}
+                value={chatTemperature}
+                disabled={sending}
+                onChange={(e) => {
+                  const val = parseFloat(e.target.value);
+                  if (!isNaN(val)) {
+                    setChatTemperature(val);
+                  }
+                }}
+                onBlur={(e) => {
+                  const val = parseFloat(e.target.value);
+                  handleTemperatureChange(isNaN(val) ? 0.7 : val);
+                }}
+                className="w-11 bg-transparent text-xs font-mono text-text focus:outline-none"
+              />
             </div>
           </div>
         </div>
@@ -766,6 +1365,13 @@ export default function ChatTab() {
             {(current?.messages ?? []).map((m) => (
               <MessageBubble key={m.id} message={m} />
             ))}
+            {sending && (liveThinking || isThinkingLive) && (
+              <ThinkingBlock
+                thinking={liveThinking}
+                isLive={isThinkingLive}
+                duration={thinkingDuration}
+              />
+            )}
             {sending && liveSegments.map((seg, i) =>
               seg.kind === "tool" ? (
                 <ToolStepView key={seg.step.id} step={seg.step} running={i === liveSegments.length - 1 && seg.step.output === undefined} />
@@ -773,7 +1379,7 @@ export default function ChatTab() {
                 <LiveBubble key={`t-${i}`} text={seg.text} />
               ),
             )}
-            {sending && liveSegments.length === 0 && <ThinkingIndicator />}
+            {sending && liveSegments.length === 0 && !liveThinking && !isThinkingLive && <ThinkingIndicator />}
             {listening && !sending && <ListeningIndicator partialText={partialVoiceText} />}
             <div ref={messagesEndRef} />
           </div>
@@ -812,6 +1418,53 @@ export default function ChatTab() {
             </div>
           )}
 
+          {/* Attachments preview bar above input box */}
+          {attachments.length > 0 && (
+            <div className="flex flex-wrap items-center gap-2 pb-1" data-testid="attachments-preview">
+              {attachments.map((att) =>
+                att.isImage ? (
+                  <div
+                    key={att.id}
+                    className="group relative flex h-14 w-14 shrink-0 items-center justify-center overflow-hidden rounded-lg border border-border bg-surface-2 shadow-xs"
+                  >
+                    {att.previewUrl ? (
+                      <img src={att.previewUrl} alt={att.name} className="h-full w-full object-cover" />
+                    ) : (
+                      <Image size={20} className="text-text-muted" />
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => removeAttachment(att.id)}
+                      className="absolute right-1 top-1 flex h-4 w-4 items-center justify-center rounded-full bg-black/75 text-white transition-opacity hover:bg-danger"
+                      title="Удалить файл"
+                      aria-label={`Удалить ${att.name}`}
+                    >
+                      <X size={10} />
+                    </button>
+                  </div>
+                ) : (
+                  <div
+                    key={att.id}
+                    className="flex items-center gap-1.5 rounded-lg border border-border bg-surface-2 px-2.5 py-1 text-xs text-text shadow-xs"
+                  >
+                    <FileText size={13} className="text-accent shrink-0" />
+                    <span className="max-w-[140px] truncate font-medium" title={att.name}>{att.name}</span>
+                    <span className="text-[10px] text-text-muted">({formatFileSize(att.size)})</span>
+                    <button
+                      type="button"
+                      onClick={() => removeAttachment(att.id)}
+                      className="ml-1 rounded p-0.5 text-text-muted hover:bg-danger/20 hover:text-danger"
+                      title="Удалить файл"
+                      aria-label={`Удалить ${att.name}`}
+                    >
+                      <X size={12} />
+                    </button>
+                  </div>
+                ),
+              )}
+            </div>
+          )}
+
           <div className="flex items-center gap-2">
             <button
               onClick={async () => {
@@ -847,6 +1500,36 @@ export default function ChatTab() {
                 <Mic size={16} />
               )}
             </button>
+
+            {/* Hidden file input for attachment picker */}
+            <input
+              ref={fileInputRef}
+              type="file"
+              multiple
+              accept="image/*,.txt,.py,.rs,.json,.md,.log,.pdf"
+              className="hidden"
+              onChange={(e) => {
+                if (e.target.files) addFiles(Array.from(e.target.files));
+                e.target.value = "";
+              }}
+            />
+
+            {/* Paperclip attachment button */}
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={sending}
+              className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-border bg-surface-2 text-text-muted transition-all hover:border-accent/50 hover:text-text disabled:opacity-50"
+              title={
+                isMultimodalSupported
+                  ? "Прикрепить файл или изображение"
+                  : "Прикрепить файл (модель не поддерживает изображения)"
+              }
+              aria-label="Прикрепить файл"
+            >
+              <Paperclip size={18} />
+            </button>
+
             <div className="flex flex-1 items-center gap-2 rounded-lg border border-border bg-surface-2 px-3 py-1.5 transition-colors focus-within:border-accent/60 focus-within:ring-2 focus-within:ring-accent/15">
               <input
                 type="text"
@@ -858,7 +1541,7 @@ export default function ChatTab() {
               />
               <button
                 onClick={handleSend}
-                disabled={!input.trim()}
+                disabled={(!input.trim() && attachments.length === 0) || sending}
                 className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-accent text-white transition-all hover:brightness-110 disabled:bg-transparent disabled:text-text-muted disabled:opacity-50"
                 title="Отправить"
               >
@@ -1001,20 +1684,43 @@ function MessageBubble({ message }: { message: Message }) {
           isUser ? "items-end" : "items-start"
         }`}
       >
+        {!isUser && message.thinking && (
+          <div className="w-full">
+            <ThinkingBlock
+              thinking={message.thinking}
+              duration={message.thinkingDuration}
+              isLive={false}
+            />
+          </div>
+        )}
         {message.steps?.map((step) => (
           <div key={step.id} className="w-full">
             <ToolStepView step={step} />
           </div>
         ))}
-        <div
-          className={`rounded-lg px-3 py-2 text-sm transition-colors ${
-            isUser
-              ? "bg-accent-bg text-text"
-              : "bg-surface-2 text-text"
-          }`}
-        >
-          {message.text}
-        </div>
+        {isUser && message.images && message.images.length > 0 && (
+          <div className="flex flex-wrap gap-2 mb-1">
+            {message.images.map((img, idx) => (
+              <img
+                key={idx}
+                src={img}
+                alt={`Прикреплённое изображение ${idx + 1}`}
+                className="max-h-48 max-w-xs rounded-lg border border-border object-contain shadow-xs"
+              />
+            ))}
+          </div>
+        )}
+        {message.text && (
+          <div
+            className={`rounded-lg px-3 py-2 text-sm transition-colors ${
+              isUser
+                ? "bg-accent-bg text-text"
+                : "bg-surface-2 text-text"
+            }`}
+          >
+            {message.text}
+          </div>
+        )}
         <span className="px-1 text-[11px] text-text-muted">
           {message.timestamp}
         </span>

@@ -7,8 +7,10 @@ from jarvis.prompt_builder import (
     agent_query_prefix,
     compose_system_prompt,
     enforce_russian_language,
+    extract_reasoning,
     redact_secrets,
     sanitize_for_tts,
+    strip_thinking_tags,
     truncate_tool_output,
 )
 
@@ -174,3 +176,91 @@ class TestTruncateToolOutput:
         assert "[TRUNCATED]" in out
         assert out.startswith("H" * 10)
         assert out.endswith("T" * 10)
+
+
+class TestReasoningExtractionAndSanitization:
+    def test_extract_reasoning_closed_tag(self):
+        text = "<think>\nLet me think about this step by step.\n</think>\nОтвет: всё готово."
+        clean, reasoning = extract_reasoning(text)
+        assert clean == "Ответ: всё готово."
+        assert reasoning == "Let me think about this step by step."
+
+    def test_extract_reasoning_unclosed_tag(self):
+        text = "<think>\nCurrently streaming reasoning without closing tag"
+        clean, reasoning = extract_reasoning(text)
+        assert clean == ""
+        assert reasoning == "Currently streaming reasoning without closing tag"
+
+    def test_extract_reasoning_no_tag(self):
+        text = "Обычный ответ без рассуждений."
+        clean, reasoning = extract_reasoning(text)
+        assert clean == "Обычный ответ без рассуждений."
+        assert reasoning is None
+
+    def test_sanitize_for_tts_strips_thinking_tags(self):
+        text = "<think>\nThinking secret logic...\n</think>\nЗдравствуйте, сэр."
+        sanitized = sanitize_for_tts(text)
+        assert "Thinking" not in sanitized
+        assert "think" not in sanitized
+        assert "Здравствуйте, сэр." in sanitized
+
+    def test_sanitize_for_tts_strips_unclosed_thinking(self):
+        text = "<think>\nThinking indefinitely..."
+        sanitized = sanitize_for_tts(text)
+        assert sanitized == ""
+
+    def test_extract_reasoning_multiple_chunks(self):
+        text = "<think>Part 1</think><think>Part 2</think>Final"
+        clean, reasoning = extract_reasoning(text)
+        assert clean == "Final"
+        assert reasoning == "Part 1\n\nPart 2"
+
+    def test_extract_reasoning_non_consecutive_chunks(self):
+        text = "<think>Step 1</think> Interlude <think>Step 2</think> Final"
+        clean, reasoning = extract_reasoning(text)
+        assert clean == "Interlude  Final"
+        assert reasoning == "Step 1\n\nStep 2"
+
+    def test_extract_reasoning_tag_with_attributes_and_multiline(self):
+        text = '<think class="thought" id="42">\nMultiline\nThinking\n</think>\nResult'
+        clean, reasoning = extract_reasoning(text)
+        assert clean == "Result"
+        assert reasoning == "Multiline\nThinking"
+
+    def test_extract_reasoning_orphaned_close_tag(self):
+        text = "Premise</think>Final"
+        clean, reasoning = extract_reasoning(text)
+        assert clean == "Final"
+        assert reasoning == "Premise"
+
+    def test_strip_thinking_tags_various_formats(self):
+        assert strip_thinking_tags("") == ""
+        assert strip_thinking_tags("<think>only thoughts</think>") == ""
+        assert (
+            strip_thinking_tags("<think attr='val'>thoughts</think>Hello</think>")
+            == "Hello"
+        )
+        assert (
+            strip_thinking_tags("Hello <THINK>case-insensitive</THINK> world")
+            == "Hello  world"
+        )
+        assert (
+            strip_thinking_tags(
+                "Gemini says <thought>Internal model logic</thought> Hello!"
+            )
+            == "Gemini says  Hello!"
+        )
+        assert (
+            strip_thinking_tags("<reasoning>Deductive trace</reasoning>Done") == "Done"
+        )
+
+    def test_extract_reasoning_thought_and_reasoning_tags(self):
+        text_thought = "<thought>Thinking about solution</thought> Answer is 42."
+        clean, reasoning = extract_reasoning(text_thought)
+        assert clean == "Answer is 42."
+        assert reasoning == "Thinking about solution"
+
+        text_reasoning = "<reasoning>Analyzing query</reasoning> Done."
+        clean, reasoning = extract_reasoning(text_reasoning)
+        assert clean == "Done."
+        assert reasoning == "Analyzing query"

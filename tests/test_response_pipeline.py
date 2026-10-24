@@ -292,3 +292,74 @@ class TestResponsePipelineProcessQuery:
         ):
             pipeline.process_query("прочитай файл")
             assert calls == ["truncate", "redact"]
+
+    def test_process_query_agent_loop_forwards_reasoning_and_thinking(
+        self, sample_config
+    ):
+        cfg = dict(sample_config)
+        cfg["llm"]["agent_enabled"] = True
+        pipeline = ResponsePipeline(cfg)
+        pipeline.agent_enabled = True
+
+        mock_commands = MagicMock()
+        mock_commands.process.return_value = None
+        pipeline.commands = mock_commands
+
+        mock_client = MagicMock()
+        mock_client.chat_with_tools.return_value = "Готово с размышлениями"
+        mock_llm_mgr = MagicMock()
+        mock_llm_mgr.primary = mock_client
+        mock_llm_mgr.provider = "ollama"
+        pipeline.llm = mock_llm_mgr
+
+        thinking_cb = MagicMock()
+        stream_cb = MagicMock()
+
+        with (
+            patch("jarvis.modules.bash_agent.get_tool_schemas", return_value=[]),
+        ):
+            res = pipeline.process_query(
+                "подумай и сделай",
+                stream_callback=stream_cb,
+                thinking_callback=thinking_cb,
+                reasoning_effort="high",
+                reasoning_budget=2048,
+            )
+            assert res == "Готово с размышлениями"
+            mock_client.chat_with_tools.assert_called_once()
+            _, kwargs = mock_client.chat_with_tools.call_args
+            assert kwargs["thinking_callback"] == thinking_cb
+            assert kwargs["stream_callback"] == stream_cb
+            assert kwargs["reasoning_effort"] == "high"
+            assert kwargs["reasoning_budget"] == 2048
+
+    def test_process_query_direct_llm_forwards_reasoning_and_thinking(
+        self, sample_config
+    ):
+        pipeline = ResponsePipeline(sample_config)
+        mock_commands = MagicMock()
+        mock_commands.process.return_value = None
+        pipeline.commands = mock_commands
+
+        mock_llm = MagicMock()
+        mock_llm.chat.return_value = "Ответ модели"
+        pipeline.llm = mock_llm
+
+        thinking_cb = MagicMock()
+        stream_cb = MagicMock()
+
+        res = pipeline.process_query(
+            "вопрос",
+            stream_callback=stream_cb,
+            thinking_callback=thinking_cb,
+            reasoning_effort="medium",
+            reasoning_budget=1024,
+        )
+        assert res == "Ответ модели"
+        mock_llm.chat.assert_called_once_with(
+            "вопрос",
+            stream_callback=stream_cb,
+            thinking_callback=thinking_cb,
+            reasoning_effort="medium",
+            reasoning_budget=1024,
+        )

@@ -99,6 +99,26 @@
       "say": "Сегодня",
       "capture": true,
       "category": "info"
+    },
+    "что на экране": {
+      "cmd": "_screen_vision",
+      "say": "",
+      "category": "vision"
+    },
+    "посмотри на экран": {
+      "cmd": "_screen_vision",
+      "say": "",
+      "category": "vision"
+    },
+    "проанализируй экран": {
+      "cmd": "_screen_vision",
+      "say": "",
+      "category": "vision"
+    },
+    "что видно на экране": {
+      "cmd": "_screen_vision",
+      "say": "",
+      "category": "vision"
     }
   }
 }

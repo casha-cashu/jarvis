@@ -158,6 +158,77 @@ _EMOJI_RE = re.compile(
 )
 
 
+# Strip thinking blocks (<think>...</think>, <thought>...</thought>, <reasoning>...</reasoning>)
+_THINK_TAG_NAMES = "think|thought|reasoning"
+_PAIRED_THINK_RE = re.compile(
+    r"<\s*("
+    + _THINK_TAG_NAMES
+    + r")(?:\s[^>]*)?>(?:(?!<\s*(?:"
+    + _THINK_TAG_NAMES
+    + r")).)*?<\s*/\s*\1\s*>",
+    re.DOTALL | re.IGNORECASE,
+)
+_THINK_TAG_RE = _PAIRED_THINK_RE
+_THINK_EXTRACT_RE = re.compile(
+    r"<\s*(?:"
+    + _THINK_TAG_NAMES
+    + r")(?:\s[^>]*)?>(.*?)(?:<\s*/\s*(?:"
+    + _THINK_TAG_NAMES
+    + r")\s*>|$)",
+    re.DOTALL | re.IGNORECASE,
+)
+_ORPHAN_THINK_CLOSE_RE = re.compile(
+    r"<\s*/\s*(?:" + _THINK_TAG_NAMES + r")\s*>", re.IGNORECASE
+)
+_ORPHAN_THINK_EXTRACT_RE = re.compile(
+    r"^(.*?)(?:<\s*/\s*(?:" + _THINK_TAG_NAMES + r")\s*>)", re.DOTALL | re.IGNORECASE
+)
+_UNCLOSED_THINK_RE = re.compile(
+    r"<\s*(?:" + _THINK_TAG_NAMES + r")(?:\s[^>]*)?>.*$", re.DOTALL | re.IGNORECASE
+)
+
+
+def strip_thinking_tags(text: str) -> str:
+    """Remove all <think>...</think> tags, content, and orphaned closing tags."""
+    if not text:
+        return ""
+    prev = None
+    cleaned = text
+    while cleaned != prev:
+        prev = cleaned
+        cleaned = _PAIRED_THINK_RE.sub("", cleaned)
+    prev = None
+    while cleaned != prev:
+        prev = cleaned
+        cleaned = _UNCLOSED_THINK_RE.sub("", cleaned)
+        cleaned = _ORPHAN_THINK_CLOSE_RE.sub("", cleaned)
+    return cleaned.strip()
+
+
+def extract_reasoning(text: str) -> tuple[str, Optional[str]]:
+    """Extract <think>...</think> reasoning from response text.
+
+    Returns:
+        (clean_text, reasoning_text_or_none)
+    """
+    if not text:
+        return "", None
+
+    matches = _THINK_EXTRACT_RE.findall(text)
+    reasoning: Optional[str] = None
+    if matches:
+        combined = "\n\n".join(m.strip() for m in matches if m.strip())
+        reasoning = combined if combined else None
+    else:
+        orphan = _ORPHAN_THINK_EXTRACT_RE.match(text)
+        if orphan:
+            reasoning = orphan.group(1).strip() or None
+            text = text[orphan.end() :]
+
+    cleaned = strip_thinking_tags(text)
+    return cleaned, reasoning
+
+
 def sanitize_for_tts(
     text: str,
     soft_max_chars: int = 220,
@@ -166,6 +237,7 @@ def sanitize_for_tts(
     """Post-process final LLM answer before sending to TTS.
 
     Operations:
+      0. Strip reasoning / thinking blocks (<think>...</think>).
       1. Strip code fences, markdown headers, leading bullets.
       2. Strip emoji (Piper doesn't pronounce them, either silence
          or garbage).
@@ -187,8 +259,10 @@ def sanitize_for_tts(
     if not text:
         return ""
 
+    # 0. Strip thinking / reasoning tokens completely — TTS must NEVER voice thoughts
+    cleaned = strip_thinking_tags(text)
     # 1. Code fences → drop the fence markers, keep content (still readable)
-    cleaned = _MARKDOWN_BLOCK_RE.sub("", text)
+    cleaned = _MARKDOWN_BLOCK_RE.sub("", cleaned)
     # 2. Headers — just the leading "# " prefix; text of header stays
     cleaned = _HEADER_RE.sub("", cleaned)
     # 3. Bullets — keep text, drop leading "- " / "* "
